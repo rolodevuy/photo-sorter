@@ -11,5 +11,8 @@ CLUSTERS_PATH = DATA_DIR / "clusters.json"
 LABELS_PATH = DATA_DIR / "labels.json"
 CONFIG_PATH = DATA_DIR / "config.json"  # carpetas de origen y destino elegidas
 
-# Extensiones de imagen soportadas
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+# Extensiones de imagen soportadas.
+# Los GIF se analizan por su primer fotograma (si están animados, se ignora
+# el resto). Los archivos con extensión "mentida" (ej: un PNG llamado .jpg)
+# igual se leen bien porque la librería detecta el formato por el contenido.
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}

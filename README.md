@@ -29,6 +29,10 @@ data/
 └── labels.json        # nombres puestos en la web
 ```
 
+## Formatos soportados
+
+`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif`. Los GIF se analizan por su **primer fotograma** (si están animados, se ignora el resto). Archivos con la extensión equivocada (p. ej. un PNG guardado como `.jpg`) igual se leen bien: el formato se detecta por el contenido, no por el nombre.
+
 ## Ajustes
 
 En `app/analyze.py`, la constante `EPS` (por defecto `0.45`) controla qué tan parecidos deben ser dos rostros para caer en el mismo grupo:
