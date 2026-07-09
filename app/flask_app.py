@@ -20,15 +20,18 @@ from pathlib import Path
 
 from flask import Flask, redirect, render_template_string, request, send_from_directory, url_for
 
-from app import CLUSTERS_PATH, FACES_DIR, LABELS_PATH
+from app import CLUSTERS_PATH, DUPES_PATH, DUPES_THUMBS, FACES_DIR, LABELS_PATH
 from app.analyze import run_analysis
 from app.config import load_config, save_config
+from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
 from app.organizer import organize
 
 app = Flask(__name__)
 
 # Estado del análisis en curso (corre en un hilo aparte)
 STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
+# Estado de la búsqueda de duplicados (otro hilo)
+DUPE_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 
 TEMPLATE = """
 <!doctype html>
@@ -74,6 +77,7 @@ TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
+<p><b>Ordenar por rostro</b> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a></p>
 <p class="hint">Al organizar, tus fotos se <b>mueven</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona (desaparecen del origen). Las fotos sin nombre quedan donde estaban. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
@@ -256,10 +260,121 @@ function browse(field) {
 """
 
 
+DUPES_TEMPLATE = """
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>photo-sorter — duplicados</title>
+{% if state.status == 'running' %}<meta http-equiv="refresh" content="2">{% endif %}
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 900px;
+         padding: 0 1rem; background: #f5f5f5; }
+  h1 { margin-bottom: .25rem; }
+  .hint { color: #666; margin-bottom: 1.5rem; }
+  .panel, .group { background: #fff; border-radius: 8px; padding: 1rem;
+                   margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
+  input[type=text] { padding: .45rem; font-size: 1rem; }
+  .path { width: 420px; max-width: 85vw; }
+  button { padding: .45rem .9rem; font-size: 1rem; cursor: pointer; }
+  .primary { background: #1976d2; color: #fff; border: 0; border-radius: 4px; }
+  .danger { background: #e53935; color: #fff; border: 0; border-radius: 4px;
+            padding: .6rem 1.2rem; font-size: 1.05rem; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { background: #e8f5e9; border: 1px solid #4caf50; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
+  .err { background: #ffebee; border: 1px solid #e53935; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
+  .meta { color: #888; font-size: .85rem; }
+  progress { width: 100%; height: 18px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .thumb { text-align: center; font-size: .8rem; }
+  .thumb img { max-height: 160px; max-width: 200px; border-radius: 4px; display: block; }
+  .thumb.keeper img { outline: 4px solid #4caf50; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; color: #fff; font-size: .72rem; }
+  .b-keep { background: #4caf50; } .b-exact { background: #8e24aa; } .b-sim { background: #fb8c00; }
+</style>
+</head>
+<body>
+<h1>photo-sorter</h1>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <b>Buscar duplicados</b></p>
+<p class="hint">Encuentra fotos repetidas: <b>exactas</b> (mismo archivo con otro nombre) y <b>parecidas</b> (la misma imagen reescalada o recomprimida). En cada grupo se marca cuál conviene conservar (mayor resolución). Al resolver, las sobrantes se <b>mueven</b> a una carpeta <code>_duplicados</code> dentro del origen — no se borran, las revisás vos.</p>
+
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+{% if state.status == 'error' %}<div class="err">Error: {{ state.error }}</div>{% endif %}
+
+<div class="panel">
+  <div class="row">
+    <label><b>Carpeta:</b></label>
+    <input class="path" type="text" value="{{ folder }}" readonly
+           placeholder="Elegí la carpeta de origen en la pestaña de rostros">
+    <span class="meta">(se usa la misma carpeta de origen)</span>
+  </div>
+  <form method="post" action="{{ url_for('dupes_scan') }}">
+    <button class="primary" {% if not folder or state.status == 'running' %}disabled{% endif %}>
+      🔎 Buscar duplicados
+    </button>
+    <span class="meta">Con muchas fotos tarda (lee cada imagen una vez).</span>
+  </form>
+  {% if state.status == 'running' %}
+    <p>Revisando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
+    <progress value="{{ state.current }}" max="{{ state.total or 1 }}"></progress>
+    <p class="meta">Esta página se actualiza sola cada 2 segundos.</p>
+  {% endif %}
+</div>
+
+{% if groups is not none %}
+  {% if groups %}
+  <form method="post" action="{{ url_for('dupes_resolve') }}">
+    <div class="panel">
+      <p><b>{{ groups|length }} grupo(s)</b> de duplicados — {{ surplus }} foto(s) sobrantes.
+         Se movería lo tildado; las marcadas "conservar" quedan.</p>
+      <button class="danger" onclick="return confirm('Se moverán las fotos tildadas a la carpeta _duplicados dentro del origen. ¿Continuar?')">
+        🧹 Mover {{ surplus }} sobrante(s) a _duplicados
+      </button>
+    </div>
+    {% for g in groups %}
+    <div class="group">
+      <div class="meta">Grupo de {{ g.files|length }} — {{ 'exactas' if g.exact else 'parecidas' }}</div>
+      <div class="cards">
+        {% for f in g.files %}
+        <div class="thumb {% if f.keeper %}keeper{% endif %}">
+          <a href="{{ url_for('photo', path=f.rel) }}" target="_blank" title="{{ f.rel }}">
+            <img src="{{ url_for('dupe_thumb', idx=f.idx) }}" alt="foto"></a>
+          <div>{{ f.w }}×{{ f.h }} · {{ (f.size/1024)|round|int }} KB</div>
+          {% if f.keeper %}
+            <span class="badge b-keep">conservar</span>
+          {% else %}
+            <span class="badge {{ 'b-exact' if f.exact else 'b-sim' }}">{{ 'exacta' if f.exact else 'parecida' }}</span>
+            <div><label><input type="checkbox" name="rel" value="{{ f.rel }}" checked> mover</label></div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </form>
+  {% else %}
+    <div class="panel">✅ No se encontraron duplicados.</div>
+  {% endif %}
+{% endif %}
+</body>
+</html>
+"""
+
+
 def load_clusters():
     if not CLUSTERS_PATH.is_file():
         return None
     with open(CLUSTERS_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_dupes():
+    if not DUPES_PATH.is_file():
+        return None
+    with open(DUPES_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -376,6 +491,76 @@ def do_organize():
     return redirect(url_for("home", msg=msg))
 
 
+@app.route("/dupes")
+def dupes_page():
+    cfg = load_config()
+    data = load_dupes() if DUPE_STATE["status"] != "running" else None
+    return render_template_string(
+        DUPES_TEMPLATE,
+        folder=cfg.get("photos_dir", ""),
+        state=DUPE_STATE,
+        groups=data["groups"] if data else None,
+        surplus=sum(len(g["files"]) - 1 for g in data["groups"]) if data else 0,
+        message=request.args.get("msg", ""),
+    )
+
+
+def _dupes_worker(folder, threshold, exclude):
+    def progress(current, total, name):
+        DUPE_STATE.update(current=current, total=total, photo=name)
+    try:
+        find_duplicates(folder, threshold=threshold, exclude=exclude, progress=progress)
+        DUPE_STATE["status"] = "done"
+    except Exception as e:
+        DUPE_STATE.update(status="error", error=str(e))
+
+
+@app.route("/dupes/scan", methods=["POST"])
+def dupes_scan():
+    if DUPE_STATE["status"] == "running":
+        return redirect(url_for("dupes_page"))
+    cfg = load_config()
+    folder = Path(cfg.get("photos_dir", ""))
+    if not cfg.get("photos_dir") or not folder.is_dir():
+        return redirect(url_for("dupes_page", msg="Elegí primero la carpeta de origen (pestaña de rostros)."))
+    exclude = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
+    DUPE_STATE.update(status="running", current=0, total=0, photo="", error="")
+    threading.Thread(target=_dupes_worker, args=(folder, DEFAULT_THRESHOLD, exclude), daemon=True).start()
+    return redirect(url_for("dupes_page"))
+
+
+@app.route("/dupes/resolve", methods=["POST"])
+def dupes_resolve():
+    rels = request.form.getlist("rel")
+    if not rels:
+        return redirect(url_for("dupes_page", msg="No marcaste ninguna foto para mover."))
+    moved, dupes_dir, errors = resolve_duplicates(rels)
+
+    # Quitar del índice las fotos movidas (sin re-escanear todo); los grupos
+    # que quedan con una sola foto ya no son duplicados.
+    data = load_dupes()
+    if data:
+        gone = set(rels)
+        new_groups = []
+        for g in data["groups"]:
+            keep = [f for f in g["files"] if f["rel"] not in gone]
+            if len(keep) >= 2:
+                new_groups.append({"files": keep, "exact": all(f["exact"] for f in keep)})
+        data["groups"] = new_groups
+        with open(DUPES_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    msg = f"Listo: {moved} foto(s) movidas a {dupes_dir}."
+    if errors:
+        msg += f" {len(errors)} no se pudieron mover."
+    return redirect(url_for("dupes_page", msg=msg))
+
+
+@app.route("/dupe_thumb/<int:idx>")
+def dupe_thumb(idx):
+    return send_from_directory(DUPES_THUMBS, f"{idx:06d}.jpg")
+
+
 @app.route("/face/<face_id>")
 def face(face_id):
     return send_from_directory(FACES_DIR, f"{face_id}.jpg")
@@ -383,8 +568,16 @@ def face(face_id):
 
 @app.route("/photo/<path:path>")
 def photo(path):
+    # sirve la foto original desde el origen (analisis de rostros o duplicados)
     data = load_clusters()
-    return send_from_directory(Path(data["photos_dir"]), path)
+    base = None
+    if data:
+        base = Path(data["photos_dir"])
+    if base is None or not (base / path).is_file():
+        cfg = load_config()
+        if cfg.get("photos_dir"):
+            base = Path(cfg["photos_dir"])
+    return send_from_directory(base, path)
 
 
 def main():

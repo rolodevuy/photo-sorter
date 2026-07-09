@@ -10,6 +10,8 @@ FACES_DIR = DATA_DIR / "faces"          # miniaturas de rostros recortados
 CLUSTERS_PATH = DATA_DIR / "clusters.json"
 LABELS_PATH = DATA_DIR / "labels.json"
 CONFIG_PATH = DATA_DIR / "config.json"  # carpetas de origen y destino elegidas
+DUPES_PATH = DATA_DIR / "duplicates.json"   # grupos de fotos duplicadas
+DUPES_THUMBS = DATA_DIR / "dupe_thumbs"     # miniaturas para la vista de duplicados
 
 # Extensiones de imagen soportadas.
 # Los GIF se analizan por su primer fotograma (si están animados, se ignora

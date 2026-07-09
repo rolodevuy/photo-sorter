@@ -13,6 +13,15 @@ PhotoSorter.bat  →  se abre http://127.0.0.1:5000
 3. **Etiquetar**: cada grupo aparece con la pregunta "¿quién es esta persona?". Los grupos sin nombre se ignoran.
 4. **Organizar**: copia cada foto a `<destino>\<nombre>\`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
 
+## Buscar duplicados
+
+Además de ordenar por rostro, la web tiene una pestaña **"Buscar duplicados"** que encuentra fotos repetidas en la carpeta de origen:
+
+- **Exactas**: el mismo archivo aunque tenga otro nombre (comparación por contenido, SHA-1).
+- **Parecidas**: la misma imagen reescalada, recomprimida o con marca de agua (hash perceptual *dHash*).
+
+En cada grupo marca cuál conviene **conservar** (la de mayor resolución y peso). Al resolver, las sobrantes que tildes se **mueven** a una carpeta `_duplicados` dentro del origen — no se borran, así las revisás antes de eliminarlas. Por consola: `python -m app.duplicates`.
+
 ## Privacidad
 
 - Todo el reconocimiento corre en tu máquina (dlib/face_recognition, modelos incluidos en la instalación).
