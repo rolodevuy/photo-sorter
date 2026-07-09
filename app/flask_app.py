@@ -74,7 +74,7 @@ TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p class="hint">Tus fotos no se mueven ni se borran: solo se <b>copian</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona. Todo corre en esta máquina.</p>
+<p class="hint">Al organizar, tus fotos se <b>mueven</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona (desaparecen del origen). Las fotos sin nombre quedan donde estaban. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if state.status == 'error' %}<div class="err">Error del análisis: {{ state.error }}</div>{% endif %}
@@ -116,8 +116,9 @@ TEMPLATE = """
     <span id="labeled-count">{{ labeled }}</span> con nombre,
     <span id="pending-count"></span> por revisar.</div>
   <form method="post" action="{{ url_for('do_organize') }}">
-    <button class="organize" id="organize-btn" {% if not cfg.get('output_dir') %}disabled{% endif %}>
-      📁 Organizar: copiar fotos al destino
+    <button class="organize" id="organize-btn" {% if not cfg.get('output_dir') %}disabled{% endif %}
+            onclick="return confirm('Se moverán las fotos con nombre al destino (desaparecen del origen). ¿Continuar?')">
+      📁 Organizar: mover fotos al destino
     </button>
     <button type="button" class="secondary" onclick="toggleList()">Ver/editar todos los grupos</button>
     {% if not cfg.get('output_dir') %}<span class="meta">Elegí antes la carpeta de destino.</span>{% endif %}
@@ -365,11 +366,14 @@ def label():
 @app.route("/organize", methods=["POST"])
 def do_organize():
     try:
-        copied, people, output_dir = organize()
+        moved, people, output_dir, errors = organize()
     except ValueError as e:
         return redirect(url_for("home", msg=str(e)))
-    return redirect(url_for("home", msg=f"Listo: {copied} foto(s) copiadas a {output_dir} "
-                                        f"en {people} carpeta(s) de persona."))
+    msg = (f"Listo: {moved} foto(s) movidas a {output_dir} "
+           f"en {people} carpeta(s) de persona.")
+    if errors:
+        msg += f" {len(errors)} no se pudieron mover y quedaron en el origen."
+    return redirect(url_for("home", msg=msg))
 
 
 @app.route("/face/<face_id>")
