@@ -86,13 +86,18 @@ def cluster_faces(faces, encodings):
     ]
 
 
-def run_analysis(photos_dir, exclude=None, progress=None, log=print):
+def run_analysis(photos_dir, exclude=None, progress=None, log=print, precise=False):
     """Analiza la carpeta de origen completa y escribe clusters.json.
 
     progress: callback opcional progress(actual, total, nombre_foto).
+    precise: si True usa el modelo CNN (detecta caras anguladas/de perfil, pero
+    es MUCHO más lento). Si False usa HOG (rápido, solo caras frontales).
     Devuelve (cantidad_rostros, cantidad_grupos). Lanza ValueError si no hay
     fotos o no se encuentra ningún rostro.
     """
+    model = "cnn" if precise else "hog"
+    # Con HOG, upsamplear 1 vez ayuda a agarrar caras algo más chicas o giradas.
+    upsample = 1
     photos_dir = Path(photos_dir)
     photos = list_photos(photos_dir, exclude)
     if not photos:
@@ -114,7 +119,7 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
             progress(i, len(photos), rel)
         log(f"[analyze] ({i}/{len(photos)}) {rel} ...", end=" ")
         image = face_recognition.load_image_file(photo)
-        locations = face_recognition.face_locations(image)
+        locations = face_recognition.face_locations(image, upsample, model)
         photo_encodings = face_recognition.face_encodings(image, locations)
 
         if not locations:
