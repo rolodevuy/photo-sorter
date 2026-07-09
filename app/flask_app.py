@@ -25,6 +25,7 @@ from app.analyze import run_analysis
 from app.config import load_config, save_config
 from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
 from app.organizer import organize
+from app.renamer import apply_rename, plan_rename
 
 app = Flask(__name__)
 
@@ -77,7 +78,7 @@ TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p><b>Ordenar por rostro</b> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a></p>
+<p><b>Ordenar por rostro</b> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <a href="{{ url_for('rename_page') }}">Renombrar</a></p>
 <p class="hint">Al organizar, tus fotos se <b>mueven</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona (desaparecen del origen). Las fotos sin nombre quedan donde estaban. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
@@ -298,7 +299,7 @@ DUPES_TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <b>Buscar duplicados</b></p>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <b>Buscar duplicados</b> · <a href="{{ url_for('rename_page') }}">Renombrar</a></p>
 <p class="hint">Encuentra fotos repetidas: <b>exactas</b> (mismo archivo con otro nombre) y <b>parecidas</b> (la misma imagen reescalada o recomprimida). En cada grupo se marca cuál conviene conservar (mayor resolución). Al resolver, las sobrantes se <b>mueven</b> a una carpeta <code>_duplicados</code> dentro del origen — no se borran, las revisás vos.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
@@ -359,6 +360,117 @@ DUPES_TEMPLATE = """
     <div class="panel">✅ No se encontraron duplicados.</div>
   {% endif %}
 {% endif %}
+</body>
+</html>
+"""
+
+
+RENAME_TEMPLATE = """
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>photo-sorter — renombrar</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 820px;
+         padding: 0 1rem; background: #f5f5f5; }
+  h1 { margin-bottom: .25rem; }
+  .hint { color: #666; margin-bottom: 1.5rem; }
+  .panel { background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;
+           box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .8rem; flex-wrap: wrap; }
+  .row label { font-weight: 600; }
+  input[type=text] { padding: .45rem; font-size: 1rem; }
+  input.small { width: 70px; }
+  .path { width: 380px; max-width: 80vw; }
+  button { padding: .45rem .9rem; font-size: 1rem; cursor: pointer; }
+  .primary { background: #1976d2; color: #fff; border: 0; border-radius: 4px; }
+  .apply { background: #4caf50; color: #fff; border: 0; border-radius: 4px;
+           padding: .6rem 1.2rem; font-size: 1.05rem; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { background: #e8f5e9; border: 1px solid #4caf50; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
+  .err { background: #ffebee; border: 1px solid #e53935; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
+  .meta { color: #888; font-size: .85rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  td, th { padding: .3rem .5rem; border-bottom: 1px solid #eee; text-align: left; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; }
+  .example { font-size: 1.1rem; margin: .3rem 0; }
+</style>
+</head>
+<body>
+<h1>photo-sorter</h1>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <b>Renombrar</b></p>
+<p class="hint">Renombra en masa las imágenes de una carpeta con el patrón que elijas: una palabra, un separador y un número con la cantidad de dígitos que quieras. Trabaja solo en el primer nivel de la carpeta (no entra en subcarpetas).</p>
+
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <form method="post" action="{{ url_for('rename_preview') }}">
+    <div class="row">
+      <label>Carpeta:</label>
+      <input class="path" type="text" name="folder" value="{{ f.folder }}" placeholder="Carpeta con las fotos a renombrar">
+      <button type="button" onclick="browse('folder')">📂 Elegir…</button>
+    </div>
+    <div class="row">
+      <label>Palabra:</label>
+      <input type="text" name="prefix" value="{{ f.prefix }}" placeholder="ej: vacaciones">
+      <label>Separador:</label>
+      <input class="small" type="text" name="separator" value="{{ f.separator }}" placeholder="_">
+      <label>Dígitos:</label>
+      <input class="small" type="text" name="digits" value="{{ f.digits }}">
+      <label>Empezar en:</label>
+      <input class="small" type="text" name="start" value="{{ f.start }}">
+    </div>
+    <div class="row">
+      <label>Orden:</label>
+      <select name="order">
+        <option value="name" {% if f.order=='name' %}selected{% endif %}>Por nombre</option>
+        <option value="date" {% if f.order=='date' %}selected{% endif %}>Por fecha (más viejas primero)</option>
+      </select>
+      <button class="primary">👁 Vista previa</button>
+    </div>
+    <div class="example">Ejemplo: <code>{{ example }}</code></div>
+  </form>
+</div>
+
+{% if plan is not none %}
+<div class="panel">
+  {% if plan %}
+    <p><b>{{ total }} archivo(s)</b> se renombrarían así (muestro los primeros {{ plan|length }}):</p>
+    <table>
+      <tr><th>Actual</th><th>→</th><th>Nuevo</th></tr>
+      {% for old, new in plan %}
+      <tr><td>{{ old }}</td><td>→</td><td><b>{{ new }}</b></td></tr>
+      {% endfor %}
+    </table>
+    <form method="post" action="{{ url_for('rename_apply') }}" style="margin-top:1rem">
+      <input type="hidden" name="folder" value="{{ f.folder }}">
+      <input type="hidden" name="prefix" value="{{ f.prefix }}">
+      <input type="hidden" name="separator" value="{{ f.separator }}">
+      <input type="hidden" name="digits" value="{{ f.digits }}">
+      <input type="hidden" name="start" value="{{ f.start }}">
+      <input type="hidden" name="order" value="{{ f.order }}">
+      <button class="apply" onclick="return confirm('Se renombrarán {{ total }} archivo(s). ¿Continuar?')">
+        ✏️ Renombrar {{ total }} archivo(s)
+      </button>
+      <span class="meta">Esto cambia los nombres reales en el disco.</span>
+    </form>
+  {% else %}
+    <p>No hay imágenes en esa carpeta.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<script>
+function browse(field) {
+  fetch('{{ url_for('browse') }}')
+    .then(r => r.json())
+    .then(d => { if (d.path) document.getElementsByName(field)[0].value = d.path; });
+}
+</script>
 </body>
 </html>
 """
@@ -559,6 +671,83 @@ def dupes_resolve():
 @app.route("/dupe_thumb/<int:idx>")
 def dupe_thumb(idx):
     return send_from_directory(DUPES_THUMBS, f"{idx:06d}.jpg")
+
+
+PREVIEW_LIMIT = 30
+
+
+def _rename_form(overrides=None):
+    cfg = load_config()
+    form = {
+        "folder": cfg.get("photos_dir", ""),
+        "prefix": "foto",
+        "separator": "_",
+        "digits": "4",
+        "start": "1",
+        "order": "name",
+    }
+    if overrides:
+        form.update({k: v for k, v in overrides.items() if v is not None})
+    return form
+
+
+def _rename_example(form):
+    try:
+        digits = max(1, min(int(form["digits"]), 12))
+    except (ValueError, KeyError):
+        digits = 4
+    try:
+        start = int(form["start"])
+    except (ValueError, KeyError):
+        start = 1
+    prefix = "".join(c for c in form["prefix"] if c not in '<>:"/\\|?*')
+    return f"{prefix}{form['separator']}{str(start).zfill(digits)}.jpg"
+
+
+@app.route("/rename")
+def rename_page():
+    form = _rename_form()
+    return render_template_string(
+        RENAME_TEMPLATE, f=form, example=_rename_example(form),
+        plan=None, total=0, message=request.args.get("msg", ""), error="")
+
+
+@app.route("/rename/preview", methods=["POST"])
+def rename_preview():
+    form = _rename_form(request.form.to_dict())
+    error = ""
+    plan_full = []
+    folder = Path(form["folder"])
+    if not form["folder"] or not folder.is_dir():
+        error = "La carpeta no existe. Elegila de nuevo."
+    elif not form["prefix"].strip():
+        error = "Escribí la palabra (prefijo) para los nombres."
+    else:
+        plan_full = plan_rename(folder, form["prefix"], form["digits"],
+                                separator=form["separator"],
+                                start=int(form["start"]) if form["start"].lstrip("-").isdigit() else 1,
+                                order=form["order"])
+    return render_template_string(
+        RENAME_TEMPLATE, f=form, example=_rename_example(form),
+        plan=(plan_full[:PREVIEW_LIMIT] if not error else None),
+        total=len(plan_full), message="", error=error)
+
+
+@app.route("/rename/apply", methods=["POST"])
+def rename_apply():
+    form = _rename_form(request.form.to_dict())
+    folder = Path(form["folder"])
+    if not form["folder"] or not folder.is_dir():
+        return redirect(url_for("rename_page", msg="La carpeta no existe."))
+    renamed, errors = apply_rename(
+        folder, form["prefix"], form["digits"],
+        separator=form["separator"],
+        start=int(form["start"]) if form["start"].lstrip("-").isdigit() else 1,
+        order=form["order"])
+    msg = f"Listo: {renamed} archivo(s) renombrados."
+    if errors:
+        msg += f" {len(errors)} con problemas (ej: {errors[0][0]})."
+    return redirect(url_for("rename_page", msg=msg))
 
 
 @app.route("/face/<face_id>")

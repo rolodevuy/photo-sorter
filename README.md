@@ -22,6 +22,16 @@ Además de ordenar por rostro, la web tiene una pestaña **"Buscar duplicados"**
 
 En cada grupo marca cuál conviene **conservar** (la de mayor resolución y peso). Al resolver, las sobrantes que tildes se **mueven** a una carpeta `_duplicados` dentro del origen — no se borran, así las revisás antes de eliminarlas. Por consola: `python -m app.duplicates`.
 
+## Renombrar (nomenclador)
+
+La pestaña **"Renombrar"** cambia en masa los nombres de las imágenes de una carpeta con el patrón que elijas: **palabra + separador + número** con la cantidad de dígitos que quieras (ej. `vacaciones_0001.jpg`, `IMG001.jpg`). Podés elegir el número inicial y ordenar por nombre o por fecha. Muestra una **vista previa** antes de aplicar, y renombra en dos pasos para no pisar archivos aunque el patrón nuevo coincida con nombres existentes. Trabaja solo en el primer nivel de la carpeta.
+
+## Formatos de imagen soportados
+
+`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif` (los GIF, por su primer fotograma).
+
+> **Nota sobre detección de rostros:** el modo por defecto es rápido (HOG) y puede no detectar caras muy inclinadas, de perfil o en collages/montajes. Para esos casos hay modelos más precisos pero mucho más lentos.
+
 ## Privacidad
 
 - Todo el reconocimiento corre en tu máquina (dlib/face_recognition, modelos incluidos en la instalación).
