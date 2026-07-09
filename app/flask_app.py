@@ -4,8 +4,8 @@ Todo se maneja desde acá:
 1. Elegir carpeta de ORIGEN (donde están tus fotos; no se tocan) y carpeta de
    DESTINO (donde se crean las carpetas por persona).
 2. Analizar: detecta y agrupa los rostros (con barra de progreso).
-3. Ponerle nombre a cada grupo ("¿quién es esta persona?").
-4. Organizar: copia cada foto a <destino>/<nombre>/.
+3. Ponerle nombre a cada grupo, de a uno por vez ("¿quién es esta persona?").
+4. Organizar: copia cada foto a <destino>/<nombre>/ como <nombre>_0000.jpg.
 
 Solo escucha en 127.0.0.1: no es accesible desde afuera ni se conecta a nada.
 
@@ -38,20 +38,21 @@ TEMPLATE = """
 <title>photo-sorter</title>
 {% if state.status == 'running' %}<meta http-equiv="refresh" content="2">{% endif %}
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; }
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 860px;
+         padding: 0 1rem; background: #f5f5f5; }
   h1 { margin-bottom: .25rem; }
   .hint { color: #666; margin-bottom: 1.5rem; }
-  .panel, .cluster { background: #fff; border-radius: 8px; padding: 1rem;
-                     margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-  .cluster.labeled { border-left: 6px solid #4caf50; }
-  .faces { display: flex; flex-wrap: wrap; gap: 6px; margin: .5rem 0; }
-  .faces a img { height: 90px; border-radius: 4px; display: block; }
+  .panel, .card { background: #fff; border-radius: 8px; padding: 1rem;
+                  margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .faces { display: flex; flex-wrap: wrap; gap: 6px; margin: .75rem 0; }
+  .faces a img { height: 110px; border-radius: 4px; display: block; }
   .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
   .row label { min-width: 70px; font-weight: 600; }
-  input[type=text] { padding: .4rem; font-size: 1rem; }
-  .path { width: 420px; max-width: 90vw; }
-  button { padding: .4rem .9rem; font-size: 1rem; cursor: pointer; }
+  input[type=text] { padding: .45rem; font-size: 1.05rem; }
+  .path { width: 420px; max-width: 85vw; }
+  button { padding: .45rem .9rem; font-size: 1rem; cursor: pointer; }
   .primary { background: #1976d2; color: #fff; border: 0; border-radius: 4px; }
+  .secondary { background: #eee; border: 1px solid #ccc; border-radius: 4px; }
   .organize { background: #4caf50; color: #fff; border: 0; border-radius: 4px;
               padding: .6rem 1.2rem; font-size: 1.05rem; }
   button:disabled { opacity: .5; cursor: default; }
@@ -61,17 +62,25 @@ TEMPLATE = """
          border-radius: 6px; margin-bottom: 1rem; }
   .meta { color: #888; font-size: .85rem; }
   progress { width: 100%; height: 18px; }
+  #wizard-card { transition: opacity .25s, transform .25s; }
+  #wizard-card.fade { opacity: 0; transform: translateY(-10px); }
+  .counter { font-size: 1.1rem; font-weight: 600; margin-bottom: .5rem; }
+  .done-big { font-size: 1.3rem; margin: .5rem 0; }
+  #list-view .card.labeled { border-left: 6px solid #4caf50; }
+  .saved-tick { color: #2e7d32; font-weight: 600; margin-left: .5rem;
+                opacity: 0; transition: opacity .3s; }
+  .saved-tick.show { opacity: 1; }
 </style>
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p class="hint">Tus fotos no se mueven ni se borran: solo se <b>copian</b> al destino, separadas por persona. Todo corre en esta máquina.</p>
+<p class="hint">Tus fotos no se mueven ni se borran: solo se <b>copian</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if state.status == 'error' %}<div class="err">Error del análisis: {{ state.error }}</div>{% endif %}
 
 <div class="panel">
-  <form method="post" action="{{ url_for('settings') }}" id="cfg">
+  <form method="post" action="{{ url_for('settings') }}">
     <div class="row">
       <label>Origen:</label>
       <input class="path" type="text" name="photos_dir" value="{{ cfg.get('photos_dir','') }}"
@@ -101,40 +110,137 @@ TEMPLATE = """
   {% endif %}
 </div>
 
-{% if clusters %}
+{% if groups %}
 <div class="panel">
-  <p><b>{{ clusters|length }} grupo(s) de rostros</b> — {{ labeled }} con nombre.
-  Escribí quién es cada persona y guardá. Los grupos sin nombre se ignoran al organizar.</p>
+  <div class="counter">Se encontraron <b>{{ groups|length }}</b> grupo(s) de rostros —
+    <span id="labeled-count">{{ labeled }}</span> con nombre,
+    <span id="pending-count"></span> por revisar.</div>
   <form method="post" action="{{ url_for('do_organize') }}">
-    <button class="organize" {% if labeled == 0 or not cfg.get('output_dir') %}disabled{% endif %}>
-      📁 Organizar: copiar fotos al destino ({{ labeled }} persona(s) con nombre)
+    <button class="organize" id="organize-btn" {% if not cfg.get('output_dir') %}disabled{% endif %}>
+      📁 Organizar: copiar fotos al destino
     </button>
+    <button type="button" class="secondary" onclick="toggleList()">Ver/editar todos los grupos</button>
     {% if not cfg.get('output_dir') %}<span class="meta">Elegí antes la carpeta de destino.</span>{% endif %}
   </form>
 </div>
 
-{% for c in clusters %}
-<div class="cluster {% if c.name %}labeled{% endif %}">
-  <div class="meta">Grupo {{ c.id }} — {{ c.faces|length }} rostro(s) en {{ c.photos }} foto(s)</div>
-  <div class="faces">
-    {% for f in c.preview %}
-    <a href="{{ url_for('photo', path=f.photo) }}" target="_blank" title="{{ f.photo }}">
-      <img src="{{ url_for('face', face_id=f.id) }}" alt="rostro">
-    </a>
-    {% endfor %}
-    {% if c.faces|length > c.preview|length %}
-      <span class="meta">… y {{ c.faces|length - c.preview|length }} más</span>
-    {% endif %}
-  </div>
-  <form method="post" action="{{ url_for('label') }}">
-    <input type="hidden" name="cluster_id" value="{{ c.id }}">
-    <label>¿Quién es esta persona?
-      <input type="text" name="name" value="{{ c.name }}" placeholder="ej: mamá, Juan...">
-    </label>
-    <button>Guardar</button>
-  </form>
-</div>
-{% endfor %}
+<div class="card" id="wizard-card"></div>
+
+<div id="list-view" style="display:none"></div>
+
+<script>
+const GROUPS = {{ groups|tojson }};
+const FACE_URL = "{{ url_for('face', face_id='FID') }}";
+const PHOTO_URL = "{{ url_for('photo', path='RELPATH') }}";
+const MAX_PREVIEW = 12;
+
+let queue = GROUPS.filter(g => !g.name).map(g => g.id);   // grupos sin nombre, en orden
+let pos = 0;
+
+const byId = {};
+GROUPS.forEach(g => byId[g.id] = g);
+
+function faceImg(f) {
+  return '<a href="' + PHOTO_URL.replace('RELPATH', encodeURIComponent(f.photo)) +
+         '" target="_blank" title="' + f.photo + '"><img src="' +
+         FACE_URL.replace('FID', f.id) + '" alt="rostro"></a>';
+}
+
+function updateCounts() {
+  const labeled = GROUPS.filter(g => g.name).length;
+  document.getElementById('labeled-count').textContent = labeled;
+  document.getElementById('pending-count').textContent = (GROUPS.length - labeled);
+}
+
+function renderWizard() {
+  const card = document.getElementById('wizard-card');
+  if (pos >= queue.length) {
+    const labeled = GROUPS.filter(g => g.name).length;
+    card.innerHTML = '<div class="done-big">✅ No quedan grupos por revisar.</div>' +
+      '<p>' + labeled + ' grupo(s) con nombre. Tocá <b>"📁 Organizar"</b> arriba para copiar las fotos al destino, ' +
+      'o "Ver/editar todos los grupos" para corregir algo.</p>';
+    return;
+  }
+  const g = byId[queue[pos]];
+  const extra = g.faces.length > MAX_PREVIEW ?
+    '<span class="meta">… y ' + (g.faces.length - MAX_PREVIEW) + ' más</span>' : '';
+  card.innerHTML =
+    '<div class="counter">Grupo ' + (pos + 1) + ' de ' + queue.length + ' por revisar</div>' +
+    '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa</div>' +
+    '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(faceImg).join('') + extra + '</div>' +
+    '<div class="row">' +
+      '<label>¿Quién es?</label>' +
+      '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." autofocus>' +
+      '<button class="primary" onclick="wizardSave()">Guardar</button>' +
+      '<button class="secondary" onclick="wizardNext()">Saltear</button>' +
+    '</div>';
+  const input = document.getElementById('wizard-name');
+  input.focus();
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') wizardSave(); });
+}
+
+function saveLabel(clusterId, name) {
+  return fetch("{{ url_for('label') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'cluster_id=' + encodeURIComponent(clusterId) + '&name=' + encodeURIComponent(name)
+  });
+}
+
+function wizardSave() {
+  const name = document.getElementById('wizard-name').value.trim();
+  if (!name) { wizardNext(); return; }
+  const g = byId[queue[pos]];
+  saveLabel(g.id, name).then(() => {
+    g.name = name;
+    updateCounts();
+    wizardNext();
+  });
+}
+
+function wizardNext() {
+  const card = document.getElementById('wizard-card');
+  card.classList.add('fade');
+  setTimeout(() => { pos++; renderWizard(); card.classList.remove('fade'); }, 250);
+}
+
+function toggleList() {
+  const lv = document.getElementById('list-view');
+  if (lv.style.display === 'none') { renderList(); lv.style.display = 'block'; }
+  else lv.style.display = 'none';
+}
+
+function renderList() {
+  const lv = document.getElementById('list-view');
+  lv.innerHTML = GROUPS.map(g =>
+    '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
+      '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)</div>' +
+      '<div class="faces">' + g.faces.slice(0, 8).map(faceImg).join('') + '</div>' +
+      '<div class="row"><label>¿Quién es?</label>' +
+        '<input type="text" id="ln-' + g.id + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '">' +
+        '<button class="primary" onclick="listSave(' + g.id + ')">Guardar</button>' +
+        '<span class="saved-tick" id="lt-' + g.id + '">✓ guardado</span>' +
+      '</div>' +
+    '</div>'
+  ).join('');
+}
+
+function listSave(id) {
+  const name = document.getElementById('ln-' + id).value.trim();
+  saveLabel(id, name).then(() => {
+    byId[id].name = name;
+    updateCounts();
+    const card = document.getElementById('lg-' + id);
+    card.classList.toggle('labeled', !!name);
+    const tick = document.getElementById('lt-' + id);
+    tick.classList.add('show');
+    setTimeout(() => tick.classList.remove('show'), 1500);
+  });
+}
+
+updateCounts();
+renderWizard();
+</script>
 {% endif %}
 
 <script>
@@ -147,8 +253,6 @@ function browse(field) {
 </body>
 </html>
 """
-
-MAX_PREVIEW = 8
 
 
 def load_clusters():
@@ -176,16 +280,15 @@ def home():
     data = load_clusters() if STATE["status"] != "running" else None
     labels = load_labels()
 
-    clusters = []
+    groups = []
     if data:
         faces = data["faces"]
         for c in data["clusters"]:
             members = c["faces"]
-            clusters.append({
+            groups.append({
                 "id": c["id"],
-                "faces": members,
+                "faces": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members],
                 "photos": len({faces[fid]["photo"] for fid in members}),
-                "preview": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members[:MAX_PREVIEW]],
                 "name": labels.get(str(c["id"]), ""),
             })
 
@@ -193,8 +296,8 @@ def home():
         TEMPLATE,
         cfg=cfg,
         state=STATE,
-        clusters=clusters,
-        labeled=sum(1 for c in clusters if c["name"]),
+        groups=groups,
+        labeled=sum(1 for g in groups if g["name"]),
         message=request.args.get("msg", ""),
     )
 
@@ -256,7 +359,7 @@ def label():
     else:
         labels.pop(cluster_id, None)
     save_labels(labels)
-    return redirect(url_for("home"))
+    return {"ok": True, "name": name}
 
 
 @app.route("/organize", methods=["POST"])

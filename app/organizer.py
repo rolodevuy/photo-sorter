@@ -16,6 +16,16 @@ from pathlib import Path
 from app import CLUSTERS_PATH, LABELS_PATH
 from app.config import load_config
 
+FILE_ATTRIBUTE_HIDDEN = 0x2
+
+
+def _unhide(path):
+    """Saca el atributo 'oculto' de Windows (la copia lo hereda del original)."""
+    import ctypes
+    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+    if attrs != -1 and attrs & FILE_ATTRIBUTE_HIDDEN:
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs & ~FILE_ATTRIBUTE_HIDDEN)
+
 
 def organize():
     """Copia las fotos de los grupos con nombre. Devuelve (copias, personas, destino)."""
@@ -47,13 +57,16 @@ def organize():
         dest_dir.mkdir(parents=True, exist_ok=True)
         people.add(safe_name)
 
+        # Nombres de salida: <nombre>_0000.jpg, <nombre>_0001.jpg, ...
+        # El orden es determinístico (rutas ordenadas): re-organizar con el
+        # mismo análisis genera los mismos nombres y no duplica nada.
         photos = {faces[fid]["photo"] for fid in cluster["faces"]}
-        for rel in sorted(photos):
+        for i, rel in enumerate(sorted(photos)):
             src = photos_dir / rel
-            # aplanar subcarpetas: vacaciones/img.jpg -> vacaciones_img.jpg
-            dest = dest_dir / rel.replace("/", "_")
+            dest = dest_dir / f"{safe_name}_{i:04d}{Path(rel).suffix.lower()}"
             if src.is_file() and not dest.is_file():
                 shutil.copy2(src, dest)
+                _unhide(dest)
                 copied += 1
 
     return copied, len(people), output_dir
