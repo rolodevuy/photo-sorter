@@ -1,12 +1,17 @@
 # photo-sorter
 
-Organizador de fotos por reconocimiento facial, **100% local**. No necesita entrenamiento previo ni conexión a internet: detecta todos los rostros de tus fotos, agrupa automáticamente los que son de la misma persona, te pregunta en una web local "¿quién es esta persona?" y guarda las fotos en carpetas por nombre.
+Organizador de fotos por reconocimiento facial, **100% local**. Elegís una carpeta de **origen** (donde están tus fotos — no se mueven ni se modifican) y una de **destino**; el sistema detecta todos los rostros, agrupa automáticamente los de la misma persona, te pregunta en una web local "¿quién es esta persona?" y copia las fotos al destino en carpetas por nombre.
 
-## Flujo
+## Flujo (todo desde la web)
 
-1. **Analizar** (`python -m app.analyze`): recorre `data/photos/`, detecta rostros, calcula sus huellas faciales y agrupa las parecidas (clustering, sin entrenamiento). Genera miniaturas y `data/clusters.json`.
-2. **Etiquetar** (`python -m app.flask_app`): abre una web en `http://127.0.0.1:5000` que muestra cada grupo de rostros y pregunta quién es. Los nombres quedan en `data/labels.json`.
-3. **Organizar** (botón en la web, o `python -m app.organizer`): copia cada foto a `data/sorted/<nombre>/`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
+```
+PhotoSorter.bat  →  se abre http://127.0.0.1:5000
+```
+
+1. **Elegir carpetas**: origen (tus fotos) y destino (donde se crean las carpetas por persona), con el selector de carpetas de Windows.
+2. **Analizar**: detecta rostros y agrupa las caras iguales (clustering, sin entrenamiento). Muestra barra de progreso.
+3. **Etiquetar**: cada grupo aparece con la pregunta "¿quién es esta persona?". Los grupos sin nombre se ignoran.
+4. **Organizar**: copia cada foto a `<destino>\<nombre>\`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
 
 ## Privacidad
 
@@ -14,17 +19,14 @@ Organizador de fotos por reconocimiento facial, **100% local**. No necesita entr
 - La web solo escucha en `127.0.0.1`: nadie más en la red puede acceder.
 - Ninguna foto ni dato sale de tu computadora. El código no hace ninguna conexión a internet.
 
-## Estructura de datos
+## Archivos internos (carpeta `data/`)
 
 ```
 data/
-├── photos/            # ENTRADA: tus fotos (se aceptan subcarpetas)
-├── faces/             # miniaturas de rostros (generado)
-├── clusters.json      # grupos de rostros (generado)
-├── labels.json        # nombres que pusiste en la web (generado)
-└── sorted/            # SALIDA: carpetas por persona
-    ├── mamá/
-    └── juan/
+├── config.json        # carpetas de origen y destino elegidas
+├── faces/             # miniaturas de rostros (para la web)
+├── clusters.json      # grupos de rostros del último análisis
+└── labels.json        # nombres puestos en la web
 ```
 
 ## Ajustes

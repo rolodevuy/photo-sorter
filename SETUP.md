@@ -1,68 +1,37 @@
 # Guía de instalación y uso
 
-## 1. Crear el entorno
+## 1. Instalar (una sola vez)
+
+Doble clic en **`instalar.bat`**. Crea el entorno e instala las dependencias (necesita internet solo esta vez; puede tardar unos minutos).
+
+<details>
+<summary>Instalación manual (equivalente)</summary>
 
 ```bash
 cd photo-sorter
 python -m venv venv
-venv\Scripts\activate
+venv\Scripts\pip install dlib-bin
+venv\Scripts\pip install --no-deps face-recognition face-recognition-models
+venv\Scripts\pip install numpy scikit-learn Pillow Flask click "setuptools<81"
 ```
 
-## 2. Instalar dependencias (Windows)
+Notas:
+- `dlib-bin` es el wheel precompilado de dlib para Windows (evita compilar con CMake/Visual Studio).
+- `setuptools<81` es necesario porque `face_recognition_models` usa `pkg_resources`, eliminado en setuptools 81+.
+</details>
 
-`face-recognition` depende de **dlib**, que necesita compilarse. Hay dos caminos:
+## 2. Usar
 
-**Opción A (recomendada): wheel precompilado**
+Doble clic en **`PhotoSorter.bat`** (o en el acceso directo "Photo Sorter"). Se abre la web en `http://127.0.0.1:5000` y ahí:
 
-```bash
-pip install dlib-bin
-pip install face-recognition --no-deps
-pip install face-recognition-models numpy scikit-learn Pillow Flask
-```
+1. **Origen**: elegí la carpeta donde están tus fotos (se leen también las subcarpetas; no se mueven ni modifican).
+2. **Destino**: elegí dónde querés que se creen las carpetas por persona.
+3. **Guardar carpetas** → **🔍 Analizar fotos del origen**. Con muchas fotos tarda (~1–3 s por foto); hay barra de progreso.
+4. Cuando termina, aparece cada grupo de rostros: escribí **quién es cada persona** y guardá. Clic en una miniatura abre la foto original. Si una misma persona quedó en dos grupos, ponéles el mismo nombre: se unifican al organizar.
+5. **📁 Organizar** → cada foto se **copia** a `<destino>\<nombre>\`. Los originales quedan intactos.
 
-**Opción B: compilar dlib**
+Para cerrar el programa: cerrá la ventana negra.
 
-Instalar primero [CMake](https://cmake.org/download/) y las *Build Tools for Visual Studio* (carga de trabajo "Desarrollo para el escritorio con C++"), y después:
+## Si agregás fotos nuevas al origen
 
-```bash
-pip install -r requirements.txt
-```
-
-> Los modelos de reconocimiento se instalan junto con las librerías. Después de este paso **no se necesita internet para nada**.
-
-## 3. Poner las fotos
-
-Copiá las fotos que querés clasificar en `data/photos/` (se aceptan subcarpetas):
-
-```
-data/photos/IMG_001.jpg
-data/photos/vacaciones/IMG_045.jpg
-...
-```
-
-## 4. Analizar
-
-```bash
-python -m app.analyze
-```
-
-Detecta todos los rostros y arma los grupos. Con muchas fotos puede tardar (aprox. 1–3 segundos por foto en CPU).
-
-## 5. Ponerle nombre a cada persona
-
-```bash
-python -m app.flask_app
-```
-
-Abrí **http://127.0.0.1:5000** en el navegador. Vas a ver cada grupo de rostros con la pregunta "¿quién es esta persona?". Escribí el nombre y tocá Guardar. Los grupos que no te interesan los podés dejar sin nombre.
-
-- Clic en una miniatura → abre la foto original completa.
-- Si una misma persona aparece en dos grupos, ponéles el mismo nombre: se unifican al organizar.
-
-## 6. Organizar
-
-En la misma web, tocá el botón **"Organizar fotos"** (o corré `python -m app.organizer`). Cada foto se **copia** a `data/sorted/<nombre>/`. Los originales de `data/photos/` quedan intactos.
-
-## Si agregás fotos nuevas
-
-Volvé a correr `python -m app.analyze` y después la web. (Por ahora el análisis rehace todo desde cero; los nombres guardados se pierden al re-analizar — mejora pendiente.)
+Volvé a tocar "Analizar". El análisis rehace todo desde cero, así que los nombres puestos antes se pierden y hay que ponerlos de nuevo (mejora pendiente: análisis incremental que recuerde a las personas).

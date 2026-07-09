@@ -1,27 +1,30 @@
-"""Analyze: detecta rostros en todas las fotos y agrupa los parecidos.
+"""Analyze: detecta rostros en la carpeta de origen y agrupa los parecidos.
 
-No necesita entrenamiento previo: recorre data/photos/, calcula un encoding
-por cada rostro encontrado y agrupa los que pertenecen a la misma persona
-(clustering con DBSCAN). Guarda:
+No necesita entrenamiento previo: recorre la carpeta elegida (las fotos NO se
+mueven ni se copian), calcula un encoding por cada rostro encontrado y agrupa
+los que pertenecen a la misma persona (clustering con DBSCAN). Guarda:
 
 - data/faces/<face_id>.jpg   miniatura de cada rostro (para la web)
-- data/clusters.json         rostros + grupos de la misma persona
+- data/clusters.json         rostros + grupos + carpeta de origen usada
 
 Todo corre local, sin ninguna conexión a internet.
 
-Uso:
-    python -m app.analyze
+Uso normal: desde la web (python -m app.flask_app).
+También por consola (usa las carpetas guardadas): python -m app.analyze
 """
 
 import json
+import shutil
 import sys
+from pathlib import Path
 
 import face_recognition
 import numpy as np
 from PIL import Image
 from sklearn.cluster import DBSCAN
 
-from app import CLUSTERS_PATH, FACES_DIR, IMAGE_EXTENSIONS, PHOTOS_DIR
+from app import CLUSTERS_PATH, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
+from app.config import load_config
 
 # Distancia máxima entre encodings para considerarlos la misma persona.
 # Más bajo = grupos más estrictos (una persona puede partirse en varios grupos).
@@ -32,10 +35,15 @@ THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
 
 
-def iter_photos():
-    for p in sorted(PHOTOS_DIR.rglob("*")):
+def list_photos(photos_dir, exclude=None):
+    """Lista las imágenes del origen, salteando la carpeta de destino."""
+    photos = []
+    for p in sorted(photos_dir.rglob("*")):
+        if exclude and p.is_relative_to(exclude):
+            continue
         if p.suffix.lower() in IMAGE_EXTENSIONS:
-            yield p
+            photos.append(p)
+    return photos
 
 
 def save_thumbnail(image, box, face_id):
@@ -51,36 +59,6 @@ def save_thumbnail(image, box, face_id):
     thumb = Image.fromarray(crop)
     thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
     thumb.save(FACES_DIR / f"{face_id}.jpg", quality=85)
-
-
-def scan_faces():
-    """Detecta todos los rostros. Devuelve (faces, encodings, fotos_sin_rostro)."""
-    faces = {}      # face_id -> {"photo": ruta relativa, "box": [t, r, b, l]}
-    encodings = []
-    no_faces = []
-    counter = 0
-
-    for photo in iter_photos():
-        rel = photo.relative_to(PHOTOS_DIR).as_posix()
-        print(f"[analyze] {rel} ...", end=" ")
-        image = face_recognition.load_image_file(photo)
-        locations = face_recognition.face_locations(image)
-        photo_encodings = face_recognition.face_encodings(image, locations)
-
-        if not locations:
-            print("sin rostros")
-            no_faces.append(rel)
-            continue
-        print(f"{len(locations)} rostro(s)")
-
-        for box, encoding in zip(locations, photo_encodings):
-            face_id = f"{counter:05d}"
-            counter += 1
-            faces[face_id] = {"photo": rel, "box": list(box)}
-            encodings.append(encoding)
-            save_thumbnail(image, box, face_id)
-
-    return faces, encodings, no_faces
 
 
 def cluster_faces(faces, encodings):
@@ -100,40 +78,101 @@ def cluster_faces(faces, encodings):
             groups.setdefault(int(label), []).append(face_id)
 
     # Clusters grandes primero, singles al final
-    clusters = [
+    return [
         {"id": i, "faces": members}
         for i, members in enumerate(
             sorted(groups.values(), key=len, reverse=True) + [[s] for s in singles]
         )
     ]
-    return clusters
 
 
-def main():
-    if not PHOTOS_DIR.is_dir():
-        print(f"[analyze] No existe {PHOTOS_DIR}.")
-        print("[analyze] Creá data/photos/ y poné ahí las fotos a clasificar.")
-        sys.exit(1)
+def run_analysis(photos_dir, exclude=None, progress=None, log=print):
+    """Analiza la carpeta de origen completa y escribe clusters.json.
 
+    progress: callback opcional progress(actual, total, nombre_foto).
+    Devuelve (cantidad_rostros, cantidad_grupos). Lanza ValueError si no hay
+    fotos o no se encuentra ningún rostro.
+    """
+    photos_dir = Path(photos_dir)
+    photos = list_photos(photos_dir, exclude)
+    if not photos:
+        raise ValueError(f"No hay imágenes en {photos_dir}")
+
+    # Miniaturas de corridas anteriores fuera; el análisis rehace todo.
+    if FACES_DIR.is_dir():
+        shutil.rmtree(FACES_DIR)
     FACES_DIR.mkdir(parents=True, exist_ok=True)
 
-    faces, encodings, no_faces = scan_faces()
+    faces = {}      # face_id -> {"photo": ruta relativa al origen, "box": [t,r,b,l]}
+    encodings = []
+    no_faces = []
+    counter = 0
+
+    for i, photo in enumerate(photos, 1):
+        rel = photo.relative_to(photos_dir).as_posix()
+        if progress:
+            progress(i, len(photos), rel)
+        log(f"[analyze] ({i}/{len(photos)}) {rel} ...", end=" ")
+        image = face_recognition.load_image_file(photo)
+        locations = face_recognition.face_locations(image)
+        photo_encodings = face_recognition.face_encodings(image, locations)
+
+        if not locations:
+            log("sin rostros")
+            no_faces.append(rel)
+            continue
+        log(f"{len(locations)} rostro(s)")
+
+        for box, encoding in zip(locations, photo_encodings):
+            face_id = f"{counter:05d}"
+            counter += 1
+            faces[face_id] = {"photo": rel, "box": list(box)}
+            encodings.append(encoding)
+            save_thumbnail(image, box, face_id)
+
     if not faces:
-        print("[analyze] No se encontró ningún rostro en las fotos.")
-        sys.exit(1)
+        raise ValueError("No se encontró ningún rostro en las fotos.")
 
     clusters = cluster_faces(faces, encodings)
 
     with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
         json.dump(
-            {"faces": faces, "clusters": clusters, "no_faces": no_faces},
+            {
+                "photos_dir": str(photos_dir),
+                "faces": faces,
+                "clusters": clusters,
+                "no_faces": no_faces,
+            },
             f, ensure_ascii=False, indent=2,
         )
 
-    multi = sum(1 for c in clusters if len(c["faces"]) > 1)
-    print(f"[analyze] Listo: {len(faces)} rostro(s) en {len(clusters)} grupo(s) "
-          f"({multi} con más de un rostro).")
-    print(f"[analyze] Ahora corré la web para ponerles nombre: python -m app.flask_app")
+    # Los nombres viejos corresponden a grupos que ya no existen.
+    LABELS_PATH.unlink(missing_ok=True)
+
+    return len(faces), len(clusters)
+
+
+def main():
+    cfg = load_config()
+    if not cfg.get("photos_dir"):
+        print("[analyze] Todavía no elegiste la carpeta de origen.")
+        print("[analyze] Corré la web y elegila ahí: python -m app.flask_app")
+        sys.exit(1)
+
+    photos_dir = Path(cfg["photos_dir"])
+    if not photos_dir.is_dir():
+        print(f"[analyze] La carpeta de origen no existe: {photos_dir}")
+        sys.exit(1)
+
+    exclude = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
+    try:
+        n_faces, n_clusters = run_analysis(photos_dir, exclude=exclude)
+    except ValueError as e:
+        print(f"[analyze] {e}")
+        sys.exit(1)
+
+    print(f"[analyze] Listo: {n_faces} rostro(s) en {n_clusters} grupo(s).")
+    print("[analyze] Ahora corré la web para ponerles nombre: python -m app.flask_app")
 
 
 if __name__ == "__main__":

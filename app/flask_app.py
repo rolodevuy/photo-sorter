@@ -1,26 +1,34 @@
-"""Interfaz web local para ponerle nombre a cada grupo de rostros.
+"""Interfaz web local de photo-sorter.
 
-Muestra los grupos que armó app.analyze y pregunta "¿quién es esta persona?".
-Con los nombres guardados, el botón "Organizar fotos" copia cada foto a
-data/sorted/<nombre>/.
+Todo se maneja desde acá:
+1. Elegir carpeta de ORIGEN (donde están tus fotos; no se tocan) y carpeta de
+   DESTINO (donde se crean las carpetas por persona).
+2. Analizar: detecta y agrupa los rostros (con barra de progreso).
+3. Ponerle nombre a cada grupo ("¿quién es esta persona?").
+4. Organizar: copia cada foto a <destino>/<nombre>/.
 
 Solo escucha en 127.0.0.1: no es accesible desde afuera ni se conecta a nada.
 
 Uso:
     python -m app.flask_app
-Después abrí http://127.0.0.1:5000 en el navegador.
 """
 
 import json
 import threading
 import webbrowser
+from pathlib import Path
 
 from flask import Flask, redirect, render_template_string, request, send_from_directory, url_for
 
-from app import CLUSTERS_PATH, FACES_DIR, LABELS_PATH, PHOTOS_DIR
+from app import CLUSTERS_PATH, FACES_DIR, LABELS_PATH
+from app.analyze import run_analysis
+from app.config import load_config, save_config
 from app.organizer import organize
 
 app = Flask(__name__)
+
+# Estado del análisis en curso (corre en un hilo aparte)
+STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 
 TEMPLATE = """
 <!doctype html>
@@ -28,37 +36,82 @@ TEMPLATE = """
 <head>
 <meta charset="utf-8">
 <title>photo-sorter</title>
+{% if state.status == 'running' %}<meta http-equiv="refresh" content="2">{% endif %}
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #f5f5f5; }
   h1 { margin-bottom: .25rem; }
   .hint { color: #666; margin-bottom: 1.5rem; }
-  .cluster { background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;
-             box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .panel, .cluster { background: #fff; border-radius: 8px; padding: 1rem;
+                     margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   .cluster.labeled { border-left: 6px solid #4caf50; }
   .faces { display: flex; flex-wrap: wrap; gap: 6px; margin: .5rem 0; }
   .faces a img { height: 90px; border-radius: 4px; display: block; }
-  input[type=text] { padding: .4rem; font-size: 1rem; width: 220px; }
+  .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
+  .row label { min-width: 70px; font-weight: 600; }
+  input[type=text] { padding: .4rem; font-size: 1rem; }
+  .path { width: 420px; max-width: 90vw; }
   button { padding: .4rem .9rem; font-size: 1rem; cursor: pointer; }
+  .primary { background: #1976d2; color: #fff; border: 0; border-radius: 4px; }
   .organize { background: #4caf50; color: #fff; border: 0; border-radius: 4px;
               padding: .6rem 1.2rem; font-size: 1.05rem; }
+  button:disabled { opacity: .5; cursor: default; }
   .msg { background: #e8f5e9; border: 1px solid #4caf50; padding: .75rem 1rem;
          border-radius: 6px; margin-bottom: 1rem; }
+  .err { background: #ffebee; border: 1px solid #e53935; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
   .meta { color: #888; font-size: .85rem; }
+  progress { width: 100%; height: 18px; }
 </style>
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p class="hint">{{ clusters|length }} grupo(s) de rostros — {{ labeled }} con nombre.
-Escribí quién es cada persona y guardá. Al final, tocá "Organizar fotos".</p>
+<p class="hint">Tus fotos no se mueven ni se borran: solo se <b>copian</b> al destino, separadas por persona. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
+{% if state.status == 'error' %}<div class="err">Error del análisis: {{ state.error }}</div>{% endif %}
 
-<form method="post" action="{{ url_for('do_organize') }}">
-  <button class="organize" {% if labeled == 0 %}disabled{% endif %}>
-    📁 Organizar fotos ({{ labeled }} persona(s) con nombre)
-  </button>
-</form>
-<br>
+<div class="panel">
+  <form method="post" action="{{ url_for('settings') }}" id="cfg">
+    <div class="row">
+      <label>Origen:</label>
+      <input class="path" type="text" name="photos_dir" value="{{ cfg.get('photos_dir','') }}"
+             placeholder="Carpeta donde están tus fotos">
+      <button type="button" onclick="browse('photos_dir')">📂 Elegir carpeta…</button>
+    </div>
+    <div class="row">
+      <label>Destino:</label>
+      <input class="path" type="text" name="output_dir" value="{{ cfg.get('output_dir','') }}"
+             placeholder="Carpeta donde se crearán las carpetas por persona">
+      <button type="button" onclick="browse('output_dir')">📂 Elegir carpeta…</button>
+    </div>
+    <div class="row">
+      <button class="primary">Guardar carpetas</button>
+    </div>
+  </form>
+  <form method="post" action="{{ url_for('do_analyze') }}">
+    <button class="primary" {% if not cfg.get('photos_dir') or state.status == 'running' %}disabled{% endif %}>
+      🔍 Analizar fotos del origen
+    </button>
+    <span class="meta">Detecta los rostros y agrupa las caras iguales. Con muchas fotos tarda.</span>
+  </form>
+  {% if state.status == 'running' %}
+    <p>Analizando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
+    <progress value="{{ state.current }}" max="{{ state.total or 1 }}"></progress>
+    <p class="meta">Esta página se actualiza sola cada 2 segundos.</p>
+  {% endif %}
+</div>
+
+{% if clusters %}
+<div class="panel">
+  <p><b>{{ clusters|length }} grupo(s) de rostros</b> — {{ labeled }} con nombre.
+  Escribí quién es cada persona y guardá. Los grupos sin nombre se ignoran al organizar.</p>
+  <form method="post" action="{{ url_for('do_organize') }}">
+    <button class="organize" {% if labeled == 0 or not cfg.get('output_dir') %}disabled{% endif %}>
+      📁 Organizar: copiar fotos al destino ({{ labeled }} persona(s) con nombre)
+    </button>
+    {% if not cfg.get('output_dir') %}<span class="meta">Elegí antes la carpeta de destino.</span>{% endif %}
+  </form>
+</div>
 
 {% for c in clusters %}
 <div class="cluster {% if c.name %}labeled{% endif %}">
@@ -82,6 +135,15 @@ Escribí quién es cada persona y guardá. Al final, tocá "Organizar fotos".</p
   </form>
 </div>
 {% endfor %}
+{% endif %}
+
+<script>
+function browse(field) {
+  fetch('{{ url_for('browse') }}')
+    .then(r => r.json())
+    .then(d => { if (d.path) document.getElementsByName(field)[0].value = d.path; });
+}
+</script>
 </body>
 </html>
 """
@@ -90,6 +152,8 @@ MAX_PREVIEW = 8
 
 
 def load_clusters():
+    if not CLUSTERS_PATH.is_file():
+        return None
     with open(CLUSTERS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
@@ -108,27 +172,78 @@ def save_labels(labels):
 
 @app.route("/")
 def home():
-    data = load_clusters()
+    cfg = load_config()
+    data = load_clusters() if STATE["status"] != "running" else None
     labels = load_labels()
-    faces = data["faces"]
 
     clusters = []
-    for c in data["clusters"]:
-        members = c["faces"]
-        clusters.append({
-            "id": c["id"],
-            "faces": members,
-            "photos": len({faces[fid]["photo"] for fid in members}),
-            "preview": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members[:MAX_PREVIEW]],
-            "name": labels.get(str(c["id"]), ""),
-        })
+    if data:
+        faces = data["faces"]
+        for c in data["clusters"]:
+            members = c["faces"]
+            clusters.append({
+                "id": c["id"],
+                "faces": members,
+                "photos": len({faces[fid]["photo"] for fid in members}),
+                "preview": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members[:MAX_PREVIEW]],
+                "name": labels.get(str(c["id"]), ""),
+            })
 
     return render_template_string(
         TEMPLATE,
+        cfg=cfg,
+        state=STATE,
         clusters=clusters,
         labeled=sum(1 for c in clusters if c["name"]),
         message=request.args.get("msg", ""),
     )
+
+
+@app.route("/settings", methods=["POST"])
+def settings():
+    cfg = load_config()
+    cfg["photos_dir"] = request.form.get("photos_dir", "").strip()
+    cfg["output_dir"] = request.form.get("output_dir", "").strip()
+    save_config(cfg)
+    return redirect(url_for("home", msg="Carpetas guardadas."))
+
+
+@app.route("/browse")
+def browse():
+    """Abre el selector de carpetas nativo de Windows (en esta máquina)."""
+    from tkinter import Tk, filedialog
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.askdirectory(parent=root)
+    root.destroy()
+    return {"path": str(Path(path)) if path else ""}
+
+
+def _analysis_worker(photos_dir, exclude):
+    def progress(current, total, photo):
+        STATE.update(current=current, total=total, photo=photo)
+    try:
+        run_analysis(photos_dir, exclude=exclude, progress=progress)
+        STATE["status"] = "done"
+    except Exception as e:
+        STATE.update(status="error", error=str(e))
+
+
+@app.route("/analyze", methods=["POST"])
+def do_analyze():
+    if STATE["status"] == "running":
+        return redirect(url_for("home"))
+
+    cfg = load_config()
+    photos_dir = Path(cfg.get("photos_dir", ""))
+    if not cfg.get("photos_dir") or not photos_dir.is_dir():
+        return redirect(url_for("home", msg="La carpeta de origen no existe. Elegila de nuevo."))
+
+    exclude = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
+    STATE.update(status="running", current=0, total=0, photo="", error="")
+    threading.Thread(target=_analysis_worker, args=(photos_dir, exclude), daemon=True).start()
+    return redirect(url_for("home"))
 
 
 @app.route("/label", methods=["POST"])
@@ -146,8 +261,11 @@ def label():
 
 @app.route("/organize", methods=["POST"])
 def do_organize():
-    copied, people = organize()
-    return redirect(url_for("home", msg=f"Listo: {copied} foto(s) copiadas a data/sorted/ "
+    try:
+        copied, people, output_dir = organize()
+    except ValueError as e:
+        return redirect(url_for("home", msg=str(e)))
+    return redirect(url_for("home", msg=f"Listo: {copied} foto(s) copiadas a {output_dir} "
                                         f"en {people} carpeta(s) de persona."))
 
 
@@ -158,13 +276,11 @@ def face(face_id):
 
 @app.route("/photo/<path:path>")
 def photo(path):
-    return send_from_directory(PHOTOS_DIR, path)
+    data = load_clusters()
+    return send_from_directory(Path(data["photos_dir"]), path)
 
 
 def main():
-    if not CLUSTERS_PATH.is_file():
-        print("[web] No existe data/clusters.json. Corré primero: python -m app.analyze")
-        raise SystemExit(1)
     print("[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).")
     threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
     app.run(host="127.0.0.1", port=5000, debug=False)
