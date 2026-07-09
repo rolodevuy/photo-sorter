@@ -1,0 +1,17 @@
+# Entorno virtual
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Datos locales (fotos y resultados no van a git)
+data/
+
+# IDE / SO
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
