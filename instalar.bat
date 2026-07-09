@@ -17,7 +17,7 @@ echo Instalando dependencias (puede tardar unos minutos)...
 venv\Scripts\python -m pip install --upgrade pip || goto :error
 venv\Scripts\pip install dlib-bin || goto :error
 venv\Scripts\pip install --no-deps face-recognition face-recognition-models || goto :error
-venv\Scripts\pip install numpy scikit-learn Pillow Flask click || goto :error
+venv\Scripts\pip install numpy scikit-learn Pillow Flask click "setuptools<81" || goto :error
 
 if not exist data\photos mkdir data\photos
 
