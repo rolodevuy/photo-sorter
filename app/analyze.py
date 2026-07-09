@@ -34,6 +34,22 @@ EPS = 0.45
 THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
 
+# En modo preciso (CNN) se achica la imagen a este lado máximo antes de
+# detectar: el CNN igual encuentra las caras y así es mucho más rápido y no
+# se queda sin memoria con fotos grandes (1080x1920, etc.).
+PRECISE_MAX_DIM = 800
+
+
+def _downscale(image, max_dim):
+    """Achica la imagen si su lado mayor supera max_dim. Devuelve numpy RGB."""
+    h, w = image.shape[:2]
+    longest = max(h, w)
+    if longest <= max_dim:
+        return image
+    scale = max_dim / longest
+    new_size = (int(w * scale), int(h * scale))
+    return np.asarray(Image.fromarray(image).resize(new_size, Image.LANCZOS))
+
 
 def list_photos(photos_dir, exclude=None):
     """Lista las imágenes del origen, salteando la carpeta de destino."""
@@ -119,6 +135,9 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print, precise=Fal
             progress(i, len(photos), rel)
         log(f"[analyze] ({i}/{len(photos)}) {rel} ...", end=" ")
         image = face_recognition.load_image_file(photo)
+        if precise:
+            # achicar antes del CNN: más rápido y sin problemas de memoria
+            image = _downscale(image, PRECISE_MAX_DIM)
         locations = face_recognition.face_locations(image, upsample, model)
         photo_encodings = face_recognition.face_encodings(image, locations)
 
