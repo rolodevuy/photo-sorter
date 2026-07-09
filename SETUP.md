@@ -1,15 +1,23 @@
 # Guía de instalación y uso
 
-## 1. Requisitos previos (Windows)
+## 1. Crear el entorno
 
-`face-recognition` depende de **dlib**, que necesita compilarse. En Windows hay dos caminos:
+```bash
+cd photo-sorter
+python -m venv venv
+venv\Scripts\activate
+```
+
+## 2. Instalar dependencias (Windows)
+
+`face-recognition` depende de **dlib**, que necesita compilarse. Hay dos caminos:
 
 **Opción A (recomendada): wheel precompilado**
 
 ```bash
 pip install dlib-bin
 pip install face-recognition --no-deps
-pip install face-recognition-models numpy Pillow Flask
+pip install face-recognition-models numpy scikit-learn Pillow Flask
 ```
 
 **Opción B: compilar dlib**
@@ -20,63 +28,41 @@ Instalar primero [CMake](https://cmake.org/download/) y las *Build Tools for Vis
 pip install -r requirements.txt
 ```
 
-## 2. Instalación
+> Los modelos de reconocimiento se instalan junto con las librerías. Después de este paso **no se necesita internet para nada**.
 
-```bash
-git clone https://github.com/rolodevuy/photo-sorter.git
-cd photo-sorter
-python -m venv venv
-venv\Scripts\activate
-```
+## 3. Poner las fotos
 
-Luego instalar dependencias según la Opción A o B de arriba.
-
-## 3. Entrenar con fotos de referencia
-
-Crear una carpeta por persona dentro de `data/training/`, con 3–10 fotos claras de esa persona (idealmente con un solo rostro por foto):
+Copiá las fotos que querés clasificar en `data/photos/` (se aceptan subcarpetas):
 
 ```
-data/training/juan/foto1.jpg
-data/training/juan/foto2.jpg
-data/training/maria/foto1.jpg
+data/photos/IMG_001.jpg
+data/photos/vacaciones/IMG_045.jpg
 ...
 ```
 
-Ejecutar:
+## 4. Analizar
 
 ```bash
-python -m app.indexer
+python -m app.analyze
 ```
 
-Esto genera `data/encodings.pkl`.
+Detecta todos los rostros y arma los grupos. Con muchas fotos puede tardar (aprox. 1–3 segundos por foto en CPU).
 
-## 4. Detectar rostros en fotos nuevas
-
-Poner las fotos a clasificar en `data/photos/` y ejecutar:
+## 5. Ponerle nombre a cada persona
 
 ```bash
-python -m app.detector
+python -m app.flask_app
 ```
 
-Los resultados quedan en `data/detections.json`, con este formato:
+Abrí **http://127.0.0.1:5000** en el navegador. Vas a ver cada grupo de rostros con la pregunta "¿quién es esta persona?". Escribí el nombre y tocá Guardar. Los grupos que no te interesan los podés dejar sin nombre.
 
-```json
-{
-  "vacaciones/IMG_001.jpg": [
-    {"name": "juan", "distance": 0.42, "box": {"top": 10, "right": 200, "bottom": 150, "left": 60}},
-    {"name": "desconocido", "distance": 0.71, "box": {"top": 30, "right": 400, "bottom": 180, "left": 260}}
-  ]
-}
-```
+- Clic en una miniatura → abre la foto original completa.
+- Si una misma persona aparece en dos grupos, ponéles el mismo nombre: se unifican al organizar.
 
-## 5. Ajustar la precisión
+## 6. Organizar
 
-En `app/detector.py` está la constante `TOLERANCE` (por defecto `0.6`):
+En la misma web, tocá el botón **"Organizar fotos"** (o corré `python -m app.organizer`). Cada foto se **copia** a `data/sorted/<nombre>/`. Los originales de `data/photos/` quedan intactos.
 
-- **Bajarla** (ej. `0.5`) → más estricto: menos falsos positivos, pero más rostros quedan como "desconocido".
-- **Subirla** (ej. `0.65`) → más permisivo: reconoce más, con riesgo de confundir personas.
+## Si agregás fotos nuevas
 
-## Próximos pasos
-
-- Interfaz web para revisión/correcciones (`app/flask_app.py`)
-- Organizer funcional (`app/organizer.py`)
+Volvé a correr `python -m app.analyze` y después la web. (Por ahora el análisis rehace todo desde cero; los nombres guardados se pierden al re-analizar — mejora pendiente.)
