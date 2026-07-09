@@ -12,6 +12,8 @@ Después abrí http://127.0.0.1:5000 en el navegador.
 """
 
 import json
+import threading
+import webbrowser
 
 from flask import Flask, redirect, render_template_string, request, send_from_directory, url_for
 
@@ -164,6 +166,7 @@ def main():
         print("[web] No existe data/clusters.json. Corré primero: python -m app.analyze")
         raise SystemExit(1)
     print("[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).")
+    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
     app.run(host="127.0.0.1", port=5000, debug=False)
 
 
