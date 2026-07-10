@@ -28,11 +28,13 @@ from app.facedet import detect_and_encode
 from app.known import identify, load_known
 
 # Distancia coseno máxima entre vectores SFace para considerarlos la misma
-# persona. SFace considera "misma persona" con similitud coseno > 0.363, o sea
-# distancia < 0.637. Usamos algo un poco más estricto para no mezclar personas
-# distintas; si una persona queda partida en varios grupos, les ponés el mismo
-# nombre y se unen al organizar.
-EPS = 0.60
+# persona. Calibrado con caras reales de 83 personas (401 caras): con 0.60,
+# DBSCAN "encadenaba" y metía hasta 9 personas distintas en un mismo grupo.
+# Con 0.40 la mezcla casi desaparece (a lo sumo 2-3 caras muy parecidas) y una
+# persona con muchas fotos igual queda en un solo grupo. Si una persona queda
+# partida en varios grupos, les ponés el mismo nombre y se unen al organizar:
+# es el error "seguro", mejor de más que mezclar gente distinta.
+EPS = 0.40
 
 THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
