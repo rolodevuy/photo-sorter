@@ -20,21 +20,27 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import AgglomerativeClustering
 
 from app import CLUSTERS_PATH, ENCODINGS_NPY, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
 from app.config import load_config
 from app.facedet import detect_and_encode
 from app.known import identify, load_known
 
-# Distancia coseno máxima entre vectores SFace para considerarlos la misma
-# persona. Calibrado con caras reales de 83 personas (401 caras): con 0.60,
-# DBSCAN "encadenaba" y metía hasta 9 personas distintas en un mismo grupo.
-# Con 0.40 la mezcla casi desaparece (a lo sumo 2-3 caras muy parecidas) y una
-# persona con muchas fotos igual queda en un solo grupo. Si una persona queda
-# partida en varios grupos, les ponés el mismo nombre y se unen al organizar:
-# es el error "seguro", mejor de más que mezclar gente distinta.
-EPS = 0.40
+# Umbral de distancia coseno para agrupar caras (agrupado jerárquico con
+# enlace "average"). Calibrado con 433 caras reales de 89 personas.
+#
+# Se usa AgglomerativeClustering (no DBSCAN) porque DBSCAN "encadena": al subir
+# el umbral para aunar mejor, un solo enganche malo une dos personas y por
+# cadena termina metiendo decenas de personas en un grupo (a 0.60 llegaba a 44).
+# El enlace "average" no encadena: aunque suba el umbral, el peor grupo mezcla
+# a lo sumo 2-3 caras muy parecidas. A 0.60 aúna bien (una persona con muchas
+# fotos queda junta) sin armar bloques.
+#
+# Más bajo = más estricto (una persona puede partirse en varios grupos; les
+# ponés el mismo nombre y se unen al organizar). Más alto = aúna más, con algo
+# más de riesgo de mezclar parecidos.
+EPS = 0.60
 
 THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
@@ -73,27 +79,26 @@ def save_thumbnail(image, box, face_id):
 
 
 def cluster_faces(faces, encodings):
-    """Agrupa los encodings por persona. Devuelve lista de clusters."""
+    """Agrupa los encodings por persona (jerárquico, enlace average). Devuelve
+    lista de clusters. Las caras que no se parecen a ninguna otra quedan como
+    grupos de una sola cara."""
     face_ids = list(faces.keys())
-    labels = DBSCAN(eps=EPS, min_samples=2, metric="cosine").fit_predict(
-        np.array(encodings)
-    )
+    if len(face_ids) == 1:
+        labels = [0]
+    else:
+        labels = AgglomerativeClustering(
+            n_clusters=None, distance_threshold=EPS,
+            metric="cosine", linkage="average",
+        ).fit_predict(np.array(encodings))
 
     groups = {}
-    singles = []
     for face_id, label in zip(face_ids, labels):
-        if label == -1:
-            # Rostro que no matcheó con ningún otro: grupo propio de 1.
-            singles.append(face_id)
-        else:
-            groups.setdefault(int(label), []).append(face_id)
+        groups.setdefault(int(label), []).append(face_id)
 
-    # Clusters grandes primero, singles al final
+    # Grupos grandes primero (los de una sola cara quedan al final)
     return [
         {"id": i, "faces": members}
-        for i, members in enumerate(
-            sorted(groups.values(), key=len, reverse=True) + [[s] for s in singles]
-        )
+        for i, members in enumerate(sorted(groups.values(), key=len, reverse=True))
     ]
 
 
