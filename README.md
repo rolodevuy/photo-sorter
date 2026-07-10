@@ -30,11 +30,11 @@ La pestaña **"Renombrar"** cambia en masa los nombres de las imágenes de una c
 
 `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif` (los GIF, por su primer fotograma).
 
-> **Nota sobre detección de rostros:** el modo por defecto es rápido (HOG) y puede no detectar caras muy inclinadas, de perfil o en collages/montajes. Para esos casos hay modelos más precisos pero mucho más lentos.
+> **Motor de detección:** usa **YuNet** (detección) + **SFace** (reconocimiento) de OpenCV, que detectan bien caras de perfil o anguladas y son rápidos en CPU (~1 s por foto). Los modelos están en `app/models/` y corren 100% local.
 
 ## Privacidad
 
-- Todo el reconocimiento corre en tu máquina (dlib/face_recognition, modelos incluidos en la instalación).
+- Todo el reconocimiento corre en tu máquina (OpenCV YuNet+SFace, modelos incluidos en `app/models/`).
 - La web solo escucha en `127.0.0.1`: nadie más en la red puede acceder.
 - Ninguna foto ni dato sale de tu computadora. El código no hace ninguna conexión a internet.
 

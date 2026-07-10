@@ -15,17 +15,13 @@ if not exist venv (
 
 echo Instalando dependencias (puede tardar unos minutos)...
 venv\Scripts\python -m pip install --upgrade pip || goto :error
-venv\Scripts\pip install dlib-bin || goto :error
-venv\Scripts\pip install --no-deps face-recognition face-recognition-models || goto :error
-venv\Scripts\pip install numpy scikit-learn Pillow Flask click "setuptools<81" || goto :error
-
-if not exist data\photos mkdir data\photos
+venv\Scripts\pip install opencv-contrib-python numpy scikit-learn Pillow Flask || goto :error
 
 echo.
 echo ============================================
 echo  Listo! Instalacion completa.
-echo  1. Pone tus fotos en la carpeta data\photos
-echo  2. Hace doble clic en "Photo Sorter" (escritorio)
+echo  Hace doble clic en "Photo Sorter" (escritorio)
+echo  y elegi las carpetas desde la web.
 echo ============================================
 pause
 exit /b 0

@@ -10,14 +10,10 @@ Doble clic en **`instalar.bat`**. Crea el entorno e instala las dependencias (ne
 ```bash
 cd photo-sorter
 python -m venv venv
-venv\Scripts\pip install dlib-bin
-venv\Scripts\pip install --no-deps face-recognition face-recognition-models
-venv\Scripts\pip install numpy scikit-learn Pillow Flask click "setuptools<81"
+venv\Scripts\pip install opencv-contrib-python numpy scikit-learn Pillow Flask
 ```
 
-Notas:
-- `dlib-bin` es el wheel precompilado de dlib para Windows (evita compilar con CMake/Visual Studio).
-- `setuptools<81` es necesario porque `face_recognition_models` usa `pkg_resources`, eliminado en setuptools 81+.
+Nota: los modelos de detección (`app/models/yunet.onnx` y `sface.onnx`) vienen incluidos en el repo, así que después de instalar no hace falta descargar nada más.
 </details>
 
 ## 2. Usar

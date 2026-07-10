@@ -18,37 +18,29 @@ import shutil
 import sys
 from pathlib import Path
 
-import face_recognition
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from sklearn.cluster import DBSCAN
 
 from app import CLUSTERS_PATH, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
 from app.config import load_config
+from app.facedet import detect_and_encode
 
-# Distancia máxima entre encodings para considerarlos la misma persona.
-# Más bajo = grupos más estrictos (una persona puede partirse en varios grupos).
-# Más alto = más permisivo (riesgo de mezclar personas distintas en un grupo).
-EPS = 0.45
+# Distancia coseno máxima entre vectores SFace para considerarlos la misma
+# persona. SFace considera "misma persona" con similitud coseno > 0.363, o sea
+# distancia < 0.637. Usamos algo un poco más estricto para no mezclar personas
+# distintas; si una persona queda partida en varios grupos, les ponés el mismo
+# nombre y se unen al organizar.
+EPS = 0.60
 
 THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
 
-# En modo preciso (CNN) se achica la imagen a este lado máximo antes de
-# detectar: el CNN igual encuentra las caras y así es mucho más rápido y no
-# se queda sin memoria con fotos grandes (1080x1920, etc.).
-PRECISE_MAX_DIM = 800
 
-
-def _downscale(image, max_dim):
-    """Achica la imagen si su lado mayor supera max_dim. Devuelve numpy RGB."""
-    h, w = image.shape[:2]
-    longest = max(h, w)
-    if longest <= max_dim:
-        return image
-    scale = max_dim / longest
-    new_size = (int(w * scale), int(h * scale))
-    return np.asarray(Image.fromarray(image).resize(new_size, Image.LANCZOS))
+def _load_rgb(path):
+    """Carga una imagen como numpy RGB, respetando la orientación EXIF."""
+    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    return np.asarray(img)
 
 
 def list_photos(photos_dir, exclude=None):
@@ -80,7 +72,7 @@ def save_thumbnail(image, box, face_id):
 def cluster_faces(faces, encodings):
     """Agrupa los encodings por persona. Devuelve lista de clusters."""
     face_ids = list(faces.keys())
-    labels = DBSCAN(eps=EPS, min_samples=2, metric="euclidean").fit_predict(
+    labels = DBSCAN(eps=EPS, min_samples=2, metric="cosine").fit_predict(
         np.array(encodings)
     )
 
@@ -102,18 +94,15 @@ def cluster_faces(faces, encodings):
     ]
 
 
-def run_analysis(photos_dir, exclude=None, progress=None, log=print, precise=False):
+def run_analysis(photos_dir, exclude=None, progress=None, log=print):
     """Analiza la carpeta de origen completa y escribe clusters.json.
 
+    Usa YuNet (detección) + SFace (reconocimiento) de OpenCV, que detectan bien
+    caras anguladas o de perfil y son rápidos en CPU.
     progress: callback opcional progress(actual, total, nombre_foto).
-    precise: si True usa el modelo CNN (detecta caras anguladas/de perfil, pero
-    es MUCHO más lento). Si False usa HOG (rápido, solo caras frontales).
     Devuelve (cantidad_rostros, cantidad_grupos). Lanza ValueError si no hay
     fotos o no se encuentra ningún rostro.
     """
-    model = "cnn" if precise else "hog"
-    # Con HOG, upsamplear 1 vez ayuda a agarrar caras algo más chicas o giradas.
-    upsample = 1
     photos_dir = Path(photos_dir)
     photos = list_photos(photos_dir, exclude)
     if not photos:
@@ -134,20 +123,21 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print, precise=Fal
         if progress:
             progress(i, len(photos), rel)
         log(f"[analyze] ({i}/{len(photos)}) {rel} ...", end=" ")
-        image = face_recognition.load_image_file(photo)
-        if precise:
-            # achicar antes del CNN: más rápido y sin problemas de memoria
-            image = _downscale(image, PRECISE_MAX_DIM)
-        locations = face_recognition.face_locations(image, upsample, model)
-        photo_encodings = face_recognition.face_encodings(image, locations)
+        try:
+            image = _load_rgb(photo)
+        except Exception as e:
+            log(f"no se pudo leer: {e}")
+            no_faces.append(rel)
+            continue
+        dets = detect_and_encode(image)
 
-        if not locations:
+        if not dets:
             log("sin rostros")
             no_faces.append(rel)
             continue
-        log(f"{len(locations)} rostro(s)")
+        log(f"{len(dets)} rostro(s)")
 
-        for box, encoding in zip(locations, photo_encodings):
+        for box, encoding in dets:
             face_id = f"{counter:05d}"
             counter += 1
             faces[face_id] = {"photo": rel, "box": list(box)}

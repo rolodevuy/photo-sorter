@@ -106,14 +106,7 @@ TEMPLATE = """
     <button class="primary" {% if not cfg.get('photos_dir') or state.status == 'running' %}disabled{% endif %}>
       🔍 Analizar fotos del origen
     </button>
-    <span class="meta">Detecta los rostros y agrupa las caras iguales. Con muchas fotos tarda.</span>
-    <div class="row" style="margin-top:.6rem">
-      <label style="font-weight:normal">
-        <input type="checkbox" name="precise">
-        Detección precisa (lenta) — agarra caras de perfil o muy anguladas.
-        <b>Solo para carpetas chicas</b>: puede tardar horas en librerías grandes.
-      </label>
-    </div>
+    <span class="meta">Detecta los rostros (incluso de perfil o anguladas) y agrupa las caras iguales. Con muchas fotos tarda.</span>
   </form>
   {% if state.status == 'running' %}
     <p>Analizando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
@@ -558,11 +551,11 @@ def browse():
     return {"path": str(Path(path)) if path else ""}
 
 
-def _analysis_worker(photos_dir, exclude, precise):
+def _analysis_worker(photos_dir, exclude):
     def progress(current, total, photo):
         STATE.update(current=current, total=total, photo=photo)
     try:
-        run_analysis(photos_dir, exclude=exclude, progress=progress, precise=precise)
+        run_analysis(photos_dir, exclude=exclude, progress=progress)
         STATE["status"] = "done"
     except Exception as e:
         STATE.update(status="error", error=str(e))
@@ -578,10 +571,9 @@ def do_analyze():
     if not cfg.get("photos_dir") or not photos_dir.is_dir():
         return redirect(url_for("home", msg="La carpeta de origen no existe. Elegila de nuevo."))
 
-    precise = request.form.get("precise") == "on"
     exclude = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
     STATE.update(status="running", current=0, total=0, photo="", error="")
-    threading.Thread(target=_analysis_worker, args=(photos_dir, exclude, precise), daemon=True).start()
+    threading.Thread(target=_analysis_worker, args=(photos_dir, exclude), daemon=True).start()
     return redirect(url_for("home"))
 
 
