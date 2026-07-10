@@ -74,6 +74,7 @@ TEMPLATE = """
   .facewrap.suspect .warn { position: absolute; top: 3px; left: 3px; background: #ff9800;
                             color: #fff; border-radius: 4px; font-size: .7rem; padding: 0 4px; }
   .suspect-note { color: #e65100; font-weight: 600; }
+  .suggest-note { color: #1565c0; margin: .3rem 0; }
   .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
   .row label { min-width: 70px; font-weight: 600; }
   input[type=text] { padding: .45rem; font-size: 1.05rem; }
@@ -165,7 +166,7 @@ TEMPLATE = """
 <div class="panel" {% if imp.status == 'running' %}data-refresh="1"{% endif %}>
   <div class="counter">👤 Personas conocidas: <b>{{ known_count }}</b>
     {% if known_count > 0 %}<a href="{{ url_for('known_page') }}" style="font-size:.9rem;margin-left:.5rem">ver galería →</a>{% endif %}</div>
-  <p class="meta">El programa reconoce solas a estas personas en cada análisis y ya les pone el nombre.
+  <p class="meta">En cada análisis, el programa sugiere el nombre de estas personas en los grupos que se parecen (vos confirmás o corregís).
      Cada persona que nombres se suma acá.</p>
   <form method="post" action="{{ url_for('known_import') }}">
     <div class="row">
@@ -307,14 +308,16 @@ function renderWizard() {
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
     (g.faces.length > 10 || g.suspects ?
       '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
+    (g.suggested ? '<div class="suggest-note">💡 Sugerencia: <b>' + g.suggested + '</b> — confirmá (Enter) o corregí</div>' : '') +
     '<div class="row">' +
       '<label>¿Quién es?</label>' +
-      '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." autofocus>' +
+      '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." value="' + (g.suggested || '').replace(/"/g, '&quot;') + '" autofocus>' +
       '<button class="primary" onclick="wizardSave()">Guardar</button>' +
       '<button class="secondary" onclick="wizardNext()">Saltear</button>' +
     '</div>';
   const input = document.getElementById('wizard-name');
   input.focus();
+  input.select();
   input.addEventListener('keydown', e => { if (e.key === 'Enter') wizardSave(); });
 }
 
@@ -354,14 +357,14 @@ function renderList() {
   lv.innerHTML = GROUPS.filter(g => g.faces.length > 0).map(g =>
     '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
       '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
-        (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') +
+        (g.suggested && !g.name ? ' · <b>💡 sugerencia: ' + g.suggested + '</b>' : '') +
         (g.review ? ' · 🔁 Para revisar' : '') +
         (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' dudosa(s)</span>' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(f => faceImg(f, g.id)).join('') + '</div>' +
       (g.faces.length > 10 || g.suspects ?
         '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
       '<div class="row"><label>¿Quién es?</label>' +
-        '<input type="text" id="ln-' + g.id + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '">' +
+        '<input type="text" id="ln-' + g.id + '" value="' + (g.name || g.suggested || '').replace(/"/g, '&quot;') + '">' +
         '<button class="primary" onclick="listSave(' + g.id + ')">Guardar</button>' +
         '<span class="saved-tick" id="lt-' + g.id + '">✓ guardado</span>' +
       '</div>' +
@@ -390,7 +393,7 @@ function openModal(id) {
   modalGroup = byId[id];
   selected.clear();
   document.getElementById('modal-title').textContent =
-    'Depurar grupo' + (modalGroup.name || modalGroup.auto ? ' "' + (modalGroup.name || modalGroup.auto) + '"' : '') +
+    'Depurar grupo' + (modalGroup.name || modalGroup.suggested ? ' "' + (modalGroup.name || modalGroup.suggested) + '"' : '') +
     ' — ' + modalGroup.faces.length + ' caras';
   const box = document.getElementById('modal-faces');
   // dudosas primero, para que salten a la vista
@@ -743,7 +746,7 @@ def home():
                            "suspect": fid in suspects} for fid in members],
                 "photos": len({faces[fid]["photo"] for fid in members}),
                 "name": labels.get(str(c["id"]), ""),
-                "auto": c.get("auto", ""),  # nombre reconocido automáticamente
+                "suggested": c.get("suggested", ""),  # persona sugerida (a confirmar)
                 "review": c.get("review", False),  # grupo "Para revisar" (depurado)
                 "suspects": len(suspects),
             })

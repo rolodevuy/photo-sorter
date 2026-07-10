@@ -42,6 +42,11 @@ from app.known import identify, load_known
 # más de riesgo de mezclar parecidos.
 EPS = 0.60
 
+# Distancia coseno máxima para SUGERIR una persona conocida en un grupo. Es más
+# permisiva que la del reconocimiento estricto (known.MATCH_EPS): acá alcanza
+# con que sea el candidato más parecido y razonable, porque el usuario confirma.
+SUGGEST_EPS = 0.62
+
 THUMBNAIL_SIZE = 160  # px del lado mayor de la miniatura
 BOX_MARGIN = 0.25     # margen extra alrededor del rostro al recortar
 
@@ -161,17 +166,18 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
     enc_array = np.array(encodings, dtype=np.float32)
     np.save(ENCODINGS_NPY, enc_array)
 
-    # Reconocimiento automático: los grupos que coincidan con una persona ya
-    # conocida quedan preetiquetados; el asistente solo pregunta por los demás.
+    # Sugerencias: a cada grupo se le propone la persona conocida más parecida
+    # (si hay alguna razonablemente cercana). No se etiqueta solo: el asistente
+    # muestra la sugerencia ya escrita para que la confirmes o corrijas.
     known = load_known()
-    auto_labels = {}
+    n_sug = 0
     if known:
         for cluster in clusters:
             idxs = [int(fid) for fid in cluster["faces"]]
-            name, _ = identify(known, enc_array[idxs])
+            name, _ = identify(known, enc_array[idxs], eps=SUGGEST_EPS)
             if name:
-                cluster["auto"] = name
-                auto_labels[str(cluster["id"])] = name
+                cluster["suggested"] = name
+                n_sug += 1
 
     with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
         json.dump(
@@ -184,16 +190,12 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
             f, ensure_ascii=False, indent=2,
         )
 
-    # Los nombres viejos corresponden a grupos que ya no existen; se reemplazan
-    # por los reconocidos automáticamente (si los hay).
-    if auto_labels:
-        with open(LABELS_PATH, "w", encoding="utf-8") as f:
-            json.dump(auto_labels, f, ensure_ascii=False, indent=2)
-    else:
-        LABELS_PATH.unlink(missing_ok=True)
+    # Los nombres del análisis anterior ya no aplican: se empieza en limpio
+    # (las sugerencias no son etiquetas confirmadas).
+    LABELS_PATH.unlink(missing_ok=True)
 
-    if auto_labels:
-        log(f"[analyze] {len(auto_labels)} grupo(s) reconocido(s) automáticamente.")
+    if n_sug:
+        log(f"[analyze] {n_sug} grupo(s) con sugerencia de nombre.")
     return len(faces), len(clusters)
 
 

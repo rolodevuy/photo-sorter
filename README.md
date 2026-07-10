@@ -26,7 +26,7 @@ El programa recuerda a las personas que ya nombraste y las reconoce solo en los 
 
 - **Importar desde una carpeta ya ordenada**: si ya tenés carpetas con caras clasificadas (una subcarpeta por persona, con su nombre), apuntá ahí y las aprende todas de una — sin rehacer nada. Toma la cara más grande de cada foto.
 - **Aprende sobre la marcha**: cada grupo que nombrás en la web se suma a la base.
-- **Autoetiquetado**: al analizar, los grupos que coinciden con alguien conocido ya vienen con el nombre puesto (marcados como "reconocida" en "Ver/editar todos los grupos"); el asistente solo te pregunta por los desconocidos.
+- **Sugerencias**: al analizar, los grupos que se parecen a una persona conocida aparecen con el nombre **ya escrito como sugerencia** (💡). Confirmás con Enter o lo corregís; no se aplica solo, siempre pasás por la lista de siempre.
 - **Galería**: la pestaña **"Personas conocidas"** muestra a cada persona con la cara más clara que aprendió, cuántas caras tiene y un botón para olvidarla.
 
 ## Caras dudosas
