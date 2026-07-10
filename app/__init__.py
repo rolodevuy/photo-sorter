@@ -14,6 +14,7 @@ DUPES_PATH = DATA_DIR / "duplicates.json"   # grupos de fotos duplicadas
 DUPES_THUMBS = DATA_DIR / "dupe_thumbs"     # miniaturas para la vista de duplicados
 ENCODINGS_NPY = DATA_DIR / "encodings.npy"  # vectores de las caras del último análisis
 KNOWN_PATH = DATA_DIR / "known_people.json" # base de personas conocidas (nombre -> vectores)
+KNOWN_THUMBS = DATA_DIR / "known_thumbs"    # miniatura representativa de cada persona conocida
 
 # Extensiones de imagen soportadas.
 # Los GIF se analizan por su primer fotograma (si están animados, se ignora

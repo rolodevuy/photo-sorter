@@ -22,13 +22,22 @@ from flask import Flask, redirect, render_template_string, request, send_from_di
 
 import numpy as np
 
-from app import CLUSTERS_PATH, DUPES_PATH, DUPES_THUMBS, ENCODINGS_NPY, FACES_DIR, KNOWN_PATH, LABELS_PATH
+from app import (CLUSTERS_PATH, DUPES_PATH, DUPES_THUMBS, ENCODINGS_NPY, FACES_DIR,
+                 KNOWN_PATH, KNOWN_THUMBS, LABELS_PATH)
 from app.analyze import run_analysis
 from app.config import load_config, save_config
 from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
-from app.known import add_faces, enroll_from_folder, load_known, save_known
+from app.known import (add_faces, enroll_from_folder, forget_person, known_summary,
+                       load_known, save_known, safe_name)
 from app.organizer import organize
 from app.renamer import apply_rename, plan_rename
+
+# Marcado de caras "dudosas" (podrían no ser esa persona). Para cada cara se
+# mide su distancia al centro del grupo y se marca si se despega claramente del
+# resto: distancia > mediana del grupo + margen, con un piso absoluto. Adaptativo
+# porque hay personas que varían más que otras. Solo en grupos de 3+ caras.
+SUSPECT_FLOOR = 0.40
+SUSPECT_MARGIN = 0.20
 
 app = Flask(__name__)
 
@@ -61,6 +70,10 @@ TEMPLATE = """
                   line-height: 22px; text-align: center; font-size: .8rem;
                   cursor: pointer; opacity: .8; user-select: none; }
   .facewrap .fx:hover { opacity: 1; }
+  .facewrap.suspect a img { outline: 3px solid #ff9800; }
+  .facewrap.suspect .warn { position: absolute; top: 3px; left: 3px; background: #ff9800;
+                            color: #fff; border-radius: 4px; font-size: .7rem; padding: 0 4px; }
+  .suspect-note { color: #e65100; font-weight: 600; }
   .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
   .row label { min-width: 70px; font-weight: 600; }
   input[type=text] { padding: .45rem; font-size: 1.05rem; }
@@ -101,6 +114,9 @@ TEMPLATE = """
              border-radius: 50%; width: 22px; height: 22px; text-align: center;
              line-height: 22px; font-size: .8rem; opacity: 0; }
   .pick.sel .x { opacity: 1; }
+  .pick.suspectpick img { outline: 3px solid #ff9800; }
+  .pick .warn2 { position: absolute; top: 4px; left: 4px; background: #ff9800; color:#fff;
+                 font-size: .7rem; padding: 0 4px; border-radius: 4px; }
   .pick .pn { font-size: .7rem; color: #999; text-align: center; max-width: 120px;
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .danger { background: #e53935; color: #fff; border: 0; border-radius: 4px; }
@@ -147,7 +163,8 @@ TEMPLATE = """
 </div>
 
 <div class="panel" {% if imp.status == 'running' %}data-refresh="1"{% endif %}>
-  <div class="counter">👤 Personas conocidas: <b>{{ known_count }}</b></div>
+  <div class="counter">👤 Personas conocidas: <b>{{ known_count }}</b>
+    {% if known_count > 0 %}<a href="{{ url_for('known_page') }}" style="font-size:.9rem;margin-left:.5rem">ver galería →</a>{% endif %}</div>
   <p class="meta">El programa reconoce solas a estas personas en cada análisis y ya les pone el nombre.
      Cada persona que nombres se suma acá.</p>
   <form method="post" action="{{ url_for('known_import') }}">
@@ -226,7 +243,8 @@ const byId = {};
 GROUPS.forEach(g => byId[g.id] = g);
 
 function faceImg(f, gid) {
-  return '<span class="facewrap">' +
+  return '<span class="facewrap' + (f.suspect ? ' suspect' : '') + '">' +
+    (f.suspect ? '<span class="warn" title="Podría no ser esta persona">?</span>' : '') +
     '<a href="' + PHOTO_URL.replace('RELPATH', encodeURIComponent(f.photo)) +
       '" target="_blank" title="' + f.photo + '"><img src="' +
       FACE_URL.replace('FID', f.id) + '" alt="rostro"></a>' +
@@ -284,9 +302,10 @@ function renderWizard() {
   card.innerHTML =
     '<div class="counter">Grupo ' + (pos + 1) + ' de ' + queue.length + ' por revisar' +
       (g.review ? ' · 🔁 Para revisar (caras apartadas de otros grupos)' : '') + '</div>' +
-    '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa</div>' +
+    '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa' +
+      (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' cara(s) dudosa(s)</span>' : '') + '</div>' +
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
-    (g.faces.length > 10 ?
+    (g.faces.length > 10 || g.suspects ?
       '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
     '<div class="row">' +
       '<label>¿Quién es?</label>' +
@@ -336,9 +355,10 @@ function renderList() {
     '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
       '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
         (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') +
-        (g.review ? ' · 🔁 Para revisar' : '') + '</div>' +
+        (g.review ? ' · 🔁 Para revisar' : '') +
+        (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' dudosa(s)</span>' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(f => faceImg(f, g.id)).join('') + '</div>' +
-      (g.faces.length > 10 ?
+      (g.faces.length > 10 || g.suspects ?
         '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
       '<div class="row"><label>¿Quién es?</label>' +
         '<input type="text" id="ln-' + g.id + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '">' +
@@ -373,9 +393,12 @@ function openModal(id) {
     'Depurar grupo' + (modalGroup.name || modalGroup.auto ? ' "' + (modalGroup.name || modalGroup.auto) + '"' : '') +
     ' — ' + modalGroup.faces.length + ' caras';
   const box = document.getElementById('modal-faces');
-  box.innerHTML = modalGroup.faces.map(f =>
-    '<div class="pick" data-fid="' + f.id + '" onclick="togglePick(this)">' +
+  // dudosas primero, para que salten a la vista
+  const ordered = modalGroup.faces.slice().sort((a,b) => (b.suspect?1:0) - (a.suspect?1:0));
+  box.innerHTML = ordered.map(f =>
+    '<div class="pick' + (f.suspect ? ' suspectpick' : '') + '" data-fid="' + f.id + '" onclick="togglePick(this)">' +
       '<span class="x">✕</span>' +
+      (f.suspect ? '<span class="warn2">⚠ dudosa</span>' : '') +
       '<img src="' + FACE_URL.replace('FID', f.id) + '" alt="cara">' +
       '<div class="pn" title="' + f.photo + '">' + f.photo.split('/').pop() + '</div>' +
     '</div>'
@@ -676,24 +699,53 @@ def save_labels(labels):
         json.dump(labels, f, ensure_ascii=False, indent=2)
 
 
+def _suspect_faces(members, enc):
+    """Devuelve el set de face_ids que se despegan del centro del grupo (posible
+    intruso). Adaptativo: marca los que superan la mediana del grupo + margen,
+    con un piso absoluto. Solo para grupos de 3+ caras, con vectores."""
+    if enc is None or len(members) < 3:
+        return set()
+    valid = [(fid, int(fid)) for fid in members if int(fid) < len(enc)]
+    if len(valid) < 3:
+        return set()
+    vecs = enc[[i for _, i in valid]]
+    cent = vecs.mean(axis=0)
+    n = np.linalg.norm(cent)
+    if n > 0:
+        cent = cent / n
+    dists = 1.0 - vecs @ cent
+    thr = max(SUSPECT_FLOOR, float(np.median(dists)) + SUSPECT_MARGIN)
+    return {fid for (fid, _), dist in zip(valid, dists) if dist > thr}
+
+
 @app.route("/")
 def home():
     cfg = load_config()
     data = load_clusters() if STATE["status"] != "running" else None
     labels = load_labels()
 
+    enc = None
+    if data and ENCODINGS_NPY.is_file():
+        try:
+            enc = np.load(ENCODINGS_NPY)
+        except Exception:
+            enc = None
+
     groups = []
     if data:
         faces = data["faces"]
         for c in data["clusters"]:
             members = c["faces"]
+            suspects = _suspect_faces(members, enc)
             groups.append({
                 "id": c["id"],
-                "faces": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members],
+                "faces": [{"id": fid, "photo": faces[fid]["photo"],
+                           "suspect": fid in suspects} for fid in members],
                 "photos": len({faces[fid]["photo"] for fid in members}),
                 "name": labels.get(str(c["id"]), ""),
                 "auto": c.get("auto", ""),  # nombre reconocido automáticamente
                 "review": c.get("review", False),  # grupo "Para revisar" (depurado)
+                "suspects": len(suspects),
             })
 
     known = load_known()
@@ -806,7 +858,88 @@ def known_import():
 @app.route("/known/clear", methods=["POST"])
 def known_clear():
     KNOWN_PATH.unlink(missing_ok=True)
+    if KNOWN_THUMBS.is_dir():
+        import shutil
+        shutil.rmtree(KNOWN_THUMBS, ignore_errors=True)
     return redirect(url_for("home", msg="Base de personas conocidas vaciada."))
+
+
+KNOWN_TEMPLATE = """
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>photo-sorter — personas conocidas</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 900px;
+         padding: 0 1rem; background: #f5f5f5; }
+  h1 { margin-bottom: .25rem; }
+  .hint { color: #666; margin-bottom: 1.5rem; }
+  .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  .person { background: #fff; border-radius: 8px; padding: .6rem; width: 150px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.1); text-align: center; }
+  .person img { width: 130px; height: 130px; object-fit: cover; border-radius: 6px; }
+  .noimg { width: 130px; height: 130px; border-radius: 6px; background: #e0e0e0;
+           display: flex; align-items: center; justify-content: center; font-size: 2.5rem; color:#aaa; }
+  .pname { font-weight: 600; margin-top: .35rem; word-break: break-word; }
+  .pcount { color: #888; font-size: .8rem; }
+  button { padding: .3rem .6rem; font-size: .85rem; cursor: pointer;
+           background: #eee; border: 1px solid #ccc; border-radius: 4px; margin-top: .3rem; }
+  .msg { background: #e8f5e9; border: 1px solid #4caf50; padding: .75rem 1rem;
+         border-radius: 6px; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<h1>photo-sorter</h1>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <a href="{{ url_for('rename_page') }}">Corregir carpeta</a> · <b>Personas conocidas</b></p>
+<p class="hint">Estas son las personas que el programa ya reconoce solo. La miniatura es la cara más clara que aprendió de cada una.</p>
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+{% if people %}
+<p><b>{{ people|length }}</b> persona(s) conocida(s):</p>
+<div class="grid">
+  {% for p in people %}
+  <div class="person">
+    {% if p.thumb %}
+      <img src="{{ url_for('known_thumb', name=p.name) }}" alt="{{ p.name }}">
+    {% else %}
+      <div class="noimg">👤</div>
+    {% endif %}
+    <div class="pname">{{ p.name }}</div>
+    <div class="pcount">{{ p.count }} cara(s) aprendida(s)</div>
+    <form method="post" action="{{ url_for('known_forget') }}"
+          onsubmit="return confirm('¿Olvidar a {{ p.name }}? Se dejará de reconocer sola.')">
+      <input type="hidden" name="name" value="{{ p.name }}">
+      <button>🗑 Olvidar</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="person" style="width:auto">Todavía no hay personas conocidas. Importá una carpeta ordenada o nombrá gente al analizar.</div>
+{% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/known")
+def known_page():
+    return render_template_string(
+        KNOWN_TEMPLATE, people=known_summary(), message=request.args.get("msg", ""))
+
+
+@app.route("/known_thumb/<name>")
+def known_thumb(name):
+    return send_from_directory(KNOWN_THUMBS, f"{safe_name(name)}.jpg")
+
+
+@app.route("/known/forget", methods=["POST"])
+def known_forget():
+    name = request.form.get("name", "")
+    if name:
+        forget_person(name)
+    return redirect(url_for("known_page", msg=f"Se olvidó a {name}."))
 
 
 @app.route("/cluster/remove", methods=["POST"])
@@ -863,7 +996,8 @@ def label():
 
 
 def _enroll_cluster(cluster_id, name):
-    """Suma las caras de un grupo recién nombrado a la base de personas."""
+    """Suma las caras de un grupo recién nombrado a la base de personas y, si la
+    persona no tiene miniatura, guarda la de la cara más grande del grupo."""
     data = load_clusters()
     if not data or not ENCODINGS_NPY.is_file():
         return
@@ -880,6 +1014,20 @@ def _enroll_cluster(cluster_id, name):
     db = load_known()
     add_faces(db, name, [enc[i] for i in idxs])
     save_known(db)
+
+    # miniatura: la cara más grande del grupo (si la persona aún no tiene una)
+    thumb_path = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+    if not thumb_path.is_file():
+        faces = data["faces"]
+        def area(fid):
+            t, r, b, l = faces[fid]["box"]
+            return (b - t) * (r - l)
+        biggest = max(cluster["faces"], key=area)
+        src = FACES_DIR / f"{biggest}.jpg"
+        if src.is_file():
+            KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(src, thumb_path)
 
 
 @app.route("/organize", methods=["POST"])

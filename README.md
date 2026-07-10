@@ -27,6 +27,11 @@ El programa recuerda a las personas que ya nombraste y las reconoce solo en los 
 - **Importar desde una carpeta ya ordenada**: si ya tenés carpetas con caras clasificadas (una subcarpeta por persona, con su nombre), apuntá ahí y las aprende todas de una — sin rehacer nada. Toma la cara más grande de cada foto.
 - **Aprende sobre la marcha**: cada grupo que nombrás en la web se suma a la base.
 - **Autoetiquetado**: al analizar, los grupos que coinciden con alguien conocido ya vienen con el nombre puesto (marcados como "reconocida" en "Ver/editar todos los grupos"); el asistente solo te pregunta por los desconocidos.
+- **Galería**: la pestaña **"Personas conocidas"** muestra a cada persona con la cara más clara que aprendió, cuántas caras tiene y un botón para olvidarla.
+
+## Caras dudosas
+
+Dentro de cada grupo, el programa marca con **⚠** las caras que se despegan del resto (posible intruso que se coló). El aviso aparece en el encabezado del grupo y en la ventana de depurar, con las dudosas primero. Es adaptativo: marca según cuánto se aleja cada cara del centro de su grupo, así no depende de un umbral fijo. Sirve para que no se te escape ninguna cara mal agrupada.
 
 La base es `data/known_people.json` (vectores por persona, sin fotos). El umbral de coincidencia está en `app/known.py` (`MATCH_EPS`, por defecto 0.50): más bajo = más estricto.
 

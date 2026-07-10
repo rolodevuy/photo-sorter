@@ -18,13 +18,60 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
-from app import IMAGE_EXTENSIONS, KNOWN_PATH
+from app import IMAGE_EXTENSIONS, KNOWN_PATH, KNOWN_THUMBS
 from app.facedet import detect_and_encode
 
 # Distancia coseno máxima para dar por conocida a una persona. Más bajo = más
 # estricto (menos autoetiquetas equivocadas, pero reconoce menos). Se usa un
 # valor más estricto que el del agrupado para no poner nombres errados solos.
 MATCH_EPS = 0.50
+
+_INVALID = '<>:"/\\|?*'
+
+
+def safe_name(name):
+    """Nombre válido como archivo (para la miniatura de la persona)."""
+    return "".join(c for c in name if c not in _INVALID).strip() or "_"
+
+
+def save_person_thumb(name, image_rgb, box, size=220, margin=0.2):
+    """Guarda la miniatura representativa de una persona (recorte del rostro)."""
+    top, right, bottom, left = box
+    h, w = image_rgb.shape[:2]
+    my = int((bottom - top) * margin)
+    mx = int((right - left) * margin)
+    crop = image_rgb[max(0, top - my):min(h, bottom + my),
+                     max(0, left - mx):min(w, right + mx)]
+    if crop.size == 0:
+        return
+    KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+    im = Image.fromarray(crop)
+    im.thumbnail((size, size))
+    im.save(KNOWN_THUMBS / f"{safe_name(name)}.jpg", quality=85)
+
+
+def known_summary():
+    """Lista de personas conocidas: [{name, count, thumb}] ordenada por nombre."""
+    db = load_known()
+    out = []
+    for name in sorted(db, key=str.lower):
+        thumb = f"{safe_name(name)}.jpg"
+        out.append({
+            "name": name,
+            "count": int(len(db[name])),
+            "thumb": thumb if (KNOWN_THUMBS / thumb).is_file() else None,
+        })
+    return out
+
+
+def forget_person(name):
+    """Borra una persona de la base y su miniatura."""
+    db = load_known()
+    if name in db:
+        del db[name]
+        save_known(db)
+    thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+    thumb.unlink(missing_ok=True)
 
 
 def load_known():
@@ -113,6 +160,7 @@ def enroll_from_folder(folder, progress=None, log=print):
 
     db = load_known()
     added = {}
+    best_area = {}   # nombre -> área de la cara más grande vista (para la miniatura)
     # total de imágenes para el progreso
     all_imgs = [(d.name, p) for d in person_dirs
                 for p in sorted(d.rglob("*")) if p.suffix.lower() in IMAGE_EXTENSIONS]
@@ -127,9 +175,15 @@ def enroll_from_folder(folder, progress=None, log=print):
             continue
         if not dets:
             continue
-        _, emb = _largest_face(dets)
+        box, emb = _largest_face(dets)
         add_faces(db, name, [emb])
         added[name] = added.get(name, 0) + 1
+        # guardar como miniatura la cara más grande (más clara) de la persona
+        top, right, bottom, left = box
+        area = (bottom - top) * (right - left)
+        if area > best_area.get(name, 0):
+            best_area[name] = area
+            save_person_thumb(name, img, box)
 
     save_known(db)
     return added
