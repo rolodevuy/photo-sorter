@@ -132,6 +132,7 @@ TEMPLATE = """
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if state.status == 'error' %}<div class="err">Error del análisis: {{ state.error }}</div>{% endif %}
 {% if state.status == 'done' and groups %}<div class="msg">✅ Análisis terminado: {{ groups|length }} grupo(s) de rostros.</div>{% endif %}
+{% if state.status == 'stopped' %}<div class="msg">⏹ Análisis detenido. {% if groups %}Se guardaron {{ groups|length }} grupo(s) de las fotos procesadas hasta ese punto.{% else %}No se llegó a procesar ninguna foto con rostro.{% endif %}</div>{% endif %}
 
 <div class="panel">
   <form method="post" action="{{ url_for('settings') }}">
@@ -158,9 +159,15 @@ TEMPLATE = """
     <span class="meta">"Analizar" usa la carpeta que ves arriba. Detecta los rostros (incluso de perfil o anguladas) y agrupa las caras iguales. Con muchas fotos tarda.</span>
   </form>
   {% if state.status == 'running' %}
-    <p>Analizando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
+    <p>Analizando <b>{{ state.current }}/{{ state.total }}</b>: {{ state.photo }}</p>
     <progress value="{{ state.current }}" max="{{ state.total or 1 }}"></progress>
-    <p class="meta">Esta página se actualiza sola cada 2 segundos.</p>
+    <form method="post" action="{{ url_for('stop_analyze') }}" style="margin-top:.5rem">
+      <button class="danger" onclick="return confirm('¿Detener el análisis? Se guardan los grupos de las fotos ya procesadas.')">
+        ⛔ Detener análisis
+      </button>
+      {% if state.cancel %}<span class="meta">deteniendo… (termina la foto actual)</span>{% endif %}
+    </form>
+    <p class="meta">Esta página se actualiza sola cada 2 segundos. Cerrar el navegador NO detiene el análisis.</p>
   {% endif %}
 </div>
 
@@ -856,9 +863,11 @@ def browse():
 def _analysis_worker(photos_dir, exclude):
     def progress(current, total, photo):
         STATE.update(current=current, total=total, photo=photo)
+    def should_stop():
+        return STATE.get("cancel", False)
     try:
-        run_analysis(photos_dir, exclude=exclude, progress=progress)
-        STATE["status"] = "done"
+        run_analysis(photos_dir, exclude=exclude, progress=progress, should_stop=should_stop)
+        STATE["status"] = "stopped" if STATE.get("cancel") else "done"
     except Exception as e:
         STATE.update(status="error", error=str(e))
 
@@ -877,8 +886,15 @@ def do_analyze():
         return redirect(url_for("home", msg="La carpeta de origen no existe. Elegila de nuevo."))
 
     exclude = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
-    STATE.update(status="running", current=0, total=0, photo="", error="")
+    STATE.update(status="running", current=0, total=0, photo="", error="", cancel=False)
     threading.Thread(target=_analysis_worker, args=(photos_dir, exclude), daemon=True).start()
+    return redirect(url_for("home"))
+
+
+@app.route("/analyze/stop", methods=["POST"])
+def stop_analyze():
+    if STATE["status"] == "running":
+        STATE["cancel"] = True
     return redirect(url_for("home"))
 
 

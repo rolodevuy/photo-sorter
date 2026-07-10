@@ -146,12 +146,14 @@ def cluster_faces(faces, encodings):
     ]
 
 
-def run_analysis(photos_dir, exclude=None, progress=None, log=print):
-    """Analiza la carpeta de origen completa y escribe clusters.json.
+def run_analysis(photos_dir, exclude=None, progress=None, log=print, should_stop=None):
+    """Analiza la carpeta de origen y escribe clusters.json.
 
     Usa YuNet (detección) + SFace (reconocimiento) de OpenCV, que detectan bien
     caras anguladas o de perfil y son rápidos en CPU.
     progress: callback opcional progress(actual, total, nombre_foto).
+    should_stop: callback opcional que, si devuelve True, corta el análisis y
+    guarda lo procesado hasta ese momento (parcial).
     Devuelve (cantidad_rostros, cantidad_grupos). Lanza ValueError si no hay
     fotos o no se encuentra ningún rostro.
     """
@@ -169,8 +171,13 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
     encodings = []
     no_faces = []
     counter = 0
+    stopped = False
 
     for i, photo in enumerate(photos, 1):
+        if should_stop and should_stop():
+            stopped = True
+            log(f"[analyze] detenido por el usuario en {i}/{len(photos)}")
+            break
         rel = photo.relative_to(photos_dir).as_posix()
         if progress:
             progress(i, len(photos), rel)
@@ -197,6 +204,8 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
             save_thumbnail(image, box, face_id)
 
     if not faces:
+        if stopped:
+            return 0, 0   # detenido antes de encontrar ninguna cara
         raise ValueError("No se encontró ningún rostro en las fotos.")
 
     clusters = cluster_faces(faces, encodings)
