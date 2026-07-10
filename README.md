@@ -13,6 +13,10 @@ PhotoSorter.bat  →  se abre http://127.0.0.1:5000
 3. **Etiquetar**: cada grupo aparece con la pregunta "¿quién es esta persona?". Los grupos sin nombre se ignoran.
 4. **Organizar**: copia cada foto a `<destino>\<nombre>\`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
 
+## Depurar un grupo (cuando mezcló personas)
+
+A veces un grupo junta caras de personas distintas. En los grupos de más de 10 caras aparece el botón **"🔍 Revisar y depurar"**, que abre una ventana con **todas** las caras del grupo. Tocás las que **no son** esa persona (quedan con borde rojo) y **"🗑 Quitar seleccionadas"**: esas caras salen del grupo y van a un grupo aparte **"Para revisar"** para una segunda pasada. No se borra ninguna foto del disco.
+
 ## Personas conocidas (reconocimiento automático)
 
 El programa recuerda a las personas que ya nombraste y las reconoce solo en los próximos análisis, así no las reetiquetás cada vez.

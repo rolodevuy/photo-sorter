@@ -79,6 +79,25 @@ TEMPLATE = """
   .saved-tick { color: #2e7d32; font-weight: 600; margin-left: .5rem;
                 opacity: 0; transition: opacity .3s; }
   .saved-tick.show { opacity: 1; }
+  /* modal para depurar un grupo */
+  #modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55);
+              z-index: 50; }
+  #modal { background: #fff; border-radius: 8px; max-width: 900px; width: 92vw;
+           margin: 3vh auto; max-height: 94vh; display: flex; flex-direction: column; }
+  #modal-head { padding: 1rem; border-bottom: 1px solid #eee; }
+  #modal-body { padding: 1rem; overflow-y: auto; }
+  #modal-foot { padding: 1rem; border-top: 1px solid #eee; display: flex;
+                gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .pick { display: inline-block; position: relative; cursor: pointer; }
+  .pick img { height: 120px; border-radius: 4px; display: block; border: 3px solid transparent; }
+  .pick.sel img { border-color: #e53935; }
+  .pick .x { position: absolute; top: 4px; right: 4px; background: #e53935; color: #fff;
+             border-radius: 50%; width: 22px; height: 22px; text-align: center;
+             line-height: 22px; font-size: .8rem; opacity: 0; }
+  .pick.sel .x { opacity: 1; }
+  .pick .pn { font-size: .7rem; color: #999; text-align: center; max-width: 120px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .danger { background: #e53935; color: #fff; border: 0; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -171,6 +190,21 @@ TEMPLATE = """
 
 <div id="list-view" style="display:none"></div>
 
+<div id="modal-bg" onclick="if(event.target.id==='modal-bg')closeModal()">
+  <div id="modal">
+    <div id="modal-head">
+      <div class="counter" id="modal-title"></div>
+      <div class="meta">Tocá las caras que <b>no son</b> esta persona para marcarlas (borde rojo). Al quitarlas, salen de este grupo y quedan en un grupo aparte <b>"Para revisar"</b> para la segunda pasada. No se borra ninguna foto del disco.</div>
+    </div>
+    <div id="modal-body"><div class="faces" id="modal-faces"></div></div>
+    <div id="modal-foot">
+      <button class="danger" onclick="removeSelected()">🗑 Quitar seleccionadas (<span id="sel-count">0</span>)</button>
+      <button class="secondary" onclick="toggleAll()">Marcar / desmarcar todas</button>
+      <button class="secondary" onclick="closeModal()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const GROUPS = {{ groups|tojson }};
 const FACE_URL = "{{ url_for('face', face_id='FID') }}";
@@ -208,9 +242,12 @@ function renderWizard() {
   const extra = g.faces.length > MAX_PREVIEW ?
     '<span class="meta">… y ' + (g.faces.length - MAX_PREVIEW) + ' más</span>' : '';
   card.innerHTML =
-    '<div class="counter">Grupo ' + (pos + 1) + ' de ' + queue.length + ' por revisar</div>' +
+    '<div class="counter">Grupo ' + (pos + 1) + ' de ' + queue.length + ' por revisar' +
+      (g.review ? ' · 🔁 Para revisar (caras apartadas de otros grupos)' : '') + '</div>' +
     '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa</div>' +
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(faceImg).join('') + extra + '</div>' +
+    (g.faces.length > 10 ?
+      '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
     '<div class="row">' +
       '<label>¿Quién es?</label>' +
       '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." autofocus>' +
@@ -260,6 +297,8 @@ function renderList() {
       '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
         (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(faceImg).join('') + '</div>' +
+      (g.faces.length > 10 ?
+        '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
       '<div class="row"><label>¿Quién es?</label>' +
         '<input type="text" id="ln-' + g.id + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '">' +
         '<button class="primary" onclick="listSave(' + g.id + ')">Guardar</button>' +
@@ -280,6 +319,62 @@ function listSave(id) {
     tick.classList.add('show');
     setTimeout(() => tick.classList.remove('show'), 1500);
   });
+}
+
+// ---- modal para depurar un grupo ----
+let modalGroup = null;
+const selected = new Set();
+
+function openModal(id) {
+  modalGroup = byId[id];
+  selected.clear();
+  document.getElementById('modal-title').textContent =
+    'Depurar grupo' + (modalGroup.name || modalGroup.auto ? ' "' + (modalGroup.name || modalGroup.auto) + '"' : '') +
+    ' — ' + modalGroup.faces.length + ' caras';
+  const box = document.getElementById('modal-faces');
+  box.innerHTML = modalGroup.faces.map(f =>
+    '<div class="pick" data-fid="' + f.id + '" onclick="togglePick(this)">' +
+      '<span class="x">✕</span>' +
+      '<img src="' + FACE_URL.replace('FID', f.id) + '" alt="cara">' +
+      '<div class="pn" title="' + f.photo + '">' + f.photo.split('/').pop() + '</div>' +
+    '</div>'
+  ).join('');
+  updateSel();
+  document.getElementById('modal-bg').style.display = 'block';
+}
+
+function togglePick(el) {
+  const fid = el.dataset.fid;
+  if (selected.has(fid)) { selected.delete(fid); el.classList.remove('sel'); }
+  else { selected.add(fid); el.classList.add('sel'); }
+  updateSel();
+}
+
+function toggleAll() {
+  const picks = [...document.querySelectorAll('#modal-faces .pick')];
+  const allSel = picks.every(p => selected.has(p.dataset.fid));
+  picks.forEach(p => {
+    if (allSel) { selected.delete(p.dataset.fid); p.classList.remove('sel'); }
+    else { selected.add(p.dataset.fid); p.classList.add('sel'); }
+  });
+  updateSel();
+}
+
+function updateSel() { document.getElementById('sel-count').textContent = selected.size; }
+function closeModal() { document.getElementById('modal-bg').style.display = 'none'; }
+
+function removeSelected() {
+  if (!selected.size) { closeModal(); return; }
+  if (selected.size >= modalGroup.faces.length) {
+    alert('No podés quitar todas las caras del grupo. Dejá al menos una, o mejor dejá el grupo sin nombre.');
+    return;
+  }
+  fetch("{{ url_for('cluster_remove') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'cluster_id=' + encodeURIComponent(modalGroup.id) +
+          '&face_ids=' + encodeURIComponent([...selected].join(','))
+  }).then(() => location.reload());
 }
 
 updateCounts();
@@ -557,6 +652,7 @@ def home():
                 "photos": len({faces[fid]["photo"] for fid in members}),
                 "name": labels.get(str(c["id"]), ""),
                 "auto": c.get("auto", ""),  # nombre reconocido automáticamente
+                "review": c.get("review", False),  # grupo "Para revisar" (depurado)
             })
 
     known = load_known()
@@ -670,6 +766,45 @@ def known_import():
 def known_clear():
     KNOWN_PATH.unlink(missing_ok=True)
     return redirect(url_for("home", msg="Base de personas conocidas vaciada."))
+
+
+@app.route("/cluster/remove", methods=["POST"])
+def cluster_remove():
+    """Saca caras de un grupo (que no son esa persona) y las manda a un grupo
+    aparte 'Para revisar', para una segunda pasada. No borra fotos del disco."""
+    data = load_clusters()
+    if not data:
+        return {"ok": False}
+    cluster_id = str(request.form.get("cluster_id", ""))
+    face_ids = [f for f in request.form.get("face_ids", "").split(",") if f]
+    if not face_ids:
+        return {"ok": True, "removed": 0}
+
+    src = next((c for c in data["clusters"] if str(c["id"]) == cluster_id), None)
+    if not src:
+        return {"ok": False}
+
+    to_move = [f for f in src["faces"] if f in set(face_ids)]
+    src["faces"] = [f for f in src["faces"] if f not in set(face_ids)]
+
+    # juntar todo lo apartado en un único grupo "Para revisar" (o crearlo)
+    review = next((c for c in data["clusters"] if c.get("review")), None)
+    if review is None:
+        new_id = max((c["id"] for c in data["clusters"]), default=-1) + 1
+        review = {"id": new_id, "faces": [], "review": True}
+        data["clusters"].append(review)
+    review["faces"].extend(to_move)
+
+    # si el grupo de origen quedó vacío, sacarlo (y su etiqueta)
+    if not src["faces"]:
+        data["clusters"] = [c for c in data["clusters"] if c is not src]
+        labels = load_labels()
+        if labels.pop(cluster_id, None) is not None:
+            save_labels(labels)
+
+    with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"ok": True, "removed": len(to_move)}
 
 
 @app.route("/label", methods=["POST"])
