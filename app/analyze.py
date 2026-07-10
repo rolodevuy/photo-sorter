@@ -25,7 +25,7 @@ from sklearn.cluster import AgglomerativeClustering
 from app import CLUSTERS_PATH, ENCODINGS_NPY, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
 from app.config import load_config
 from app.facedet import detect_and_encode
-from app.known import identify, load_known
+from app.known import identify_ranked, load_known
 
 # Umbral de distancia coseno para agrupar caras (agrupado jerárquico con
 # enlace "average"). Calibrado con 433 caras reales de 89 personas.
@@ -174,9 +174,9 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
     if known:
         for cluster in clusters:
             idxs = [int(fid) for fid in cluster["faces"]]
-            name, _ = identify(known, enc_array[idxs], eps=SUGGEST_EPS)
-            if name:
-                cluster["suggested"] = name
+            cands = identify_ranked(known, enc_array[idxs], eps=SUGGEST_EPS, top_n=3)
+            if cands:
+                cluster["suggestions"] = [name for name, _ in cands]
                 n_sug += 1
 
     with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:

@@ -121,21 +121,30 @@ def _centroids(db):
 def identify(db, embeddings, eps=MATCH_EPS):
     """Dado el conjunto de vectores de un grupo, devuelve (nombre, distancia)
     de la persona conocida más parecida, o (None, dist) si ninguna alcanza."""
+    ranked = identify_ranked(db, embeddings, eps=eps, top_n=1)
+    if ranked:
+        return ranked[0]
+    return None, 1.0
+
+
+def identify_ranked(db, embeddings, eps=MATCH_EPS, top_n=3):
+    """Devuelve hasta top_n candidatos [(nombre, distancia), ...] ordenados del
+    más parecido al menos, dentro del umbral eps. Sirve para ofrecer el
+    siguiente candidato cuando el usuario dice que la sugerencia no es correcta."""
     if not db or len(embeddings) == 0:
-        return None, 1.0
+        return []
     group = np.asarray(embeddings, dtype=np.float32).mean(axis=0)
     n = np.linalg.norm(group)
     if n > 0:
         group = group / n
 
-    best_name, best_dist = None, 2.0
+    scored = []
     for name, cent in _centroids(db).items():
         dist = 1.0 - float(np.dot(group, cent))  # distancia coseno
-        if dist < best_dist:
-            best_name, best_dist = name, dist
-    if best_dist <= eps:
-        return best_name, best_dist
-    return None, best_dist
+        if dist <= eps:
+            scored.append((name, dist))
+    scored.sort(key=lambda x: x[1])
+    return scored[:top_n]
 
 
 def _largest_face(dets):

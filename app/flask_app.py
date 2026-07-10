@@ -241,6 +241,11 @@ const MAX_PREVIEW = 12;
 let queue = GROUPS.filter(g => !g.name).map(g => g.id);   // grupos sin nombre, en orden
 let pos = 0;
 let wizardManual = false;   // true = mostrar el campo de texto (elegiste "Otra")
+let sugIdx = 0;             // candidato actual dentro de las sugerencias del grupo
+
+function curSuggestion(g) {
+  return (g.suggestions && sugIdx < g.suggestions.length) ? g.suggestions[sugIdx] : null;
+}
 
 const byId = {};
 GROUPS.forEach(g => byId[g.id] = g);
@@ -310,15 +315,17 @@ function renderWizard() {
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
     (g.faces.length > 10 || g.suspects ?
       '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
-    ((g.suggested && !wizardManual) ?
-      // hay sugerencia: preguntar ¿Es X? con Sí / No / Otra
-      '<div class="row"><span class="ask">¿Es <b>' + g.suggested + '</b>?</span>' +
+    ((curSuggestion(g) && !wizardManual) ?
+      // hay candidato: preguntar ¿Es X? con Sí / No / Otra
+      '<div class="row"><span class="ask">¿Es <b>' + curSuggestion(g) + '</b>?</span>' +
         '<button class="primary" onclick="wizardConfirm()">✅ Sí</button>' +
-        '<button class="secondary" onclick="wizardNext()">✖ No</button>' +
+        '<button class="secondary" onclick="wizardReject()">✖ No</button>' +
         '<button class="secondary" onclick="wizardOther()">✏️ Otra persona</button>' +
-      '</div>'
+      '</div>' +
+      (g.suggestions && g.suggestions.length > 1 ?
+        '<div class="meta">candidato ' + (sugIdx + 1) + ' de ' + g.suggestions.length + ' — "No" prueba el siguiente</div>' : '')
     :
-      // sin sugerencia (o elegiste "Otra"): campo para escribir el nombre
+      // sin candidatos (o elegiste "Otra"): campo para escribir el nombre
       '<div class="row">' +
         '<label>¿Quién es?</label>' +
         '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." autofocus>' +
@@ -340,13 +347,25 @@ function saveLabel(clusterId, name) {
   });
 }
 
-function wizardConfirm() {   // "Sí": confirmar la sugerencia
+function wizardConfirm() {   // "Sí": confirmar el candidato actual
   const g = byId[queue[pos]];
-  saveLabel(g.id, g.suggested).then(() => {
-    g.name = g.suggested;
+  const sug = curSuggestion(g);
+  if (!sug) return;
+  saveLabel(g.id, sug).then(() => {
+    g.name = sug;
     updateCounts();
     wizardNext();
   });
+}
+
+function wizardReject() {   // "No": descartar este candidato y ofrecer el siguiente
+  const g = byId[queue[pos]];
+  sugIdx++;
+  if (curSuggestion(g)) {
+    renderWizard();        // mismo grupo, próximo candidato
+  } else {
+    wizardNext();          // no quedan candidatos: saltear el grupo
+  }
 }
 
 function wizardOther() {   // "Otra persona": mostrar el campo de texto
@@ -365,8 +384,9 @@ function wizardSave() {
   });
 }
 
-function wizardNext() {   // "No" / "Saltear" / avanzar tras guardar
+function wizardNext() {   // "Saltear" / avanzar tras guardar
   wizardManual = false;
+  sugIdx = 0;
   const card = document.getElementById('wizard-card');
   card.classList.add('fade');
   setTimeout(() => { pos++; renderWizard(); card.classList.remove('fade'); }, 250);
@@ -383,14 +403,14 @@ function renderList() {
   lv.innerHTML = GROUPS.filter(g => g.faces.length > 0).map(g =>
     '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
       '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
-        (g.suggested && !g.name ? ' · <b>💡 sugerencia: ' + g.suggested + '</b>' : '') +
+        (g.suggestions && g.suggestions.length && !g.name ? ' · <b>💡 sugerencia: ' + g.suggestions[0] + '</b>' : '') +
         (g.review ? ' · 🔁 Para revisar' : '') +
         (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' dudosa(s)</span>' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(f => faceImg(f, g.id)).join('') + '</div>' +
       (g.faces.length > 10 || g.suspects ?
         '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
       '<div class="row"><label>¿Quién es?</label>' +
-        '<input type="text" id="ln-' + g.id + '" value="' + (g.name || g.suggested || '').replace(/"/g, '&quot;') + '">' +
+        '<input type="text" id="ln-' + g.id + '" value="' + (g.name || (g.suggestions && g.suggestions[0]) || '').replace(/"/g, '&quot;') + '">' +
         '<button class="primary" onclick="listSave(' + g.id + ')">Guardar</button>' +
         '<span class="saved-tick" id="lt-' + g.id + '">✓ guardado</span>' +
       '</div>' +
@@ -419,7 +439,7 @@ function openModal(id) {
   modalGroup = byId[id];
   selected.clear();
   document.getElementById('modal-title').textContent =
-    'Depurar grupo' + (modalGroup.name || modalGroup.suggested ? ' "' + (modalGroup.name || modalGroup.suggested) + '"' : '') +
+    'Depurar grupo' + (modalGroup.name || (modalGroup.suggestions && modalGroup.suggestions[0]) ? ' "' + (modalGroup.name || modalGroup.suggestions[0]) + '"' : '') +
     ' — ' + modalGroup.faces.length + ' caras';
   const box = document.getElementById('modal-faces');
   // dudosas primero, para que salten a la vista
@@ -772,7 +792,7 @@ def home():
                            "suspect": fid in suspects} for fid in members],
                 "photos": len({faces[fid]["photo"] for fid in members}),
                 "name": labels.get(str(c["id"]), ""),
-                "suggested": c.get("suggested", ""),  # persona sugerida (a confirmar)
+                "suggestions": c.get("suggestions", []),  # candidatos ordenados (a confirmar)
                 "review": c.get("review", False),  # grupo "Para revisar" (depurado)
                 "suspects": len(suspects),
             })
