@@ -42,6 +42,14 @@ from app.known import identify_ranked, load_known
 # más de riesgo de mezclar parecidos.
 EPS = 0.60
 
+# Segundo paso anti-bloques: después de agrupar, un grupo se considera "difuso"
+# (probable mezcla de personas) si sus caras están en promedio lejos de su
+# centro; se re-separa con un umbral más estricto. Un grupo grande pero compacto
+# (una persona con muchas fotos) tiene cohesión baja y NO se toca.
+SPLIT_MIN_SIZE = 4      # solo grupos de este tamaño o más
+SPLIT_COHESION = 0.42   # distancia media al centro por encima de la cual se re-separa
+SPLIT_EPS = 0.45        # umbral más estricto para re-separar el grupo difuso
+
 # Distancia coseno máxima para SUGERIR una persona conocida en un grupo. Es más
 # permisiva que la del reconocimiento estricto (known.MATCH_EPS): acá alcanza
 # con que sea el candidato más parecido y razonable, porque el usuario confirma.
@@ -83,27 +91,58 @@ def save_thumbnail(image, box, face_id):
     thumb.save(FACES_DIR / f"{face_id}.jpg", quality=85)
 
 
+def _agglomerate(vectors, eps):
+    """Etiquetas de agrupado jerárquico (average) para una matriz de vectores."""
+    if len(vectors) == 1:
+        return [0]
+    return AgglomerativeClustering(
+        n_clusters=None, distance_threshold=eps,
+        metric="cosine", linkage="average",
+    ).fit_predict(vectors)
+
+
+def _cohesion(vectors):
+    """Distancia coseno media de las caras al centro del grupo. Baja = compacto
+    (probable una persona); alta = disperso (probable mezcla)."""
+    cent = vectors.mean(axis=0)
+    n = np.linalg.norm(cent)
+    if n > 0:
+        cent = cent / n
+    return float((1.0 - vectors @ cent).mean())
+
+
 def cluster_faces(faces, encodings):
-    """Agrupa los encodings por persona (jerárquico, enlace average). Devuelve
-    lista de clusters. Las caras que no se parecen a ninguna otra quedan como
-    grupos de una sola cara."""
+    """Agrupa los encodings por persona (jerárquico, enlace average) y re-separa
+    los grupos "difusos" (probable mezcla de personas). Devuelve lista de
+    clusters; las caras que no se parecen a ninguna otra quedan como grupos de
+    una sola cara."""
     face_ids = list(faces.keys())
-    if len(face_ids) == 1:
-        labels = [0]
-    else:
-        labels = AgglomerativeClustering(
-            n_clusters=None, distance_threshold=EPS,
-            metric="cosine", linkage="average",
-        ).fit_predict(np.array(encodings))
+    X = np.array(encodings)
+    labels = _agglomerate(X, EPS)
 
-    groups = {}
-    for face_id, label in zip(face_ids, labels):
-        groups.setdefault(int(label), []).append(face_id)
+    # agrupar índices por etiqueta
+    by_label = {}
+    for idx, label in enumerate(labels):
+        by_label.setdefault(int(label), []).append(idx)
 
-    # Grupos grandes primero (los de una sola cara quedan al final)
+    # segundo paso: re-separar los grupos grandes y dispersos
+    final_groups = []  # listas de índices
+    for members in by_label.values():
+        if len(members) >= SPLIT_MIN_SIZE and _cohesion(X[members]) > SPLIT_COHESION:
+            sub = X[members]
+            sub_labels = _agglomerate(sub, SPLIT_EPS)
+            parts = {}
+            for local_i, sl in enumerate(sub_labels):
+                parts.setdefault(int(sl), []).append(members[local_i])
+            final_groups.extend(parts.values())
+        else:
+            final_groups.append(members)
+
+    # pasar de índices a face_ids, grupos grandes primero
+    final_groups.sort(key=len, reverse=True)
     return [
-        {"id": i, "faces": members}
-        for i, members in enumerate(sorted(groups.values(), key=len, reverse=True))
+        {"id": i, "faces": [face_ids[idx] for idx in members]}
+        for i, members in enumerate(final_groups)
     ]
 
 
