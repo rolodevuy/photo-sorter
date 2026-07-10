@@ -99,14 +99,13 @@ TEMPLATE = """
       <button type="button" onclick="browse('output_dir')">📂 Elegir carpeta…</button>
     </div>
     <div class="row">
-      <button class="primary">Guardar carpetas</button>
+      <button class="secondary" formaction="{{ url_for('settings') }}">💾 Guardar carpetas</button>
+      <button class="primary" formaction="{{ url_for('do_analyze') }}"
+              {% if state.status == 'running' %}disabled{% endif %}>
+        🔍 Analizar fotos del origen
+      </button>
     </div>
-  </form>
-  <form method="post" action="{{ url_for('do_analyze') }}">
-    <button class="primary" {% if not cfg.get('photos_dir') or state.status == 'running' %}disabled{% endif %}>
-      🔍 Analizar fotos del origen
-    </button>
-    <span class="meta">Detecta los rostros (incluso de perfil o anguladas) y agrupa las caras iguales. Con muchas fotos tarda.</span>
+    <span class="meta">"Analizar" usa la carpeta que ves arriba. Detecta los rostros (incluso de perfil o anguladas) y agrupa las caras iguales. Con muchas fotos tarda.</span>
   </form>
   {% if state.status == 'running' %}
     <p>Analizando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
@@ -530,12 +529,33 @@ def home():
     )
 
 
+def _clear_analysis():
+    """Borra el análisis anterior (grupos, nombres y miniaturas)."""
+    CLUSTERS_PATH.unlink(missing_ok=True)
+    LABELS_PATH.unlink(missing_ok=True)
+    if FACES_DIR.is_dir():
+        import shutil
+        shutil.rmtree(FACES_DIR, ignore_errors=True)
+
+
+def _save_folders(cfg):
+    """Guarda origen/destino del formulario. Si cambió el origen, borra el
+    análisis viejo así no quedan grupos de la carpeta anterior. Devuelve True
+    si cambió el origen."""
+    new_photos = request.form.get("photos_dir", "").strip()
+    changed = new_photos != cfg.get("photos_dir", "")
+    cfg["photos_dir"] = new_photos
+    cfg["output_dir"] = request.form.get("output_dir", "").strip()
+    save_config(cfg)
+    if changed:
+        _clear_analysis()
+    return changed
+
+
 @app.route("/settings", methods=["POST"])
 def settings():
     cfg = load_config()
-    cfg["photos_dir"] = request.form.get("photos_dir", "").strip()
-    cfg["output_dir"] = request.form.get("output_dir", "").strip()
-    save_config(cfg)
+    _save_folders(cfg)
     return redirect(url_for("home", msg="Carpetas guardadas."))
 
 
@@ -566,7 +586,10 @@ def do_analyze():
     if STATE["status"] == "running":
         return redirect(url_for("home"))
 
+    # Tomar las carpetas del formulario (lo que el usuario ve arriba) y guardarlas.
     cfg = load_config()
+    _save_folders(cfg)
+
     photos_dir = Path(cfg.get("photos_dir", ""))
     if not cfg.get("photos_dir") or not photos_dir.is_dir():
         return redirect(url_for("home", msg="La carpeta de origen no existe. Elegila de nuevo."))
