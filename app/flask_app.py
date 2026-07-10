@@ -108,11 +108,12 @@ TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p><b>Ordenar por rostro</b> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <a href="{{ url_for('rename_page') }}">Renombrar</a></p>
+<p><b>Ordenar por rostro</b> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <a href="{{ url_for('rename_page') }}">Corregir carpeta</a></p>
 <p class="hint">Al organizar, tus fotos se <b>mueven</b> al destino como <code>nombre_0000.jpg</code>, separadas por persona (desaparecen del origen). Las fotos sin nombre quedan donde estaban. Todo corre en esta máquina.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if state.status == 'error' %}<div class="err">Error del análisis: {{ state.error }}</div>{% endif %}
+{% if state.status == 'done' and groups %}<div class="msg">✅ Análisis terminado: {{ groups|length }} grupo(s) de rostros.</div>{% endif %}
 
 <div class="panel">
   <form method="post" action="{{ url_for('settings') }}">
@@ -131,7 +132,8 @@ TEMPLATE = """
     <div class="row">
       <button class="secondary" formaction="{{ url_for('settings') }}">💾 Guardar carpetas</button>
       <button class="primary" formaction="{{ url_for('do_analyze') }}"
-              {% if state.status == 'running' %}disabled{% endif %}>
+              {% if state.status == 'running' %}disabled{% endif %}
+              {% if groups %}onclick="return confirm('Volver a analizar rehace TODO desde cero y borra los nombres y ajustes de este análisis (las personas conocidas se conservan). ¿Seguir?')"{% endif %}>
         🔍 Analizar fotos del origen
       </button>
     </div>
@@ -471,7 +473,7 @@ DUPES_TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <b>Buscar duplicados</b> · <a href="{{ url_for('rename_page') }}">Renombrar</a></p>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <b>Buscar duplicados</b> · <a href="{{ url_for('rename_page') }}">Corregir carpeta</a></p>
 <p class="hint">Encuentra fotos repetidas: <b>exactas</b> (mismo archivo con otro nombre) y <b>parecidas</b> (la misma imagen reescalada o recomprimida). En cada grupo se marca cuál conviene conservar (mayor resolución). Al resolver, las sobrantes se <b>mueven</b> a una carpeta <code>_duplicados</code> dentro del origen — no se borran, las revisás vos.</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
@@ -573,8 +575,8 @@ RENAME_TEMPLATE = """
 </head>
 <body>
 <h1>photo-sorter</h1>
-<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <b>Renombrar</b></p>
-<p class="hint">Renombra en masa las imágenes de una carpeta con el patrón que elijas: una palabra, un separador y un número con la cantidad de dígitos que quieras. Trabaja solo en el primer nivel de la carpeta (no entra en subcarpetas).</p>
+<p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <b>Corregir carpeta</b></p>
+<p class="hint">Renombra en masa las imágenes de una carpeta con el patrón que elijas: una palabra, un separador y un número que se va sumando solo (<code>0000</code>, <code>0001</code>…). Trabaja solo en el primer nivel de la carpeta (no entra en subcarpetas).</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if error %}<div class="err">{{ error }}</div>{% endif %}
