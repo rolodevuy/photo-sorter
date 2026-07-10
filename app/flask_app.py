@@ -75,6 +75,7 @@ TEMPLATE = """
                             color: #fff; border-radius: 4px; font-size: .7rem; padding: 0 4px; }
   .suspect-note { color: #e65100; font-weight: 600; }
   .suggest-note { color: #1565c0; margin: .3rem 0; }
+  .ask { font-size: 1.15rem; margin-right: .3rem; }
   .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
   .row label { min-width: 70px; font-weight: 600; }
   input[type=text] { padding: .45rem; font-size: 1.05rem; }
@@ -239,6 +240,7 @@ const MAX_PREVIEW = 12;
 
 let queue = GROUPS.filter(g => !g.name).map(g => g.id);   // grupos sin nombre, en orden
 let pos = 0;
+let wizardManual = false;   // true = mostrar el campo de texto (elegiste "Otra")
 
 const byId = {};
 GROUPS.forEach(g => byId[g.id] = g);
@@ -308,17 +310,26 @@ function renderWizard() {
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
     (g.faces.length > 10 || g.suspects ?
       '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
-    (g.suggested ? '<div class="suggest-note">💡 Sugerencia: <b>' + g.suggested + '</b> — confirmá (Enter) o corregí</div>' : '') +
-    '<div class="row">' +
-      '<label>¿Quién es?</label>' +
-      '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." value="' + (g.suggested || '').replace(/"/g, '&quot;') + '" autofocus>' +
-      '<button class="primary" onclick="wizardSave()">Guardar</button>' +
-      '<button class="secondary" onclick="wizardNext()">Saltear</button>' +
-    '</div>';
+    ((g.suggested && !wizardManual) ?
+      // hay sugerencia: preguntar ¿Es X? con Sí / No / Otra
+      '<div class="row"><span class="ask">¿Es <b>' + g.suggested + '</b>?</span>' +
+        '<button class="primary" onclick="wizardConfirm()">✅ Sí</button>' +
+        '<button class="secondary" onclick="wizardNext()">✖ No</button>' +
+        '<button class="secondary" onclick="wizardOther()">✏️ Otra persona</button>' +
+      '</div>'
+    :
+      // sin sugerencia (o elegiste "Otra"): campo para escribir el nombre
+      '<div class="row">' +
+        '<label>¿Quién es?</label>' +
+        '<input type="text" id="wizard-name" placeholder="ej: mamá, Juan..." autofocus>' +
+        '<button class="primary" onclick="wizardSave()">Guardar</button>' +
+        '<button class="secondary" onclick="wizardNext()">Saltear</button>' +
+      '</div>');
   const input = document.getElementById('wizard-name');
-  input.focus();
-  input.select();
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') wizardSave(); });
+  if (input) {
+    input.focus();
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') wizardSave(); });
+  }
 }
 
 function saveLabel(clusterId, name) {
@@ -327,6 +338,20 @@ function saveLabel(clusterId, name) {
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: 'cluster_id=' + encodeURIComponent(clusterId) + '&name=' + encodeURIComponent(name)
   });
+}
+
+function wizardConfirm() {   // "Sí": confirmar la sugerencia
+  const g = byId[queue[pos]];
+  saveLabel(g.id, g.suggested).then(() => {
+    g.name = g.suggested;
+    updateCounts();
+    wizardNext();
+  });
+}
+
+function wizardOther() {   // "Otra persona": mostrar el campo de texto
+  wizardManual = true;
+  renderWizard();
 }
 
 function wizardSave() {
@@ -340,7 +365,8 @@ function wizardSave() {
   });
 }
 
-function wizardNext() {
+function wizardNext() {   // "No" / "Saltear" / avanzar tras guardar
+  wizardManual = false;
   const card = document.getElementById('wizard-card');
   card.classList.add('fade');
   setTimeout(() => { pos++; renderWizard(); card.classList.remove('fade'); }, 250);
