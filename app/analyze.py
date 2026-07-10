@@ -22,9 +22,10 @@ import numpy as np
 from PIL import Image, ImageOps
 from sklearn.cluster import DBSCAN
 
-from app import CLUSTERS_PATH, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
+from app import CLUSTERS_PATH, ENCODINGS_NPY, FACES_DIR, IMAGE_EXTENSIONS, LABELS_PATH
 from app.config import load_config
 from app.facedet import detect_and_encode
+from app.known import identify, load_known
 
 # Distancia coseno máxima entre vectores SFace para considerarlos la misma
 # persona. SFace considera "misma persona" con similitud coseno > 0.363, o sea
@@ -149,6 +150,22 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
 
     clusters = cluster_faces(faces, encodings)
 
+    # Guardar los vectores (para reconocer y para sumar a la base al nombrar).
+    enc_array = np.array(encodings, dtype=np.float32)
+    np.save(ENCODINGS_NPY, enc_array)
+
+    # Reconocimiento automático: los grupos que coincidan con una persona ya
+    # conocida quedan preetiquetados; el asistente solo pregunta por los demás.
+    known = load_known()
+    auto_labels = {}
+    if known:
+        for cluster in clusters:
+            idxs = [int(fid) for fid in cluster["faces"]]
+            name, _ = identify(known, enc_array[idxs])
+            if name:
+                cluster["auto"] = name
+                auto_labels[str(cluster["id"])] = name
+
     with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -160,9 +177,16 @@ def run_analysis(photos_dir, exclude=None, progress=None, log=print):
             f, ensure_ascii=False, indent=2,
         )
 
-    # Los nombres viejos corresponden a grupos que ya no existen.
-    LABELS_PATH.unlink(missing_ok=True)
+    # Los nombres viejos corresponden a grupos que ya no existen; se reemplazan
+    # por los reconocidos automáticamente (si los hay).
+    if auto_labels:
+        with open(LABELS_PATH, "w", encoding="utf-8") as f:
+            json.dump(auto_labels, f, ensure_ascii=False, indent=2)
+    else:
+        LABELS_PATH.unlink(missing_ok=True)
 
+    if auto_labels:
+        log(f"[analyze] {len(auto_labels)} grupo(s) reconocido(s) automáticamente.")
     return len(faces), len(clusters)
 
 

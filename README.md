@@ -13,6 +13,16 @@ PhotoSorter.bat  →  se abre http://127.0.0.1:5000
 3. **Etiquetar**: cada grupo aparece con la pregunta "¿quién es esta persona?". Los grupos sin nombre se ignoran.
 4. **Organizar**: copia cada foto a `<destino>\<nombre>\`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
 
+## Personas conocidas (reconocimiento automático)
+
+El programa recuerda a las personas que ya nombraste y las reconoce solo en los próximos análisis, así no las reetiquetás cada vez.
+
+- **Importar desde una carpeta ya ordenada**: si ya tenés carpetas con caras clasificadas (una subcarpeta por persona, con su nombre), apuntá ahí y las aprende todas de una — sin rehacer nada. Toma la cara más grande de cada foto.
+- **Aprende sobre la marcha**: cada grupo que nombrás en la web se suma a la base.
+- **Autoetiquetado**: al analizar, los grupos que coinciden con alguien conocido ya vienen con el nombre puesto (marcados como "reconocida" en "Ver/editar todos los grupos"); el asistente solo te pregunta por los desconocidos.
+
+La base es `data/known_people.json` (vectores por persona, sin fotos). El umbral de coincidencia está en `app/known.py` (`MATCH_EPS`, por defecto 0.50): más bajo = más estricto.
+
 ## Buscar duplicados
 
 Además de ordenar por rostro, la web tiene una pestaña **"Buscar duplicados"** que encuentra fotos repetidas en la carpeta de origen:

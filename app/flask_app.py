@@ -20,10 +20,13 @@ from pathlib import Path
 
 from flask import Flask, redirect, render_template_string, request, send_from_directory, url_for
 
-from app import CLUSTERS_PATH, DUPES_PATH, DUPES_THUMBS, FACES_DIR, LABELS_PATH
+import numpy as np
+
+from app import CLUSTERS_PATH, DUPES_PATH, DUPES_THUMBS, ENCODINGS_NPY, FACES_DIR, KNOWN_PATH, LABELS_PATH
 from app.analyze import run_analysis
 from app.config import load_config, save_config
 from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
+from app.known import add_faces, enroll_from_folder, load_known, save_known
 from app.organizer import organize
 from app.renamer import apply_rename, plan_rename
 
@@ -33,6 +36,8 @@ app = Flask(__name__)
 STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 # Estado de la búsqueda de duplicados (otro hilo)
 DUPE_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
+# Estado de la importación de personas conocidas (otro hilo)
+IMPORT_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 
 TEMPLATE = """
 <!doctype html>
@@ -40,7 +45,7 @@ TEMPLATE = """
 <head>
 <meta charset="utf-8">
 <title>photo-sorter</title>
-{% if state.status == 'running' %}<meta http-equiv="refresh" content="2">{% endif %}
+{% if state.status == 'running' or imp.status == 'running' %}<meta http-equiv="refresh" content="2">{% endif %}
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 860px;
          padding: 0 1rem; background: #f5f5f5; }
@@ -111,6 +116,39 @@ TEMPLATE = """
     <p>Analizando {{ state.current }}/{{ state.total }}: {{ state.photo }}</p>
     <progress value="{{ state.current }}" max="{{ state.total or 1 }}"></progress>
     <p class="meta">Esta página se actualiza sola cada 2 segundos.</p>
+  {% endif %}
+</div>
+
+<div class="panel" {% if imp.status == 'running' %}data-refresh="1"{% endif %}>
+  <div class="counter">👤 Personas conocidas: <b>{{ known_count }}</b></div>
+  <p class="meta">El programa reconoce solas a estas personas en cada análisis y ya les pone el nombre.
+     Cada persona que nombres se suma acá.</p>
+  <form method="post" action="{{ url_for('known_import') }}">
+    <div class="row">
+      <input class="path" type="text" name="known_dir" value="{{ known_dir }}"
+             placeholder="Carpeta ya ordenada (subcarpetas = nombres de personas)">
+      <button type="button" onclick="browse('known_dir')">📂 Elegir carpeta…</button>
+    </div>
+    <div class="row">
+      <button class="primary" {% if imp.status == 'running' %}disabled{% endif %}>
+        📥 Importar personas de esa carpeta
+      </button>
+      {% if known_count > 0 %}
+      <button class="secondary" formaction="{{ url_for('known_clear') }}"
+              onclick="return confirm('¿Vaciar la base de personas conocidas?')">Vaciar base</button>
+      {% endif %}
+    </div>
+    <span class="meta">Si ya tenés carpetas con caras clasificadas (una carpeta por persona), importalas y no hace falta reetiquetar.</span>
+  </form>
+  {% if imp.status == 'running' %}
+    <p>Aprendiendo {{ imp.current }}/{{ imp.total }}: {{ imp.photo }}</p>
+    <progress value="{{ imp.current }}" max="{{ imp.total or 1 }}"></progress>
+    <p class="meta">Esta página se actualiza sola cada 2 segundos.</p>
+  {% elif imp.status == 'error' %}
+    <div class="err">Error al importar: {{ imp.error }}</div>
+  {% elif imp.status == 'done' and imp.get('added') %}
+    <div class="msg">Importadas {{ imp.added|length }} persona(s):
+      {{ imp.added.keys()|list|join(', ') }}.</div>
   {% endif %}
 </div>
 
@@ -219,7 +257,8 @@ function renderList() {
   const lv = document.getElementById('list-view');
   lv.innerHTML = GROUPS.map(g =>
     '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
-      '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)</div>' +
+      '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
+        (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(faceImg).join('') + '</div>' +
       '<div class="row"><label>¿Quién es?</label>' +
         '<input type="text" id="ln-' + g.id + '" value="' + (g.name || '').replace(/"/g, '&quot;') + '">' +
@@ -517,14 +556,19 @@ def home():
                 "faces": [{"id": fid, "photo": faces[fid]["photo"]} for fid in members],
                 "photos": len({faces[fid]["photo"] for fid in members}),
                 "name": labels.get(str(c["id"]), ""),
+                "auto": c.get("auto", ""),  # nombre reconocido automáticamente
             })
 
+    known = load_known()
     return render_template_string(
         TEMPLATE,
         cfg=cfg,
         state=STATE,
+        imp=IMPORT_STATE,
         groups=groups,
         labeled=sum(1 for g in groups if g["name"]),
+        known_count=len(known),
+        known_dir=request.args.get("known_dir", ""),
         message=request.args.get("msg", ""),
     )
 
@@ -600,6 +644,34 @@ def do_analyze():
     return redirect(url_for("home"))
 
 
+def _import_worker(folder):
+    def progress(current, total, name):
+        IMPORT_STATE.update(current=current, total=total, photo=name)
+    try:
+        added = enroll_from_folder(folder, progress=progress)
+        IMPORT_STATE.update(status="done", added=added)
+    except Exception as e:
+        IMPORT_STATE.update(status="error", error=str(e))
+
+
+@app.route("/known/import", methods=["POST"])
+def known_import():
+    if IMPORT_STATE["status"] == "running":
+        return redirect(url_for("home"))
+    folder = request.form.get("known_dir", "").strip()
+    if not folder or not Path(folder).is_dir():
+        return redirect(url_for("home", msg="La carpeta a importar no existe.", known_dir=folder))
+    IMPORT_STATE.update(status="running", current=0, total=0, photo="", error="")
+    threading.Thread(target=_import_worker, args=(folder,), daemon=True).start()
+    return redirect(url_for("home"))
+
+
+@app.route("/known/clear", methods=["POST"])
+def known_clear():
+    KNOWN_PATH.unlink(missing_ok=True)
+    return redirect(url_for("home", msg="Base de personas conocidas vaciada."))
+
+
 @app.route("/label", methods=["POST"])
 def label():
     labels = load_labels()
@@ -607,10 +679,31 @@ def label():
     name = request.form["name"].strip()
     if name:
         labels[cluster_id] = name
+        _enroll_cluster(cluster_id, name)  # sumar esta persona a la base conocida
     else:
         labels.pop(cluster_id, None)
     save_labels(labels)
     return {"ok": True, "name": name}
+
+
+def _enroll_cluster(cluster_id, name):
+    """Suma las caras de un grupo recién nombrado a la base de personas."""
+    data = load_clusters()
+    if not data or not ENCODINGS_NPY.is_file():
+        return
+    cluster = next((c for c in data["clusters"] if str(c["id"]) == str(cluster_id)), None)
+    if not cluster:
+        return
+    try:
+        enc = np.load(ENCODINGS_NPY)
+    except Exception:
+        return
+    idxs = [int(fid) for fid in cluster["faces"] if int(fid) < len(enc)]
+    if not idxs:
+        return
+    db = load_known()
+    add_faces(db, name, [enc[i] for i in idxs])
+    save_known(db)
 
 
 @app.route("/organize", methods=["POST"])
