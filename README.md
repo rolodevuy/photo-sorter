@@ -15,7 +15,10 @@ PhotoSorter.bat  →  se abre http://127.0.0.1:5000
 
 ## Depurar un grupo (cuando mezcló personas)
 
-A veces un grupo junta caras de personas distintas. En los grupos de más de 10 caras aparece el botón **"🔍 Revisar y depurar"**, que abre una ventana con **todas** las caras del grupo. Tocás las que **no son** esa persona (quedan con borde rojo) y **"🗑 Quitar seleccionadas"**: esas caras salen del grupo y van a un grupo aparte **"Para revisar"** para una segunda pasada. No se borra ninguna foto del disco.
+A veces un grupo junta caras de personas distintas. Hay dos formas de sacar las que no van (en ambas, las caras salen del grupo y van a un grupo aparte **"Para revisar"** para una segunda pasada — no se borra ninguna foto del disco):
+
+- **Una por una**: cada cara tiene una **✕ roja en la esquina**; tocala para sacar esa cara al toque.
+- **En grupos grandes** (más de 10 caras): el botón **"🔍 Revisar y depurar"** abre una ventana con **todas** las caras; marcás varias (quedan con borde rojo) y **"🗑 Quitar seleccionadas"**.
 
 ## Personas conocidas (reconocimiento automático)
 

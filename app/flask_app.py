@@ -55,6 +55,12 @@ TEMPLATE = """
                   margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   .faces { display: flex; flex-wrap: wrap; gap: 6px; margin: .75rem 0; }
   .faces a img { height: 110px; border-radius: 4px; display: block; }
+  .facewrap { position: relative; display: inline-block; }
+  .facewrap .fx { position: absolute; top: 3px; right: 3px; background: #e53935;
+                  color: #fff; border-radius: 50%; width: 22px; height: 22px;
+                  line-height: 22px; text-align: center; font-size: .8rem;
+                  cursor: pointer; opacity: .8; user-select: none; }
+  .facewrap .fx:hover { opacity: 1; }
   .row { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
   .row label { min-width: 70px; font-weight: 600; }
   input[type=text] { padding: .45rem; font-size: 1.05rem; }
@@ -217,10 +223,42 @@ let pos = 0;
 const byId = {};
 GROUPS.forEach(g => byId[g.id] = g);
 
-function faceImg(f) {
-  return '<a href="' + PHOTO_URL.replace('RELPATH', encodeURIComponent(f.photo)) +
-         '" target="_blank" title="' + f.photo + '"><img src="' +
-         FACE_URL.replace('FID', f.id) + '" alt="rostro"></a>';
+function faceImg(f, gid) {
+  return '<span class="facewrap">' +
+    '<a href="' + PHOTO_URL.replace('RELPATH', encodeURIComponent(f.photo)) +
+      '" target="_blank" title="' + f.photo + '"><img src="' +
+      FACE_URL.replace('FID', f.id) + '" alt="rostro"></a>' +
+    (gid !== undefined ?
+      '<span class="fx" data-gid="' + gid + '" data-fid="' + f.id +
+        '" title="Sacar esta cara del grupo (va a Para revisar)">✕</span>' : '') +
+  '</span>';
+}
+
+// clic en la ✕ de una cara (delegado, así vale para wizard y lista)
+document.addEventListener('click', function(ev) {
+  const fx = ev.target.closest && ev.target.closest('.fx');
+  if (!fx || !fx.dataset.fid) return;
+  ev.preventDefault(); ev.stopPropagation();
+  removeFace(parseInt(fx.dataset.gid, 10), fx.dataset.fid);
+});
+
+function removeFace(clusterId, faceId) {
+  const g = byId[clusterId];
+  if (!g) return;
+  fetch("{{ url_for('cluster_remove') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'cluster_id=' + encodeURIComponent(clusterId) + '&face_ids=' + encodeURIComponent(faceId)
+  }).then(() => {
+    g.faces = g.faces.filter(f => f.id !== faceId);
+    if (g.faces.length === 0) {          // grupo vacío: sale de la cola
+      queue = queue.filter(id => id !== clusterId);
+    }
+    updateCounts();
+    const lv = document.getElementById('list-view');
+    if (lv && lv.style.display !== 'none') renderList();
+    renderWizard();
+  });
 }
 
 function updateCounts() {
@@ -245,7 +283,7 @@ function renderWizard() {
     '<div class="counter">Grupo ' + (pos + 1) + ' de ' + queue.length + ' por revisar' +
       (g.review ? ' · 🔁 Para revisar (caras apartadas de otros grupos)' : '') + '</div>' +
     '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa</div>' +
-    '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(faceImg).join('') + extra + '</div>' +
+    '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
     (g.faces.length > 10 ?
       '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
     '<div class="row">' +
@@ -292,11 +330,12 @@ function toggleList() {
 
 function renderList() {
   const lv = document.getElementById('list-view');
-  lv.innerHTML = GROUPS.map(g =>
+  lv.innerHTML = GROUPS.filter(g => g.faces.length > 0).map(g =>
     '<div class="card' + (g.name ? ' labeled' : '') + '" id="lg-' + g.id + '">' +
       '<div class="meta">Grupo ' + g.id + ' — ' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s)' +
-        (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') + '</div>' +
-      '<div class="faces">' + g.faces.slice(0, 8).map(faceImg).join('') + '</div>' +
+        (g.auto ? ' · <b>reconocida: ' + g.auto + '</b> (revisá si está bien)' : '') +
+        (g.review ? ' · 🔁 Para revisar' : '') + '</div>' +
+      '<div class="faces">' + g.faces.slice(0, 8).map(f => faceImg(f, g.id)).join('') + '</div>' +
       (g.faces.length > 10 ?
         '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
       '<div class="row"><label>¿Quién es?</label>' +
