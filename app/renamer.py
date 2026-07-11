@@ -5,16 +5,17 @@ Ejemplos:
     prefijo="vacaciones", separador="_", dígitos=4  ->  vacaciones_0001.jpg
     prefijo="IMG",        separador="",  dígitos=3  ->  IMG001.jpg
 
-Trabaja sobre el primer nivel de la carpeta (no entra en subcarpetas) y solo
-sobre imágenes. Renombra en dos pasos (nombre temporal y después el final) para
-que nunca se pisen dos archivos entre sí.
+Trabaja sobre el primer nivel de la carpeta (no entra en subcarpetas) y sobre
+imágenes y videos comunes. Renombra en dos pasos (nombre temporal y después el
+final) para que nunca se pisen dos archivos entre sí. Solo cambia nombres: no
+lee ni analiza el contenido de los archivos.
 
-Uso normal: desde la web (pestaña "Renombrar").
+Uso normal: desde la web (pestaña "Corregir carpeta").
 """
 
 from pathlib import Path
 
-from app import IMAGE_EXTENSIONS
+from app import RENAME_EXTENSIONS
 
 INVALID = '<>:"/\\|?*'
 
@@ -24,10 +25,10 @@ def _clean_prefix(prefix):
 
 
 def list_targets(folder, order="name"):
-    """Imágenes del primer nivel de la carpeta, en el orden elegido."""
+    """Imágenes y videos del primer nivel de la carpeta, en el orden elegido."""
     folder = Path(folder)
     files = [p for p in folder.iterdir()
-             if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
+             if p.is_file() and p.suffix.lower() in RENAME_EXTENSIONS]
     if order == "date":
         files.sort(key=lambda p: (p.stat().st_mtime, p.name.lower()))
     else:

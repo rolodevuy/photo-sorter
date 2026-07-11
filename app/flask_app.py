@@ -678,7 +678,7 @@ RENAME_TEMPLATE = """
 <body>
 <h1>photo-sorter</h1>
 <p><a href="{{ url_for('home') }}">Ordenar por rostro</a> · <a href="{{ url_for('dupes_page') }}">Buscar duplicados</a> · <b>Corregir carpeta</b></p>
-<p class="hint">Renombra en masa las imágenes de una carpeta con el patrón que elijas: una palabra, un separador y un número que se va sumando solo (<code>0000</code>, <code>0001</code>…). Trabaja solo en el primer nivel de la carpeta (no entra en subcarpetas).</p>
+<p class="hint">Renombra en masa las imágenes y videos de una carpeta con el patrón que elijas: una palabra, un separador y un número que se va sumando solo (<code>0000</code>, <code>0001</code>…). Solo cambia nombres (no toca el contenido). Trabaja solo en el primer nivel de la carpeta (no entra en subcarpetas).</p>
 
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 {% if error %}<div class="err">{{ error }}</div>{% endif %}
