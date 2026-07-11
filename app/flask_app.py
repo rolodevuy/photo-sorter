@@ -277,6 +277,23 @@ document.addEventListener('click', function(ev) {
   removeFace(parseInt(fx.dataset.gid, 10), fx.dataset.fid);
 });
 
+function discardGroup(clusterId) {
+  fetch("{{ url_for('cluster_discard') }}", {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'cluster_id=' + encodeURIComponent(clusterId)
+  }).then(() => {
+    const idx = GROUPS.findIndex(g => g.id === clusterId);
+    if (idx >= 0) GROUPS.splice(idx, 1);
+    delete byId[clusterId];
+    queue = queue.filter(id => id !== clusterId);
+    updateCounts();
+    const lv = document.getElementById('list-view');
+    if (lv && lv.style.display !== 'none') renderList();
+    renderWizard();
+  });
+}
+
 function removeFace(clusterId, faceId) {
   const g = byId[clusterId];
   if (!g) return;
@@ -320,8 +337,11 @@ function renderWizard() {
     '<div class="meta">' + g.faces.length + ' rostro(s) en ' + g.photos + ' foto(s) — clic en una cara abre la foto completa' +
       (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' cara(s) dudosa(s)</span>' : '') + '</div>' +
     '<div class="faces">' + g.faces.slice(0, MAX_PREVIEW).map(f => faceImg(f, g.id)).join('') + extra + '</div>' +
-    (g.faces.length > 10 || g.suspects ?
-      '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
+    '<div class="row">' +
+      (g.faces.length > 10 || g.suspects ?
+        '<button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button>' : '') +
+      '<button class="secondary" onclick="discardGroup(' + g.id + ')" title="No es una cara real (tapizado, objeto, mancha)">🚫 No es una persona</button>' +
+    '</div>' +
     ((curSuggestion(g) && !wizardManual) ?
       // hay candidato: preguntar ¿Es X? con Sí / No / Otra
       '<div class="row"><span class="ask">¿Es <b>' + curSuggestion(g) + '</b>?</span>' +
@@ -414,8 +434,11 @@ function renderList() {
         (g.review ? ' · 🔁 Para revisar' : '') +
         (g.suspects ? ' · <span class="suspect-note">⚠ ' + g.suspects + ' dudosa(s)</span>' : '') + '</div>' +
       '<div class="faces">' + g.faces.slice(0, 8).map(f => faceImg(f, g.id)).join('') + '</div>' +
-      (g.faces.length > 10 || g.suspects ?
-        '<div class="row"><button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button></div>' : '') +
+      '<div class="row">' +
+        (g.faces.length > 10 || g.suspects ?
+          '<button class="secondary" onclick="openModal(' + g.id + ')">🔍 Revisar y depurar las ' + g.faces.length + ' caras</button>' : '') +
+        '<button class="secondary" onclick="discardGroup(' + g.id + ')" title="No es una cara real">🚫 No es una persona</button>' +
+      '</div>' +
       '<div class="row"><label>¿Quién es?</label>' +
         '<input type="text" id="ln-' + g.id + '" value="' + (g.name || (g.suggestions && g.suggestions[0]) || '').replace(/"/g, '&quot;') + '">' +
         '<button class="primary" onclick="listSave(' + g.id + ')">Guardar</button>' +
@@ -1005,6 +1028,24 @@ def known_forget():
     if name:
         forget_person(name)
     return redirect(url_for("known_page", msg=f"Se olvidó a {name}."))
+
+
+@app.route("/cluster/discard", methods=["POST"])
+def cluster_discard():
+    """Descarta un grupo entero: son detecciones que NO son personas (tapizado,
+    manchas, objetos que parecen caras). Se saca del análisis; no se organiza ni
+    se vuelve a preguntar. No borra fotos del disco."""
+    data = load_clusters()
+    if not data:
+        return {"ok": False}
+    cid = str(request.form.get("cluster_id", ""))
+    data["clusters"] = [c for c in data["clusters"] if str(c["id"]) != cid]
+    labels = load_labels()
+    if labels.pop(cid, None) is not None:
+        save_labels(labels)
+    with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"ok": True}
 
 
 @app.route("/cluster/remove", methods=["POST"])
