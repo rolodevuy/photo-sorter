@@ -22,7 +22,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from app import DUPES_PATH, DUPES_THUMBS, IMAGE_EXTENSIONS
+from app import (DUPES_PATH, DUPES_THUMBS, GROUP_DIR_NAME, IMAGE_EXTENSIONS,
+                 NSFW_DIR_NAME, REVIEW_DIR_NAME)
 from app.config import load_config
 
 # Distancia de Hamming máxima entre hashes perceptuales para considerar dos
@@ -72,13 +73,16 @@ class _UnionFind:
 
 DUPES_FOLDER_NAME = "_duplicados"
 
+# subcarpetas "apartadas" que nunca se re-escanean (fotos ya movidas a propósito)
+_SKIP_DIRS = {DUPES_FOLDER_NAME, GROUP_DIR_NAME, REVIEW_DIR_NAME, NSFW_DIR_NAME}
+
 
 def _iter_images(folder, exclude=None):
     for p in sorted(folder.rglob("*")):
         if exclude and p.is_relative_to(exclude):
             continue
-        # nunca re-escanear la carpeta donde movemos los sobrantes
-        if DUPES_FOLDER_NAME in p.parts:
+        # carpetas de fotos ya apartadas (_duplicados, _grupo, _revisar, _nsfw)
+        if _SKIP_DIRS & set(p.parts):
             continue
         if p.suffix.lower() in IMAGE_EXTENSIONS:
             yield p
