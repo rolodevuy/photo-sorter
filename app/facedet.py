@@ -9,6 +9,7 @@ donde box = (top, right, bottom, left) en el mismo tamaño de la imagen dada, y
 embedding es un vector normalizado (comparable por distancia coseno).
 """
 
+import threading
 from pathlib import Path
 
 import cv2
@@ -24,6 +25,14 @@ SCORE_THRESHOLD = 0.6
 
 _detector = None
 _recognizer = None
+
+# El detector y el reconocedor de OpenCV son objetos ÚNICOS compartidos por
+# todos los hilos, y no son thread-safe: fijar el tamaño de entrada y detectar
+# son dos pasos separados. Si dos tareas (ej. buscar persona + corregir perfil)
+# usan el detector a la vez, una pisa el tamaño de la otra y OpenCV crashea.
+# Este candado hace que cada análisis de imagen sea atómico: las tareas
+# conviven, pero se turnan el detector (que igual es CPU y no paraleliza).
+_LOCK = threading.Lock()
 
 
 def _load():
@@ -41,27 +50,31 @@ def _load():
 def detect_and_encode(image_rgb):
     """Detecta y codifica todas las caras de una imagen RGB (numpy).
 
-    Devuelve [(box, embedding), ...]. Lista vacía si no hay caras.
+    Devuelve [(box, embedding), ...]. Lista vacía si no hay caras. Es
+    thread-safe: se puede llamar desde varias tareas a la vez sin crashear.
     """
-    detector, recognizer = _load()
     img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     h, w = img_bgr.shape[:2]
-    detector.setInputSize((w, h))
-    _, faces = detector.detect(img_bgr)
 
-    results = []
-    if faces is None:
-        return results
-    for f in faces:
-        aligned = recognizer.alignCrop(img_bgr, f)
-        feat = recognizer.feature(aligned).flatten().astype(np.float32)
-        norm = np.linalg.norm(feat)
-        if norm > 0:
-            feat = feat / norm  # normalizar -> comparable por distancia coseno
-        x, y, bw, bh = f[0], f[1], f[2], f[3]
-        top = max(0, int(y))
-        left = max(0, int(x))
-        bottom = min(h, int(y + bh))
-        right = min(w, int(x + bw))
-        results.append(((top, right, bottom, left), feat))
+    # todo el uso del detector/reconocedor compartido va bajo el candado
+    with _LOCK:
+        detector, recognizer = _load()
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img_bgr)
+
+        results = []
+        if faces is None:
+            return results
+        for f in faces:
+            aligned = recognizer.alignCrop(img_bgr, f)
+            feat = recognizer.feature(aligned).flatten().astype(np.float32)
+            norm = np.linalg.norm(feat)
+            if norm > 0:
+                feat = feat / norm  # normalizar -> comparable por distancia coseno
+            x, y, bw, bh = f[0], f[1], f[2], f[3]
+            top = max(0, int(y))
+            left = max(0, int(x))
+            bottom = min(h, int(y + bh))
+            right = min(w, int(x + bw))
+            results.append(((top, right, bottom, left), feat))
     return results
