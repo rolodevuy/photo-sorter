@@ -13,12 +13,14 @@ Todo local, sin conexión.
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
 
-from app import IMAGE_EXTENSIONS, KNOWN_PATH, KNOWN_THUMBS
+from app import (GROUP_DIR_NAME, IMAGE_EXTENSIONS, KNOWN_PATH, KNOWN_THUMBS,
+                 NSFW_DIR_NAME, REVIEW_DIR_NAME)
 from app.facedet import detect_and_encode
 
 # Distancia coseno máxima para dar por conocida a una persona. Más bajo = más
@@ -155,11 +157,113 @@ def _largest_face(dets):
     return max(dets, key=lambda d: area(d[0]))
 
 
+def person_photos(known_dir, name, only_nsfw=False):
+    """Fotos de <carpeta_importada>/<nombre>/ (rutas relativas a esa subcarpeta),
+    para la galería de la persona. Lista vacía si la subcarpeta no existe.
+
+    Siempre excluye _revisar. Por defecto también excluye _nsfw (las apartadas
+    por el revisor); con only_nsfw=True devuelve SOLO esas, para el botón de
+    mostrar/ocultar NSFW en la galería."""
+    folder = Path(known_dir) / name
+    if not folder.is_dir():
+        return []
+    out = []
+    for p in sorted(folder.rglob("*")):
+        if p.suffix.lower() not in IMAGE_EXTENSIONS or REVIEW_DIR_NAME in p.parts:
+            continue
+        in_nsfw = NSFW_DIR_NAME in p.parts
+        if in_nsfw != only_nsfw:
+            continue
+        out.append(p.relative_to(folder).as_posix())
+    return out
+
+
+def move_photo(library, from_name, rel, to_name=None):
+    """Saca una foto de la carpeta de una persona.
+
+    to_name: nombre de otra persona (se muda a su carpeta) o None (va a
+    <persona>/_revisar/, apartada). Devuelve la ruta destino.
+    Lanza ValueError si la foto no existe.
+    """
+    src = Path(library) / from_name / rel
+    if not src.is_file():
+        raise ValueError("Esa foto ya no está.")
+
+    if to_name:
+        dest_dir = Path(library) / to_name
+    else:
+        dest_dir = Path(library) / from_name / REVIEW_DIR_NAME
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = dest_dir / src.name
+    n = 2
+    while dest.exists():
+        dest = dest_dir / f"{src.stem}_{n}{src.suffix}"
+        n += 1
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+def set_cover(name, photo_path, face_index=None):
+    """Elige la portada de una persona a partir de una foto suya.
+
+    Con una sola cara (o con face_index elegido en el selector) recorta esa
+    cara; sin caras usa la foto entera achicada. Devuelve (estado, encoding):
+    - ("multi", cantidad): hay varias caras y no se indicó cuál — el caller
+      muestra el selector para que el usuario señale a su persona.
+    - ("ok", encoding): recortó la cara; el encoding sirve para sumarla a la
+      base como ejemplo confirmado.
+    - ("whole", None): sin caras detectadas, foto entera.
+    """
+    img = np.asarray(ImageOps.exif_transpose(Image.open(photo_path)).convert("RGB"))
+    dets = detect_and_encode(img)
+    if not dets:
+        KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+        im = Image.fromarray(img)
+        im.thumbnail((220, 220))
+        im.save(KNOWN_THUMBS / f"{safe_name(name)}.jpg", quality=85)
+        return "whole", None
+    if face_index is None:
+        if len(dets) > 1:
+            return "multi", len(dets)
+        face_index = 0
+    if not 0 <= face_index < len(dets):
+        raise ValueError("Esa cara ya no está en la foto (volvé a elegirla).")
+    box, enc = dets[face_index]
+    save_person_thumb(name, img, box)
+    return "ok", enc
+
+
+def save_face_crops(photo_path, out_dir, size=160, margin=0.25):
+    """Recorta todas las caras de una foto a <out_dir>/0.jpg, 1.jpg... (en el
+    mismo orden que devuelve el detector, para que el selector de portada y
+    set_cover coincidan). Devuelve la cantidad de caras."""
+    img = np.asarray(ImageOps.exif_transpose(Image.open(photo_path)).convert("RGB"))
+    dets = detect_and_encode(img)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("*.jpg"):
+        old.unlink()
+    h, w = img.shape[:2]
+    for i, (box, _) in enumerate(dets):
+        top, right, bottom, left = box
+        my = int((bottom - top) * margin)
+        mx = int((right - left) * margin)
+        crop = img[max(0, top - my):min(h, bottom + my),
+                   max(0, left - mx):min(w, right + mx)]
+        im = Image.fromarray(crop)
+        im.thumbnail((size, size))
+        im.save(out_dir / f"{i}.jpg", quality=85)
+    return len(dets)
+
+
 def enroll_from_folder(folder, progress=None, log=print):
     """Aprende personas desde una carpeta ya ordenada: cada subcarpeta es el
     nombre de una persona y sus imágenes son ejemplos de esa persona.
 
-    Toma la cara más grande de cada imagen (para evitar acompañantes).
+    Toma la cara más grande de cada imagen. Saltea _revisar (fotos donde la
+    persona no está) y _grupo (fotos con varias caras, donde "la más grande"
+    puede no ser la persona): así solo aprende de fotos inequívocas.
     Devuelve dict {nombre: cantidad_de_caras_agregadas}.
     """
     folder = Path(folder)
@@ -171,8 +275,13 @@ def enroll_from_folder(folder, progress=None, log=print):
     added = {}
     best_area = {}   # nombre -> área de la cara más grande vista (para la miniatura)
     # total de imágenes para el progreso
+    # _revisar (la persona no está) y _grupo (varias caras) quedan afuera:
+    # solo se aprende de fotos donde la cara más grande es, sin dudas, la persona
+    skip = {REVIEW_DIR_NAME, GROUP_DIR_NAME}
     all_imgs = [(d.name, p) for d in person_dirs
-                for p in sorted(d.rglob("*")) if p.suffix.lower() in IMAGE_EXTENSIONS]
+                for p in sorted(d.rglob("*"))
+                if p.suffix.lower() in IMAGE_EXTENSIONS
+                and not skip & set(p.parts)]
     for i, (name, path) in enumerate(all_imgs, 1):
         if progress:
             progress(i, len(all_imgs), f"{name}/{path.name}")

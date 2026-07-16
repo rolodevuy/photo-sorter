@@ -18,8 +18,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from app import CLUSTERS_PATH, LABELS_PATH
-from app.config import load_config
+from app import CLUSTERS_PATH, FACES_DIR, LABELS_PATH
+from app.config import get_library, load_config
 
 FILE_ATTRIBUTE_HIDDEN = 0x2
 
@@ -70,9 +70,10 @@ def organize():
     de (ruta, motivo) de las fotos que no se pudieron mover.
     """
     cfg = load_config()
-    if not cfg.get("output_dir"):
-        raise ValueError("Todavía no elegiste la carpeta de destino.")
-    output_dir = Path(cfg["output_dir"])
+    library = get_library(cfg)
+    if not library:
+        raise ValueError("Todavía no elegiste la carpeta de la Biblioteca (pestaña Ajustes).")
+    output_dir = Path(library)
 
     with open(CLUSTERS_PATH, encoding="utf-8") as f:
         data = json.load(f)
@@ -106,7 +107,45 @@ def organize():
             # No se pudo mover: dejar el original donde está y avisar.
             errors.append((rel, str(e)))
 
+    # Los grupos organizados ya cumplieron: se sacan de la sesión para que la
+    # web no muestre para siempre el último análisis. Quedan los grupos sin
+    # nombre (por si querés seguir nombrando) y los que tuvieron errores.
+    if moved:
+        _prune_organized(data, labels, {rel for rel, _ in errors})
+
     return moved, len(people), output_dir, errors
+
+
+def _prune_organized(data, labels, failed):
+    """Saca de clusters.json los grupos con nombre cuyas fotos ya se movieron.
+    Si alguna foto del grupo falló, el grupo se queda para poder reintentar."""
+    faces = data["faces"]
+    keep, removed_faces = [], []
+    for cluster in data["clusters"]:
+        name = labels.get(str(cluster["id"]), "").strip()
+        safe = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
+        photos = {faces[fid]["photo"] for fid in cluster["faces"]}
+        if safe and not (photos & failed):
+            removed_faces.extend(cluster["faces"])
+            labels.pop(str(cluster["id"]), None)
+        else:
+            keep.append(cluster)
+
+    if len(keep) == len(data["clusters"]):
+        return
+    data["clusters"] = keep
+
+    # limpiar las caras (y miniaturas) que solo estaban en los grupos sacados
+    kept_fids = {fid for c in keep for fid in c["faces"]}
+    for fid in removed_faces:
+        if fid not in kept_fids:
+            faces.pop(fid, None)
+            (FACES_DIR / f"{fid}.jpg").unlink(missing_ok=True)
+
+    with open(CLUSTERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(LABELS_PATH, "w", encoding="utf-8") as f:
+        json.dump(labels, f, ensure_ascii=False, indent=2)
 
 
 def main():
