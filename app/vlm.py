@@ -49,60 +49,60 @@ MAX_SIDE = 1024
 # lista de reglas metida en el prompt, el modelo (un 4b) la toma como plantilla
 # de salida y te devuelve un listado con títulos "Ropa:", "Ánimo:", en vez de un
 # párrafo. En el system las obedece sin copiarlas.
-SYSTEM_PIE = """Escribís el pie de foto de un álbum privado.
+SYSTEM_PIE = """Escribís el pie de una foto tuya, como el que pondrías en una
+red social.
 
-Hablás en español uruguayo, de vos. El tono es crudo, íntimo y vulgar: decís las
-cosas por su nombre, sin suavizarlas ni pedir permiso.
+Lo más importante: el que lee YA ESTÁ VIENDO LA FOTO. No se la describas —eso lo
+ve solo—. SITUALA: dónde estás y qué estás haciendo. Nada más.
 
-Escribís UN SOLO PÁRRAFO corrido, mediano o largo. Nunca listas, viñetas,
-títulos, negritas ni markdown: eso te sale mal y no es lo que se pide.
+LA ACCIÓN es lo que importa. Si estás haciendo algo (comiendo, tomando sol,
+manejando, cocinando), ESO es el pie. Si no estás haciendo nada, como en una
+selfie donde solo posás, NO le inventes una acción: decís dónde estás, corto, y
+listo. Es mejor un pie de cinco palabras que uno inventado.
 
-Escribís sobre estas cuatro cosas y nada más:
-- La ropa que lleva puesta.
-- El cuerpo y la postura.
-- Lo que está haciendo. Las acciones, explícitas y sin vueltas: es lo que más
-  importa.
-- Cómo está de ánimo. El ánimo lo sacás de su cara, pero escribís el ánimo, no
-  la cara: "está caliente", no "tiene el ceño fruncido".
+Una o dos frases. Corto. Un párrafo, nunca listas ni títulos ni markdown.
 
-Todo lo que no sea esas cuatro cosas queda afuera. Del escenario escribís lo
-mínimo, y solo si sin eso no se entiende la acción. Del pelo, de la cara y del
-clima no escribís, y tampoco escribís que no vas a escribir de eso: se omiten y
-ya, en silencio. Nunca cerrás con moraleja, ni con resumen, ni ofreciendo ayuda.
+Hablás en español uruguayo, de vos. Crudo y directo: las cosas por su nombre,
+sin eufemismos ni vueltas.
 
-Contás la experiencia en primera persona, como si fueras vos el de la foto: sos
-el protagonista contándola, no alguien mirándola desde afuera.
+NO enumerás: ni la ropa, ni el cuerpo, ni el pelo, ni la cara, ni la luz, ni el
+fondo. No es un inventario, es un pie de foto. Si algo no se ve, no lo escribas.
+Si hay alguien más y te digo quién es, nombralo; si no te lo dije, no lo adivines.
 
-Escribís solo lo que se ve de verdad. Esto va por encima de todo lo anterior:
-- Si en la foto no hay nadie, lo decís y listo. No inventes gente.
-- Si no está haciendo nada en particular, decís que está ahí y nada más. No le
-  inventes una acción para tener algo que contar.
-- Si no se le ve la cara, o no podés sacarle el ánimo, salteá el ánimo.
-- No inventes objetos, lugares ni nada que no esté a la vista.
-
-Un texto corto y exacto es mejor que uno largo con cosas inventadas."""
+Nunca cerrás con moraleja ni con resumen, ni ofrecés ayuda, ni te disculpás."""
 
 # El pie sale en español; BLIP sale en inglés y hay que traducirlo.
 PROMPT_IS_SPANISH = True
 
 
-def caption_prompt(quien=None, voz=""):
+def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es=""):
     """El prompt del pie. Corto a propósito: el estilo va en SYSTEM_PIE.
 
     Sabemos de quién es la foto porque está en su carpeta, así que el pie lo
     escribe ELLA: se lo decimos y no lo adivina. `voz` es cómo habla esa persona
-    en particular (se configura en su perfil); vacío = la voz genérica.
-
-    La orden de primera persona va al final y con un ancla ("empezá con Estoy o
-    Me"): un 4b se olvida de lo que le dijiste al principio y arranca con "Se ve
-    a Agus..." igual. El ancla es lo único que lo mantiene en la voz."""
+    (se configura en su perfil); vacío = la voz genérica. `con` son los otros
+    conocidos que el reconocimiento facial encontró en la foto: así el pie puede
+    decir "comiendo con Alberto" en vez de "comiendo con alguien". `crudeza` es
+    la perilla de Ajustes (ver posts.CRUDENESS)."""
     quien = quien or "la persona de la foto"
     p = [f"Sos {quien}. Esta es una foto tuya."]
+    if quien_es:
+        # el pie va en primera persona: sin esto sale "estoy cansado" cuando es
+        # una mujer, o al revés
+        p.append(quien_es)
     if voz:
         p.append(f"Así hablás vos: {voz}")
-    p.append(f"Escribí el pie contando lo que estás haciendo, en primera "
-             f"persona. Empezá la frase con 'Estoy' o con 'Me'. Nunca digas "
-             f"'{quien}' en tercera persona ni te describas desde afuera.")
+    if con:
+        quienes = " y ".join(con) if len(con) < 3 else ", ".join(con[:-1]) + f" y {con[-1]}"
+        p.append(f"En la foto estás con {quienes}. Nombralo si viene al caso.")
+    if crudeza:
+        p.append(f"Qué tan subido lo escribís: {crudeza}")
+    # Sin esto escribe "Acá tirada con Agus", nombrándose a sí misma como si
+    # fuera otra persona (real, con el prefill "Acá" puesto y todo).
+    p.append(f"No te nombres a vos: vos SOS {quien}, no estás 'con {quien}'.")
+    p.append("Escribí el pie: dónde estás y qué estás haciendo. Corto, una o dos "
+             "frases. Si no estás haciendo nada, decilo en pocas palabras y no "
+             "inventes.")
     return "\n".join(p)
 
 
@@ -169,11 +169,14 @@ def _encode(image_path):
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-# Primera palabra del pie. No es un detalle: pedirle al modelo que escriba en
-# primera persona NO alcanza (probado, se va a "Se ve a Agus..." o "Veo un cuerpo
-# de mujer..." una de cada tres veces). Escribiéndosela nosotros y dejando que
-# continúe, no tiene por dónde irse.
-PREFILL_PIE = "Estoy"
+# Primera palabra del pie. Hace dos cosas de una:
+# 1. Fuerza la primera persona. Pedírselo NO alcanza: probado, se va a "Se ve a
+#    Agus..." o "Veo un cuerpo de mujer..." una de cada tres veces. Si la primera
+#    palabra se la escribimos nosotros, no tiene por dónde irse.
+# 2. Marca el tono. "Estoy" empuja a describirse ("estoy vestida con..."); "Acá"
+#    empuja a situarse ("acá en la playa tomando sol"), que es lo que se busca:
+#    la foto ya se ve, el pie la ubica.
+PREFILL_PIE = "Acá"
 
 
 def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
