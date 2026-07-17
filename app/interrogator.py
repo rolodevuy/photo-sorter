@@ -22,6 +22,16 @@ from PIL import Image, ImageOps
 BLIP_MODEL = "Salesforce/blip-image-captioning-large"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 TRANS_MODEL = "Helsinki-NLP/opus-mt-en-es"   # traductor inglés->español (local, chico)
+VQA_MODEL = "Salesforce/blip-vqa-base"       # responde preguntas sobre la imagen
+
+# Preguntas sobre la persona (el modelo solo entiende inglés; la etiqueta es lo
+# que ves vos). Se responden de a una: ~3s cada una.
+PERSON_QUESTIONS = [
+    ("pelo", "what color is the hair of the person?"),
+    ("ropa", "what is the person wearing?"),
+    ("pose", "what is the person doing?"),
+    ("expresión", "what is the facial expression of the person?"),
+]
 
 _lock = threading.Lock()   # cargar/usar los modelos: uno a la vez (no thread-safe)
 _blip = None
@@ -30,6 +40,8 @@ _clip = None
 _clip_proc = None
 _trans = None
 _trans_tok = None
+_vqa = None
+_vqa_proc = None
 
 
 def _load():
@@ -45,6 +57,43 @@ def _load():
         _clip = CLIPModel.from_pretrained(CLIP_MODEL)
         _clip.eval()
     return _blip, _blip_proc, _clip, _clip_proc
+
+
+def _load_vqa():
+    global _vqa, _vqa_proc
+    if _vqa is None:
+        from transformers import BlipForQuestionAnswering, BlipProcessor
+        _vqa_proc = BlipProcessor.from_pretrained(VQA_MODEL)
+        _vqa = BlipForQuestionAnswering.from_pretrained(VQA_MODEL)
+        _vqa.eval()
+    return _vqa, _vqa_proc
+
+
+def ask(image, question):
+    """Le pregunta algo a la imagen (BLIP-VQA). Devuelve la respuesta en inglés."""
+    import torch
+    model, proc = _load_vqa()
+    inputs = proc(image, question, return_tensors="pt")
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=20)
+    return proc.decode(out[0], skip_special_tokens=True).strip()
+
+
+def person_details(image, questions=None):
+    """Detalles de la persona: [(etiqueta, respuesta en español), ...].
+
+    Pregunta de a una (pelo, ropa, pose, expresión). Descarta respuestas vacías
+    o inútiles ("unanswerable", "no"). ~3s por pregunta."""
+    out = []
+    for label, q in (questions or PERSON_QUESTIONS):
+        try:
+            a = ask(image, q)
+        except Exception:
+            continue
+        if not a or a.lower() in ("unanswerable", "unknown", "no", "none", "nothing"):
+            continue
+        out.append((label, translate_es(a)))
+    return out
 
 
 def _load_translator():
@@ -117,12 +166,38 @@ def score_tags(image, vocab, top_n=12, min_prob=0.55):
     return keep[:top_n] if keep else [(t, float(p)) for t, p in ranked[:3]]
 
 
-def interrogate(image_path, vocab):
-    """Frase + tags de una foto, en una pasada. Serializado (los modelos no son
-    thread-safe). Devuelve {"caption": frase en español, "caption_en": original
-    en inglés, "tags": [(tag, score), ...]}."""
+def interrogate(image_path, vocab, with_details=True, engine="blip",
+                vlm_model=None, person=None):
+    """Frase + tags + detalles de la persona, en una pasada. Serializado (los
+    modelos no son thread-safe).
+
+    engine="blip": frase con BLIP + detalles con VQA. Rápido, pero le pifia, y
+    la frase sale en inglés y hay que traducirla (queda neutra y planchada).
+    engine="vlm": el pie de foto con un modelo de visión en Ollama. Lento, mucho
+    mejor, y escribe DIRECTO en español, así que no pasa por el traductor: el
+    tono crudo/uruguayo no sobrevive a una traducción automática.
+
+    `person` es de quién es la foto (sale de la carpeta): el VLM la nombra en vez
+    de adivinar.
+
+    Los tags siempre los pone CLIP: son de TU vocabulario, no dependen del motor.
+
+    Devuelve {"caption": frase en español, "caption_en": original en inglés (o
+    None si ya vino en español), "tags": [(tag, score), ...],
+    "details": [(etiqueta, respuesta), ...]}."""
     with _lock:
         img = _open(image_path)
-        cap_en = caption(img)
-        return {"caption": translate_es(cap_en), "caption_en": cap_en,
-                "tags": score_tags(img, vocab)}
+        if engine == "vlm":
+            from app import vlm
+            cap_es = vlm.clean_caption(
+                vlm.describe(image_path, model=vlm_model or vlm.DEFAULT_MODEL,
+                             prompt=vlm.caption_prompt(person)))
+            cap_en = None         # nunca hubo inglés: nació en español
+            details = []          # el pie ya cuenta ropa, cuerpo y acciones
+        else:
+            cap_en = caption(img)
+            cap_es = translate_es(cap_en)
+            details = person_details(img) if with_details else []
+        return {"caption": cap_es, "caption_en": cap_en,
+                "tags": score_tags(img, vocab),
+                "details": details}

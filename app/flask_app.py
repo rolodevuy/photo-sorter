@@ -18,6 +18,7 @@ import json
 import math
 import threading
 import time
+import unicodedata
 import webbrowser
 from pathlib import Path
 
@@ -45,7 +46,9 @@ from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
                       SCORE_MIN_LO, move_to_nsfw, scan_nsfw)
 from app import person_meta
 from app import tags as tags_mod
-from app import interrogator
+from app import interrogator, vlm
+from app import posts as posts_mod
+from app import phrases as phrases_mod
 from app.organizer import organize
 from app.renamer import apply_rename, plan_rename
 from app.splitter import SPLIT_THUMBS, move_to_group, scan_groups
@@ -299,10 +302,6 @@ BASE_CSS = """
   .shot .phototags .chip { font-size:.7rem; padding:.05rem .45rem; }
   .shot .ptadd { width:100%; font-size:.75rem; margin-top:.2rem; padding:.2rem .3rem; }
   /* etiquetador una-por-una: foto a la izquierda, etiquetas a la derecha */
-  .tagone { display:flex; gap:1.2rem; align-items:flex-start; }
-  .tagone .tphoto { flex:1 1 60%; min-width:0; text-align:center; }
-  .tagone .tside { flex:1 1 40%; min-width:260px; }
-  @media (max-width:760px) { .tagone { flex-direction:column; } .tagone .tside { min-width:0; } }
 
   /* botones-atajo del etiquetador */
   .sc { border-radius:20px; padding:.25rem .7rem; font-size:.85rem; position:relative; }
@@ -337,7 +336,53 @@ BASE_CSS = """
   #lb .lb-cap { position:fixed; bottom:14px; left:0; right:0; text-align:center;
     color:#cfd2da; font-size:.85rem; pointer-events:none; }
   #lb .lb-hint { position:fixed; top:16px; left:20px; color:#8b8d99; font-size:.8rem; }
+
+  /* --- visor estilo publicación (solo la galería de una persona) --- */
+  /* foto a la izquierda, columna del post a la derecha */
+  #lb.lb-post .post { position:absolute; inset:0; display:grid;
+    grid-template-columns:minmax(0,1fr) 380px; }
+  #lb.lb-post .stage { position:relative; inset:auto; overflow:hidden; }
+  #lb.lb-post img { max-width:100%; max-height:100%; }
+  #lb.lb-post .side { background:var(--panel); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0; }
+  #lb.lb-post .phead { display:flex; align-items:center; gap:.6rem; padding:.7rem .9rem;
+    border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #lb.lb-post .av { width:38px; height:38px; border-radius:50%; object-fit:cover; }
+  #lb.lb-post .phead .meta { font-size:.72rem; word-break:break-all; }
+  /* el cuerpo scrollea; el perfil y el pie de la columna quedan fijos */
+  #lb.lb-post .pbody { flex:1 1 auto; overflow-y:auto; padding:.8rem .9rem; min-height:0; }
+  #lb.lb-post .pcap { margin-bottom:1rem; }
+  #lb.lb-post .pcap p { margin:0; line-height:1.5; white-space:pre-wrap; }
+  #lb.lb-post .empty { color:var(--dim); font-style:italic; }
+  #lb.lb-post .capin { width:100%; margin-top:.4rem; min-height:5rem; resize:vertical;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:.4rem; font:inherit; font-size:.85rem; }
+  #lb.lb-post .com { padding:.3rem 0; font-size:.88rem; line-height:1.4;
+    border-bottom:1px solid var(--line); }
+  #lb.lb-post .com b { color:var(--fg); }
+  #lb.lb-post .ptags { flex:0 0 auto; padding:.6rem .9rem; border-top:1px solid var(--line);
+    max-height:45vh; overflow-y:auto; }
+  #lb.lb-post .pfoot { flex:0 0 auto; display:flex; justify-content:space-between;
+    align-items:center; gap:.5rem; padding:.5rem .9rem; border-top:1px solid var(--line); }
+  #lb.lb-post .pfoot select { font-size:.75rem; max-width:230px; }
+  #lb.lb-post .sm { padding:.15rem .5rem; font-size:.78rem; }
+  #lb.lb-post .sm.on { border-color:var(--accent); color:var(--accent); }
+  /* las flechas no se pueden ir sobre la columna del post */
+  #lb.lb-post #lb-next { right:calc(380px + 18px); }
+  #lb.lb-post #lb-x { right:calc(380px + 20px); }
+  /* pantalla angosta: el post pasa a estar abajo de la foto */
+  @media (max-width:900px) {
+    #lb.lb-post .post { grid-template-columns:1fr; grid-template-rows:50vh 1fr; }
+    #lb.lb-post .side { border-left:0; border-top:1px solid var(--line); }
+    #lb.lb-post #lb-next { right:18px; }
+    #lb.lb-post #lb-x { right:20px; }
+  }
 """
+
+# Cuántas fotos por página en la galería de una persona. Sin paginar, 1500 fotos
+# son 1500 <select> con toda la gente adentro y el navegador se arrastra.
+PER_OPTIONS = [10, 20, 50, 100]
+PER_DEFAULT = 50
 
 # (ícono, etiqueta, endpoint Flask, clave de página activa)
 NAV_ITEMS = [
@@ -349,6 +394,7 @@ NAV_ITEMS = [
     ("⌕", "Persona", "finder_page", "finder"),
     ("⚠", "NSFW", "nsfw_page", "nsfw"),
     ("⚇", "Separar caras", "split_page", "split"),
+    ("✎", "Frases", "phrases_page", "phrases"),
     ("⚙", "Ajustes", "settings_page", "settings"),
 ]
 
@@ -1396,6 +1442,33 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="panel">
+  <div class="counter">💬 Comentarios de las fotos</div>
+  <p class="meta">Cuando abrís una foto de la galería, la IA le puede escribir comentarios
+     como si fueran de seguidores. Acá elegís con qué onda los escribe y con qué nombres
+     los firma.</p>
+  <form method="post" action="{{ url_for('settings_save') }}">
+    <input type="hidden" name="library" value="{{ library }}">
+    <div class="row">
+      <label>Tono:</label>
+      <select name="comment_tone">
+        {% for k, v in tones.items() %}
+        <option value="{{ k }}" {% if k == comment_tone %}selected{% endif %}>{{ k }} — {{ v }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="row">
+      <label>@usuarios:</label>
+      <input class="path" type="text" name="comment_users" value="{{ comment_users }}"
+             placeholder="separados por coma">
+    </div>
+    <p class="meta">Los nombres los pongo yo de esta lista, no los inventa la IA: un modelo
+       chico devuelve "@usuario1", "@usuario2" y queda feo. Vaciá el campo para volver a
+       los de fábrica.</p>
+    <button class="primary">💾 Guardar</button>
+  </form>
+</div>
+
+<div class="panel">
   <div class="counter">Estado</div>
   <p class="meta">
     📚 Biblioteca: {% if library %}<code>{{ library }}</code> — <b>{{ n_people }}</b> carpeta(s) de persona{% else %}<b>sin elegir</b>{% endif %}<br>
@@ -1423,6 +1496,9 @@ def settings_page():
     return render_template_string(
         shell("settings", SETTINGS_TEMPLATE),
         cfg=cfg, library=library, n_people=n_people,
+        tones=posts_mod.TONES,
+        comment_tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
+        comment_users=", ".join(cfg.get("comment_users") or posts_mod.DEFAULT_USERS),
         message=request.args.get("msg", ""))
 
 
@@ -1436,8 +1512,20 @@ def settings_save():
         return redirect(url_for("settings_page",
                                 msg=f"Esa carpeta de Biblioteca no existe: {library}"))
     set_library(cfg, library)
+
+    # comentarios: los dos formularios de Ajustes postean acá, así que cada campo
+    # se toca solo si vino (si no, guardar uno pisaría lo del otro)
+    if "comment_tone" in request.form:
+        tone = request.form.get("comment_tone", "")
+        if tone in posts_mod.TONES:
+            cfg["comment_tone"] = tone
+    if "comment_users" in request.form:
+        users = [u.strip().lstrip("@") for u in request.form["comment_users"].split(",")]
+        users = [u for u in users if u]
+        cfg["comment_users"] = users        # vacío = los de fábrica
+
     save_config(cfg)
-    return redirect(url_for("settings_page", msg="Biblioteca guardada."))
+    return redirect(url_for("settings_page", msg="Ajustes guardados."))
 
 
 @app.route("/notfaces/clear", methods=["POST"])
@@ -1843,7 +1931,11 @@ def known_forget():
     name = request.form.get("name", "")
     if name:
         forget_person(name)
-        tags_mod.forget_person(name)   # sus etiquetas también se van
+        # todo lo suyo se va con ella: si no, queda basura colgada de un nombre
+        # que ya no existe y reaparece si algún día volvés a crear esa persona
+        tags_mod.forget_person(name)      # etiquetas
+        posts_mod.forget_person(name)     # pies y comentarios
+        person_meta.forget(name)          # fechas y su voz
     return redirect(url_for("known_page", msg=f"Se olvidó a {name}."))
 
 
@@ -1903,8 +1995,20 @@ PERSON_TEMPLATE = """
                  onkeydown="if(event.key==='Enter'){event.preventDefault();addPersonTag(this.value);this.value=''}">
         </div>
       </div>
+      <div style="margin:.6rem 0">
+        <span class="meta">🗣 Cómo habla {{ name }}
+          <span title="El pie de foto lo escribe ella en primera persona. Esto es lo que la hace sonar distinta de las demás.">ⓘ</span>
+        </span>
+        <div class="row" style="margin-top:.3rem">
+          <input class="path" id="pvoice" value="{{ voice }}"
+                 placeholder="ej: sos directa y vulgar, decís las cosas por su nombre…"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();saveVoice()}">
+          <button class="secondary" onclick="saveVoice()">💾</button>
+          <span class="meta" id="pvoice-st"></span>
+        </div>
+        <p class="meta">Se le suma al prompt del pie. Vacío = la voz genérica.</p>
+      </div>
       <p><a href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta →</a></p>
-      {% if photos %}<p><a href="{{ url_for('person_tagone', name=name) }}">🏷 Etiquetar sus fotos una por una →</a></p>{% endif %}
       {% if photos %}
       <form method="post" action="{{ url_for('correct_start', name=name) }}">
         <button title="Revisa la carpeta, confirma las fotos obvias solo y te pregunta por las dudosas. Al final {{ name }} queda solo con caras verificadas.">
@@ -1917,22 +2021,59 @@ PERSON_TEMPLATE = """
 </div>
 
 {% if photos or nsfw_count %}
-<div class="row">
-  <input type="text" id="ffilter" class="path" value="{{ filter_tags }}"
-         placeholder="🏷 filtrar sus fotos por etiqueta (coma para varias)…"
-         list="tagsug" oninput="filterFotos()">
-  <span class="meta"><span id="fcount">{{ display|length }}</span> de {{ display|length }} foto(s)</span>
+<form class="row" method="get" action="{{ url_for('person_page', name=name) }}" id="ffiltro">
+  {% if show_nsfw %}<input type="hidden" name="nsfw" value="1">{% endif %}
+  <input type="text" id="ffilter" name="tags" class="path" value="{{ filter_tags }}"
+         placeholder="🏷 filtrar sus fotos por etiqueta (coma para varias) + Enter…"
+         list="tagsug">
+  <button class="secondary">Filtrar</button>
+  {% if filter_tags %}
+  <a class="secondary" style="padding:.35rem .7rem;border-radius:6px"
+     href="{{ url_for('person_page', name=name, nsfw='1' if show_nsfw else None) }}">✕ limpiar</a>
+  {% endif %}
+  <label class="meta">Por página:</label>
+  <select name="per" onchange="this.form.submit()">
+    {% for p in per_options %}<option value="{{ p }}" {% if p == per %}selected{% endif %}>{{ p }}</option>{% endfor %}
+  </select>
+  <span class="meta">
+    {% if n_filtradas %}{{ desde }}–{{ hasta }} de <b>{{ n_filtradas }}</b>{% else %}0{% endif %}
+    {% if filter_tags %} (filtradas de {{ n_todas }}){% endif %} foto(s)
+  </span>
+</form>
+{# el paginador va arriba y abajo de la grilla; conserva filtro, NSFW y por-página #}
+{% macro pager() %}
+{% if n_pages > 1 %}
+<div class="row" style="justify-content:center;gap:.3rem">
+  {% set base = {'name': name, 'tags': filter_tags or None, 'per': per,
+                 'nsfw': '1' if show_nsfw else None} %}
+  {% if page > 1 %}
+  <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', page=page-1, **base) }}#fotos">‹ Anterior</a>
+  {% else %}<span class="secondary" style="padding:.35rem .7rem;border-radius:6px;opacity:.45">‹ Anterior</span>{% endif %}
+  <span class="meta">página <b>{{ page }}</b> de {{ n_pages }}</span>
+  {% if page < n_pages %}
+  <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', page=page+1, **base) }}#fotos">Siguiente ›</a>
+  {% else %}<span class="secondary" style="padding:.35rem .7rem;border-radius:6px;opacity:.45">Siguiente ›</span>{% endif %}
 </div>
+{% endif %}
+{% endmacro %}
+
 <div class="row">
-  <span class="meta">clic en una foto abre el visor (ruedita = zoom, arrastrar = mover, ← → = pasar).</span>
+  <span class="meta">clic en una foto abre el visor (ruedita = zoom, arrastrar = mover, ← → = pasar dentro de esta página).</span>
   {% if nsfw_count %}
     {% if show_nsfw %}
-    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name) }}#fotos">🙈 Ocultar NSFW ({{ nsfw_count }})</a>
+    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per) }}#fotos">🙈 Ocultar NSFW ({{ nsfw_count }})</a>
     {% else %}
-    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, nsfw=1) }}#fotos">🔞 Mostrar NSFW ({{ nsfw_count }})</a>
+    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, nsfw=1) }}#fotos">🔞 Mostrar NSFW ({{ nsfw_count }})</a>
     {% endif %}
   {% endif %}
 </div>
+{{ pager() }}
+{% if not display %}
+<div class="panel">
+  {% if filter_tags %}Ninguna de sus {{ n_todas }} fotos tiene esas etiquetas.
+  {% else %}No hay fotos para mostrar.{% endif %}
+</div>
+{% endif %}
 <div class="masonry" id="fotos">
   {% for f in display %}
   <div class="shot" data-tags="{{ f.tags|join(' ') }}">
@@ -1956,16 +2097,22 @@ PERSON_TEMPLATE = """
   </div>
   {% endfor %}
 </div>
+{{ pager() }}
 
 <datalist id="tagsug">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
 
 <script>
 window.LB_PHOTOS = [
-  {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}"},{% endfor %}
+  {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}",rel:{{ f.rel|tojson }}},{% endfor %}
 ];
+window.POSTS = {{ posts|tojson }};             // {rel: {caption, comments}}
+window.VLM_MODELS = {{ vlm_models|tojson }};
+window.HAS_COVER = {{ has_thumb|tojson }};
+window.COVER_URL_THUMB = "{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}";
 const PERSON = {{ name|tojson }};
 let PERSON_TAGS = {{ person_tags|tojson }};
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
+window.SHORTCUTS = {{ shortcuts|tojson }};    // botones-atajo del modal
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
 
@@ -2032,24 +2179,21 @@ function removePhotoTag(div, t) {
 renderPersonTags();
 refreshAllPhotoTags();
 
-// --- filtrar las fotos de esta persona por etiqueta (viene pre-cargado de la galería) ---
-function normt(s){ return s.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,''); }
-function filterFotos() {
-  const inp = document.getElementById('ffilter');
-  if (!inp) return;
-  const toks = inp.value.split(',').map(t => normt(t.trim())).filter(Boolean);
-  let vis = 0;
-  document.querySelectorAll('#fotos .shot').forEach(card => {
-    const hay = normt(card.dataset.tags || '');
-    const ok = toks.every(t => hay.includes(t));
-    card.style.display = ok ? '' : 'none';
-    if (ok) vis++;
-  });
-  const c = document.getElementById('fcount');
-  if (c) c.textContent = vis;
+// --- cómo habla esta persona (va al prompt del pie de foto) ---
+const VOICE_URL = "{{ url_for('person_voice', name=name) }}";
+function saveVoice() {
+  const st = document.getElementById('pvoice-st');
+  st.textContent = ' guardando…';
+  post(VOICE_URL, {voice: document.getElementById('pvoice').value}).then(r => r.json())
+    .then(d => {
+      st.textContent = d.ok ? ' ✓ guardado' : ' error';
+      setTimeout(() => st.textContent = '', 1800);
+    }).catch(() => st.textContent = ' error');
 }
-if (document.getElementById('ffilter') && document.getElementById('ffilter').value.trim())
-  filterFotos();
+
+// El filtro por etiqueta lo hace el SERVIDOR (el <form> de arriba), no el
+// navegador: con la galería paginada, esconder tarjetas del DOM filtraría solo
+// la página que estás viendo y te diría "3 fotos" habiendo 40 en las otras.
 
 // --- elegir portada SIN recargar la galería (clave con muchas fotos) ---
 const COVER_URL = "{{ url_for('person_cover', name=name) }}";
@@ -2088,6 +2232,305 @@ __LIGHTBOX__
 
 # --- visor de fotos compartido (galería de persona y revisión NSFW) ---
 # Lee window.LB_PHOTOS = [{url, name}, ...] que define cada página.
+# --- visor estilo publicación, SOLO para la galería de una persona -----------
+# El LIGHTBOX de abajo es el pelado, y lo siguen usando duplicados, NSFW y
+# separar-caras: un post de Insta no tiene sentido ahí.
+#
+# Acá la foto va a la izquierda y a la derecha la columna del post: el perfil
+# (portada + nombre), el pie que escribió la IA, los comentarios, y el panel de
+# etiquetas que se despliega con "🏷 Etiquetar". Todo sin salir del modal: la
+# idea es taguear salteado mientras mirás, sin recorrer 1500 fotos.
+POST_LIGHTBOX = """
+<div id="lb" class="lb-post">
+  <span id="lb-x" onclick="lbClose()" title="Cerrar">✕</span>
+  <button class="lb-btn" id="lb-prev" onclick="lbStep(-1)" title="Anterior">‹</button>
+  <button class="lb-btn" id="lb-next" onclick="lbStep(1)" title="Siguiente">›</button>
+  <div class="post">
+    <div class="stage"><img id="lb-img" src="" alt=""></div>
+    <aside class="side">
+      <header class="phead">
+        <img id="lb-av" class="av" src="" alt="">
+        <div>
+          <b id="lb-who"></b>
+          <div class="meta" id="lb-fn"></div>
+        </div>
+      </header>
+
+      <div class="pbody">
+        <div class="pcap" id="lb-cap-box">
+          <p id="lb-cap" class="empty">Todavía no tiene pie de foto.</p>
+          <div class="row" style="margin:.3rem 0 0">
+            <button class="secondary sm" id="lb-cap-btn" onclick="genCaption()">✨ Escribir pie</button>
+            <button class="secondary sm" id="lb-cap-edit" onclick="editCap()" title="Reescribirlo a tu manera">✏️</button>
+            <span class="meta" id="lb-cap-st"></span>
+          </div>
+          <textarea id="lb-cap-in" class="capin" style="display:none"
+                    placeholder="escribilo a tu manera… (Ctrl+Enter para guardar)"></textarea>
+        </div>
+
+        <div class="pcoms">
+          <div class="row" style="justify-content:space-between;margin:0 0 .3rem">
+            <span class="meta">💬 Comentarios</span>
+            <span>
+              <button class="secondary sm" id="lb-com-btn" onclick="genComments()">✨ Generar</button>
+              <button class="secondary sm" id="lb-com-x" onclick="clearComments()" title="Borrarlos y empezar de nuevo">🗑</button>
+            </span>
+          </div>
+          <div id="lb-coms"></div>
+          <span class="meta" id="lb-com-st"></span>
+        </div>
+      </div>
+
+      <div class="ptags">
+        <button class="secondary" id="lb-tag-toggle" onclick="toggleTags()">🏷 Etiquetar ▾</button>
+        <div id="lb-tag-panel" style="display:none">
+          <span class="meta">Heredadas de {{ name }}:</span>
+          <div class="chips" id="lb-inh"></div>
+          <span class="meta">Etiquetas de ESTA foto:</span>
+          <div class="chips" id="lb-own">
+            <input class="taginput" id="lb-tin" list="tagsug" placeholder="escribí y Enter…">
+          </div>
+          <div class="chips" id="lb-sc" style="margin-top:.4rem"></div>
+          <div class="row" style="margin-top:.5rem">
+            <button class="secondary sm" id="lb-sug" onclick="suggestTags()">🔮 Sugerir tags</button>
+            <span class="meta" id="lb-sug-st"></span>
+          </div>
+          <div class="chips" id="lb-sugtags" style="margin-top:.3rem"></div>
+        </div>
+      </div>
+
+      <div class="pfoot">
+        <select id="lb-model" title="Con qué modelo escribe la IA">
+          {% for m in vlm_models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+        </select>
+        <span class="meta" id="lb-pos"></span>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+(function() {
+  const P = window.LB_PHOTOS || [], POSTS = window.POSTS || {};
+  const lb = document.getElementById('lb'), img = document.getElementById('lb-img');
+  const $ = id => document.getElementById(id);
+  let idx = 0, scale = 1, tx = 0, ty = 0, drag = false, sx = 0, sy = 0;
+  const CAP_URL = "{{ url_for('post_caption', name=name) }}";
+  const CAPED_URL = "{{ url_for('post_caption_edit', name=name) }}";
+  const COM_URL = "{{ url_for('post_comments', name=name) }}";
+  const COMX_URL = "{{ url_for('post_comments_clear', name=name) }}";
+  const SUG_URL = "{{ url_for('tags_suggest', name=name) }}";
+
+  const rel = () => P[idx].rel;
+  const post_ = (url, body) => fetch(url, {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams(body)}).then(r => r.json());
+  const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[]}); }
+
+  // --- zoom y arrastre (igual que el visor pelado) ---
+  function apply() { img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; }
+  function reset() { scale = 1; tx = 0; ty = 0; apply(); }
+
+  function render() {
+    const d = slot(rel());
+    $('lb-cap').textContent = d.caption || 'Todavía no tiene pie de foto.';
+    $('lb-cap').className = d.caption ? '' : 'empty';
+    $('lb-cap-btn').textContent = d.caption ? '✨ Reescribir pie' : '✨ Escribir pie';
+    $('lb-cap-edit').style.display = d.caption ? '' : 'none';
+    cancelCap();
+    const box = $('lb-coms');
+    box.innerHTML = d.comments.length ? '' : '<span class="meta empty">Sin comentarios.</span>';
+    d.comments.forEach(c => {
+      const el = document.createElement('div');
+      el.className = 'com';
+      el.innerHTML = '<b>@' + esc(c.user) + '</b> ' + esc(c.text);
+      box.appendChild(el);
+    });
+    $('lb-com-btn').textContent = d.comments.length ? '✨ Otros' : '✨ Generar';
+    $('lb-com-x').style.display = d.comments.length ? '' : 'none';
+    $('lb-cap-st').textContent = ''; $('lb-com-st').textContent = '';
+    $('lb-sug-st').textContent = ''; $('lb-sugtags').innerHTML = '';
+    renderTags();
+  }
+
+  function show(i) {
+    idx = (i + P.length) % P.length;
+    reset();
+    img.src = P[idx].url;
+    $('lb-fn').textContent = P[idx].name;
+    $('lb-pos').textContent = (idx + 1) + ' / ' + P.length;
+    render();
+  }
+  window.lbOpen = function(i) {
+    lb.style.display = 'block';
+    $('lb-who').textContent = PERSON;
+    const av = $('lb-av');
+    if (window.HAS_COVER) { av.src = window.COVER_URL_THUMB; av.style.display = ''; }
+    else { av.style.display = 'none'; }
+    show(i);
+  };
+  window.lbClose = function() { lb.style.display = 'none'; img.src = ''; };
+  window.lbStep = function(d) { show(idx + d); };
+
+  // --- pie de foto ---
+  function genCaption() {
+    const r = rel(), b = $('lb-cap-btn');
+    if (!window.VLM_MODELS.length) {
+      $('lb-cap-st').textContent = ' Ollama no está corriendo.'; return;
+    }
+    b.disabled = true;
+    $('lb-cap-st').textContent = ' escribiendo… (tarda ~2 min, es el modelo en CPU)';
+    post_(CAP_URL, {rel: r, model: $('lb-model').value}).then(d => {
+      b.disabled = false; $('lb-cap-st').textContent = d.ok ? '' : ' ' + d.error;
+      if (!d.ok) return;
+      slot(r).caption = d.caption;
+      if (r === rel()) render();     // ya pasaste de foto: guardalo igual
+    }).catch(e => { b.disabled = false; $('lb-cap-st').textContent = ' ' + e; });
+  }
+  function editCap() {
+    const t = $('lb-cap-in');
+    t.style.display = ''; t.value = slot(rel()).caption || ''; t.focus();
+  }
+  function cancelCap() { $('lb-cap-in').style.display = 'none'; }
+  $('lb-cap-in').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      const r = rel(), v = e.target.value.trim();
+      post_(CAPED_URL, {rel: r, caption: v}).then(d => {
+        if (d.ok) { slot(r).caption = d.caption; render(); }
+      });
+    } else if (e.key === 'Escape') { e.stopPropagation(); cancelCap(); }
+  });
+
+  // --- comentarios ---
+  function genComments() {
+    const r = rel(), b = $('lb-com-btn');
+    if (!window.VLM_MODELS.length) {
+      $('lb-com-st').textContent = ' Ollama no está corriendo.'; return;
+    }
+    b.disabled = true; $('lb-com-st').textContent = ' escribiendo… (~30s)';
+    post_(COM_URL, {rel: r, model: $('lb-model').value}).then(d => {
+      b.disabled = false; $('lb-com-st').textContent = d.ok ? '' : ' ' + d.error;
+      if (!d.ok) return;
+      slot(r).comments = d.comments;
+      if (r === rel()) render();
+    }).catch(e => { b.disabled = false; $('lb-com-st').textContent = ' ' + e; });
+  }
+  function clearComments() {
+    const r = rel();
+    post_(COMX_URL, {rel: r}).then(() => { slot(r).comments = []; render(); });
+  }
+
+  // --- etiquetas, sin salir del modal ---
+  function ownTags() { return (PHOTO_TAGS[rel()] || []).slice(); }
+  function saveOwn(tags) {
+    const r = rel();
+    PHOTO_TAGS[r] = tags;
+    post_(PHOTOTAG_URL, {rel: r, tags: tags.join(',')}).then(d => {
+      if (d.ok) { PHOTO_TAGS[r] = d.tags; renderTags(); syncGrid(r); }
+    });
+  }
+  function syncGrid(r) {   // que la grilla de atrás no quede desincronizada
+    const card = document.querySelector(`.shot .phototags[data-rel="${CSS.escape(r)}"]`);
+    if (card && window.renderPhotoTags) renderPhotoTags(card);
+  }
+  function renderTags() {
+    const inh = $('lb-inh');
+    inh.innerHTML = PERSON_TAGS.length ? '' : '<span class="meta empty">ninguna</span>';
+    PERSON_TAGS.forEach(t => {
+      const c = document.createElement('span');
+      c.className = 'chip inherited'; c.textContent = t; inh.appendChild(c);
+    });
+    const box = $('lb-own'), input = $('lb-tin');
+    box.querySelectorAll('.chip').forEach(c => c.remove());
+    ownTags().forEach(t => {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = esc(t) + ' <span class="x">×</span>';
+      c.querySelector('.x').onclick = () => saveOwn(ownTags().filter(x => x !== t));
+      box.insertBefore(c, input);
+    });
+    const sc = $('lb-sc');
+    sc.innerHTML = '';
+    (window.SHORTCUTS || []).forEach(t => {
+      const on = ownTags().includes(t);
+      const b = document.createElement('button');
+      b.className = 'secondary sm' + (on ? ' on' : '');
+      b.textContent = (on ? '✓ ' : '+ ') + t;
+      b.onclick = () => saveOwn(on ? ownTags().filter(x => x !== t) : ownTags().concat([t]));
+      sc.appendChild(b);
+    });
+  }
+  $('lb-tin').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = e.target.value.trim();
+      if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v]));
+      e.target.value = '';
+    } else if (e.key === 'Escape') { e.stopPropagation(); }
+  });
+  function toggleTags() {
+    const p = $('lb-tag-panel'), open = p.style.display === 'none';
+    p.style.display = open ? '' : 'none';
+    $('lb-tag-toggle').textContent = open ? '🏷 Etiquetar ▴' : '🏷 Etiquetar ▾';
+  }
+  function suggestTags() {
+    const r = rel(), b = $('lb-sug');
+    b.disabled = true; $('lb-sug-st').textContent = ' pensando…';
+    post_(SUG_URL, {rel: r, engine: 'blip'}).then(d => {
+      b.disabled = false; $('lb-sug-st').textContent = d.ok ? '' : ' ' + d.error;
+      if (!d.ok || r !== rel()) return;
+      const box = $('lb-sugtags');
+      box.innerHTML = '';
+      d.tags.forEach(t => {
+        const b2 = document.createElement('button');
+        b2.className = 'secondary sm';
+        b2.textContent = '+ ' + t.tag + ' (' + Math.round(t.score * 100) + '%)';
+        b2.onclick = () => { if (!ownTags().includes(t.tag)) saveOwn(ownTags().concat([t.tag])); };
+        box.appendChild(b2);
+      });
+    }).catch(e => { b.disabled = false; $('lb-sug-st').textContent = ' ' + e; });
+  }
+
+  Object.assign(window, {genCaption, editCap, genComments, clearComments,
+                         toggleTags, suggestTags});
+
+  lb.addEventListener('wheel', e => {
+    if (!e.target.closest('.stage')) return;    // la columna del post scrollea normal
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const ns = Math.min(8, Math.max(1, scale * f));
+    const rc = img.getBoundingClientRect();
+    const cx = e.clientX - (rc.left + rc.width / 2), cy = e.clientY - (rc.top + rc.height / 2);
+    tx = cx - (cx - tx) * (ns / scale); ty = cy - (cy - ty) * (ns / scale);
+    scale = ns;
+    if (scale === 1) { tx = 0; ty = 0; }
+    apply();
+  }, {passive: false});
+  img.addEventListener('pointerdown', e => {
+    drag = true; sx = e.clientX - tx; sy = e.clientY - ty;
+    img.classList.add('grabbing'); img.setPointerCapture(e.pointerId);
+  });
+  img.addEventListener('pointermove', e => {
+    if (drag) { tx = e.clientX - sx; ty = e.clientY - sy; apply(); }
+  });
+  img.addEventListener('pointerup', () => { drag = false; img.classList.remove('grabbing'); });
+  img.addEventListener('dblclick', reset);
+  document.querySelector('#lb .stage').addEventListener('click', e => {
+    if (e.target.classList.contains('stage')) lbClose();
+  });
+  document.addEventListener('keydown', e => {
+    if (lb.style.display !== 'block') return;
+    // escribiendo una etiqueta o el pie: las flechas son para el texto
+    const t = e.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA') { if (e.key !== 'Escape') return; }
+    if (e.key === 'Escape') lbClose();
+    else if (e.key === 'ArrowLeft') lbStep(-1);
+    else if (e.key === 'ArrowRight') lbStep(1);
+  });
+})();
+</script>
+"""
+
 LIGHTBOX = """
 <div id="lb">
   <div class="lb-hint">ruedita: zoom · arrastrar: mover · doble clic: reset · ← → · Esc</div>
@@ -2158,8 +2601,8 @@ LIGHTBOX = """
 </script>
 """
 
-# el visor va dentro de la galería de persona (marcador __LIGHTBOX__)
-PERSON_TEMPLATE = PERSON_TEMPLATE.replace("__LIGHTBOX__", LIGHTBOX)
+# la galería de persona usa el visor estilo publicación; el resto, el pelado
+PERSON_TEMPLATE = PERSON_TEMPLATE.replace("__LIGHTBOX__", POST_LIGHTBOX)
 # DUPES_TEMPLATE se define antes que LIGHTBOX, así que su visor se enchufa acá
 DUPES_TEMPLATE = DUPES_TEMPLATE.replace("__LIGHTBOX__", LIGHTBOX)
 
@@ -2179,6 +2622,27 @@ def person_page(name):
     if show_nsfw:
         display += [{"rel": r, "nsfw": True, "tags": tags_mod.effective_photo(name, r)} for r in nsfw_list]
     photos = normal   # para los avisos "no hay imágenes / configurá carpeta"
+
+    # El filtro por etiquetas es del SERVIDOR, no del navegador: si filtrara la
+    # página ya paginada te mostraría "3 fotos" cuando en realidad hay 40 en el
+    # resto de las páginas.
+    filter_tags = request.args.get("tags", "")
+    buscadas = [t for t in (_norm_search(t) for t in filter_tags.split(",")) if t]
+    if buscadas:
+        display = [f for f in display
+                   if all(any(t in _norm_search(x) for x in f["tags"]) for t in buscadas)]
+    n_filtradas = len(display)
+
+    # Paginado: sin esto, 1500 fotos son 1500 <select> con TODA la gente adentro
+    # (decenas de miles de <option>), y el navegador se arrastra.
+    per = request.args.get("per", type=int) or cfg.get("gallery_per", PER_DEFAULT)
+    per = per if per in PER_OPTIONS else PER_DEFAULT
+    if per != cfg.get("gallery_per"):        # la elección queda pegada
+        cfg["gallery_per"] = per
+        save_config(cfg)
+    n_pages = max(1, math.ceil(n_filtradas / per))
+    page = min(max(1, request.args.get("page", 1, type=int)), n_pages)
+    display = display[(page - 1) * per: page * per]
     thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
 
     # vecinos en el mismo orden que la galería (para ‹ anterior / siguiente ›)
@@ -2209,13 +2673,25 @@ def person_page(name):
     return render_template_string(
         shell("known", PERSON_TEMPLATE),
         name=name,
+        # el pie y los comentarios ya guardados de cada foto: el modal los
+        # muestra al instante, sin esperar al modelo
+        posts=posts_mod.get_many(name, [f["rel"] for f in display]),
+        # si Ollama no está corriendo, la lista viene vacía y el modal lo avisa
+        vlm_models=vlm.list_models(),
+        shortcuts=tags_mod.get_shortcuts(),
         people=people,       # para el desplegable "mover a otra persona"
         person_tags=tags_mod.get_person(name),
         photo_tags=photo_tags,
         all_tags=tags_mod.all_tags(),
-        filter_tags=request.args.get("tags", ""),   # pre-filtro que viene de la galería
+        filter_tags=filter_tags,       # pre-filtro que viene de la galería
         photos=photos,
         display=display,
+        # paginado
+        page=page, n_pages=n_pages, per=per, per_options=PER_OPTIONS,
+        n_filtradas=n_filtradas,
+        n_todas=len(normal) + (len(nsfw_list) if show_nsfw else 0),
+        desde=(page - 1) * per + 1 if display else 0,
+        hasta=(page - 1) * per + len(display),
         nsfw_count=len(nsfw_list),
         show_nsfw=show_nsfw,
         folder=str(Path(known_dir) / name) if known_dir else "",
@@ -2228,218 +2704,12 @@ def person_page(name):
         anchor=(i if i >= 0 else 0),
         corrected_ago=person_meta.humanize(meta["corrected"]),
         searched_ago=person_meta.humanize(meta["searched"]),
+        voice=meta["voice"],
         pick_rel=pick_rel,
         pick_count=pick_count,
         pick_v=int(time.time()),
         message=request.args.get("msg", ""),
     )
-
-
-TAGONE_TEMPLATE = """
-<h1>🏷 Etiquetar a {{ name }} — una por una</h1>
-<p><a href="{{ url_for('person_page', name=name) }}">← volver a la galería</a></p>
-
-{% if not rels %}
-<div class="panel">Esta persona no tiene fotos para etiquetar.</div>
-{% else %}
-<div class="panel">
-  <div class="row" style="justify-content:center;margin-bottom:.6rem">
-    <button class="secondary" onclick="step(-1)">‹ Anterior</button>
-    <span class="counter" id="pos" style="margin:0"></span>
-    <button class="secondary" onclick="step(1)">Siguiente ›</button>
-    <span class="meta">← → para pasar</span>
-  </div>
-  <div class="tagone">
-    <div class="tphoto">
-      <a id="openfull" href="#" target="_blank">
-        <img id="photo" alt="" style="max-width:100%; max-height:78vh; border-radius:8px; display:block">
-      </a>
-      <div class="fn" id="fname" style="text-align:center;margin-top:.3rem"></div>
-    </div>
-    <div class="tside">
-      <span class="meta">🏷 Etiquetas de {{ name }} (heredadas, se cambian en la galería):</span>
-      <div class="chips" id="inh" style="margin:.3rem 0 .8rem"></div>
-      <span class="meta">Etiquetas de ESTA foto:</span>
-      <div class="chips" id="own" style="margin-top:.3rem">
-        <input class="taginput" id="tin" list="tagsug" placeholder="escribí y Enter…"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();addTag(this.value);this.value=''}">
-      </div>
-
-      <div style="margin-top:1rem">
-        <button class="secondary" id="sugbtn" onclick="suggest()">🔮 Sugerir (frase + tags)</button>
-        <span class="meta" id="sugstate"></span>
-        <div id="sugcap" class="meta" style="margin:.4rem 0; font-style:italic"></div>
-        <div class="chips" id="sugtags" style="margin-top:.2rem"></div>
-      </div>
-      <div style="margin-top:1rem">
-        <span class="meta">Atajos (un click agrega/saca de esta foto):</span>
-        <button class="secondary" style="padding:.15rem .5rem;font-size:.8rem;margin-left:.4rem"
-                onclick="editSc=!editSc; renderShortcuts()">⚙ editar atajos</button>
-        <div class="chips" id="scrow" style="margin-top:.5rem"></div>
-        <div class="row" id="scedit" style="display:none;margin-top:.4rem">
-          <input class="taginput" id="scin" list="tagsug" placeholder="nuevo atajo + Enter…"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault();addShortcut(this.value);this.value=''}">
-          <span class="meta">tocá la ✕ de un atajo para quitarlo</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-<datalist id="tagsug">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
-
-<script>
-const NAME = {{ name|tojson }};
-const RELS = {{ rels|tojson }};
-const PERSON_TAGS = {{ person_tags|tojson }};
-const OWN = {{ photo_tags|tojson }};   // {rel: [tags propias]}
-const PHOTO_URL = "{{ url_for('person_photo', name=name, rel='REL') }}";
-const SAVE_URL = "{{ url_for('tags_photo', name=name) }}";
-const SC_URL = "{{ url_for('tags_shortcuts') }}";
-const SUGGEST_URL = "{{ url_for('tags_suggest', name=name) }}";
-let SHORTCUTS = {{ shortcuts|tojson }};
-let editSc = false;
-let i = {{ start }};
-
-function chip(text, onx, inherited) {
-  const c = document.createElement('span');
-  c.className = 'chip' + (inherited ? ' inherited' : '');
-  c.innerHTML = text.replace(/</g,'&lt;') + (inherited ? '' : ' <span class="x">×</span>');
-  if (!inherited) c.querySelector('.x').onclick = onx;
-  return c;
-}
-function url(rel) { return PHOTO_URL.replace('REL', rel.split('/').map(encodeURIComponent).join('/')); }
-
-function render() {
-  i = (i + RELS.length) % RELS.length;
-  const rel = RELS[i];
-  document.getElementById('pos').textContent = (i + 1) + ' / ' + RELS.length;
-  document.getElementById('photo').src = url(rel);
-  document.getElementById('openfull').href = url(rel);
-  document.getElementById('fname').textContent = rel;
-  const inh = document.getElementById('inh'); inh.innerHTML = '';
-  PERSON_TAGS.forEach(t => inh.appendChild(chip(t, null, true)));
-  renderOwn();
-  renderShortcuts();
-  document.getElementById('sugcap').textContent = '';   // sugerencias de la foto anterior fuera
-  document.getElementById('sugtags').innerHTML = '';
-  document.getElementById('sugstate').textContent = '';
-  document.getElementById('tin').focus();
-  history.replaceState(null, '', '?i=' + i);
-}
-function renderOwn() {
-  const box = document.getElementById('own'), input = document.getElementById('tin');
-  [...box.querySelectorAll('.chip')].forEach(c => c.remove());
-  (OWN[RELS[i]] || []).forEach(t => box.insertBefore(chip(t, () => removeTag(t), false), input));
-}
-function renderShortcuts() {
-  const row = document.getElementById('scrow');
-  const own = OWN[RELS[i]] || [];
-  row.innerHTML = '';
-  SHORTCUTS.forEach(t => {
-    const b = document.createElement('button');
-    b.className = 'sc' + (own.includes(t) ? ' active' : '');
-    b.textContent = t;
-    b.onclick = () => toggleTag(t);
-    if (editSc) {
-      const x = document.createElement('span'); x.className = 'scx'; x.textContent = '✕';
-      x.onclick = (e) => { e.stopPropagation(); removeShortcut(t); };
-      b.appendChild(x);
-    }
-    row.appendChild(b);
-  });
-  document.getElementById('scedit').style.display = editSc ? 'flex' : 'none';
-}
-function toggleTag(t) {
-  const rel = RELS[i];
-  const own = OWN[rel] || (OWN[rel] = []);
-  if (PERSON_TAGS.includes(t)) return;   // ya la hereda de la persona
-  const k = own.indexOf(t);
-  if (k >= 0) own.splice(k, 1); else own.push(t);
-  renderOwn(); renderShortcuts(); save();
-}
-function saveShortcuts() {
-  fetch(SC_URL, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body: new URLSearchParams({shortcuts: SHORTCUTS.join(',')})});
-}
-function addShortcut(v) {
-  v = v.trim().toLowerCase();
-  if (v && !SHORTCUTS.includes(v)) { SHORTCUTS.push(v); renderShortcuts(); saveShortcuts(); }
-}
-function removeShortcut(t) {
-  SHORTCUTS = SHORTCUTS.filter(x => x !== t); renderShortcuts(); saveShortcuts();
-}
-function save() {
-  const rel = RELS[i];
-  fetch(SAVE_URL, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body: new URLSearchParams({rel: rel, tags: (OWN[rel] || []).join(',')})});
-}
-function addTag(v) {
-  v = v.trim().toLowerCase(); const rel = RELS[i];
-  if (!v) return;
-  const own = OWN[rel] || (OWN[rel] = []);
-  if (own.includes(v) || PERSON_TAGS.includes(v)) return;
-  own.push(v); renderOwn(); save();
-}
-function removeTag(t) {
-  const rel = RELS[i];
-  OWN[rel] = (OWN[rel] || []).filter(x => x !== t); renderOwn(); save();
-}
-function step(d) { i += d; render(); }
-
-// --- sugerencias del interrogator (frase + tags de tu vocabulario) ---
-function suggest() {
-  const rel = RELS[i];
-  const btn = document.getElementById('sugbtn'), st = document.getElementById('sugstate');
-  btn.disabled = true; st.textContent = ' analizando… (la 1ra vez baja los modelos, tarda)';
-  document.getElementById('sugcap').textContent = '';
-  document.getElementById('sugtags').innerHTML = '';
-  fetch(SUGGEST_URL, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body: new URLSearchParams({rel: rel})}).then(r => r.json()).then(d => {
-    btn.disabled = false; st.textContent = '';
-    if (!d.ok) { st.textContent = ' ' + (d.error || 'error'); return; }
-    if (rel !== RELS[i]) return;   // ya pasaste de foto: ignorar
-    document.getElementById('sugcap').textContent = '“' + d.caption + '”';
-    const box = document.getElementById('sugtags');
-    box.innerHTML = '<span class="meta">tags sugeridos (click = agregar):</span> ';
-    d.tags.forEach(t => {
-      const own = OWN[RELS[i]] || [];
-      if (own.includes(t.tag) || PERSON_TAGS.includes(t.tag)) return;  // ya la tiene
-      const b = document.createElement('button');
-      b.className = 'sc';
-      b.textContent = t.tag + ' ' + Math.round(t.score * 100) + '%';
-      b.onclick = () => { addTag(t.tag); b.remove(); };
-      box.appendChild(b);
-    });
-  }).catch(() => { btn.disabled = false; st.textContent = ' error de red'; });
-}
-
-document.addEventListener('keydown', e => {
-  if (document.activeElement === document.getElementById('tin') && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-  if (e.key === 'ArrowLeft') step(-1);
-  else if (e.key === 'ArrowRight') step(1);
-});
-render();
-</script>
-{% endif %}
-"""
-
-
-@app.route("/person/<name>/tagone")
-def person_tagone(name):
-    """Etiquetar las fotos de una persona de a una, con flechas para avanzar."""
-    library = get_library()
-    rels = person_photos(library, name) if library else []
-    own = {r: tags_mod.get_photo(name, r) for r in rels}
-    own = {k: v for k, v in own.items() if v}
-    try:
-        start = max(0, min(len(rels) - 1, int(request.args.get("i", 0))))
-    except ValueError:
-        start = 0
-    return render_template_string(
-        shell("known", TAGONE_TEMPLATE),
-        name=name, rels=rels, person_tags=tags_mod.get_person(name),
-        photo_tags=own, all_tags=tags_mod.all_tags(), start=start,
-        shortcuts=tags_mod.get_shortcuts())
 
 
 @app.route("/person_photo/<name>/<path:rel>")
@@ -2535,10 +2805,95 @@ def person_move_photo(name):
     # las etiquetas propias de la foto la acompañan a su nuevo lugar
     if to_name:
         tags_mod.move_photo_tags(name, rel, to_name, Path(rel).name)
+    # el pie está escrito en la voz de quien la foto YA NO es, así que no sirve
+    # en su nuevo dueño: se borra en vez de mudarse
+    posts_mod.clear(name, rel)
     destino = f"la carpeta de {to_name}" if to_name else "_revisar"
     return redirect(url_for("person_page", name=name,
                             msg=f"Foto movida a {destino}. (La base de caras no cambió: si ya "
                                 f"había aprendido de esa foto, corré el corrector para limpiarla.)"))
+
+
+def _norm_search(s):
+    """Para buscar etiquetas: sin mayúsculas y sin tildes, así "penetracion"
+    encuentra "penetración". Igual que normt() del navegador."""
+    s = unicodedata.normalize("NFD", (s or "").strip().lower())
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
+def _photo_path(name, rel):
+    """La foto de esa persona en la Biblioteca, o None si ya no está."""
+    library = get_library()
+    p = Path(library) / name / rel if library else None
+    return p if p and p.is_file() else None
+
+
+@app.route("/post/<name>/caption", methods=["POST"])
+def post_caption(name):
+    """Escribe el pie de foto con el modelo de visión y lo guarda.
+
+    LENTO: ~2 minutos en CPU. Por eso es a pedido (un botón) y queda guardado:
+    la próxima vez que abras la foto sale al toque."""
+    rel = request.form.get("rel", "")
+    path = _photo_path(name, rel)
+    if not path:
+        return {"ok": False, "error": "Esa foto ya no está."}
+    try:
+        text = posts_mod.generate_caption(name, rel, str(path),
+                                          model=request.form.get("model") or None)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "caption": text}
+
+
+@app.route("/post/<name>/caption/edit", methods=["POST"])
+def post_caption_edit(name):
+    """Reescribe el pie a mano (la IA propone, vos disponés)."""
+    rel = request.form.get("rel", "")
+    if not rel:
+        return {"ok": False}
+    return {"ok": True,
+            "caption": posts_mod.set_caption(name, rel, request.form.get("caption", ""))}
+
+
+@app.route("/post/<name>/comments", methods=["POST"])
+def post_comments(name):
+    """Escribe los comentarios de mentira y los guarda. ~30s.
+
+    El tono sale de Ajustes; los @usuarios de la lista de Ajustes."""
+    rel = request.form.get("rel", "")
+    path = _photo_path(name, rel)
+    if not path:
+        return {"ok": False, "error": "Esa foto ya no está."}
+    cfg = load_config()
+    try:
+        got = posts_mod.generate_comments(
+            name, rel, str(path),
+            tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
+            users=cfg.get("comment_users") or None,
+            model=request.form.get("model") or None)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "comments": got}
+
+
+@app.route("/post/<name>/comments/clear", methods=["POST"])
+def post_comments_clear(name):
+    """Los borra para poder regenerarlos si no gustaron. El pie no se toca."""
+    rel = request.form.get("rel", "")
+    if rel:
+        posts_mod.clear_comments(name, rel)
+    return {"ok": True}
+
+
+@app.route("/person/<name>/voice", methods=["POST"])
+def person_voice(name):
+    """Guarda cómo habla esta persona: se le suma al prompt de SUS pies de foto.
+
+    Como la foto está en su carpeta sabemos que es ella, así que el pie lo
+    escribe ella en primera persona; esto es lo que la hace sonar distinta."""
+    return {"ok": True,
+            "voice": person_meta.set_voice(name, request.form.get("voice", ""))}
 
 
 @app.route("/tags/person/<name>", methods=["POST"])
@@ -2560,6 +2915,147 @@ def tags_photo(name):
     return {"ok": True, "tags": saved}
 
 
+PHRASES_TEMPLATE = """
+<h1>✎ Frases</h1>
+<p class="hint">Las frases que escribe el descriptor son formularias y suenan robóticas
+   ("una imagen de una mujer acostada en una cama"). Acá las reescribís <b>a tu manera, una
+   sola vez</b>: la próxima vez que una foto dé esa misma frase, se muestra la tuya.
+   Como se repiten muchísimo, arreglás cientos de fotos con unas pocas ediciones.</p>
+
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+<div class="panel">
+  <div class="counter">
+    {% if kind == 'nsfw' %}🔞 NSFW: {% elif kind == 'sfw' %}Sin NSFW: {% endif %}
+    {{ st.total }} frase(s) · <b style="color:var(--grn)">{{ st.hechas }}</b> reescritas ·
+    {{ st.pendientes }} pendientes</div>
+  <div class="row">
+    <span class="meta">Ver:</span>
+    <a class="secondary {% if kind == 'all' %}primary{% endif %}" style="padding:.35rem .7rem;border-radius:6px"
+       href="{{ url_for('phrases_page', pend=1 if pend else None) }}">Todas</a>
+    <a class="secondary {% if kind == 'nsfw' %}primary{% endif %}" style="padding:.35rem .7rem;border-radius:6px"
+       href="{{ url_for('phrases_page', kind='nsfw', pend=1 if pend else None) }}">🔞 Solo NSFW ({{ st.nsfw_total }})</a>
+    <a class="secondary {% if kind == 'sfw' %}primary{% endif %}" style="padding:.35rem .7rem;border-radius:6px"
+       href="{{ url_for('phrases_page', kind='sfw', pend=1 if pend else None) }}">Sin NSFW</a>
+    <span style="width:1rem"></span>
+    <a class="secondary {% if not pend %}primary{% endif %}" style="padding:.35rem .7rem;border-radius:6px"
+       href="{{ url_for('phrases_page', kind=kind if kind != 'all' else None) }}">Todas</a>
+    <a class="secondary {% if pend %}primary{% endif %}" style="padding:.35rem .7rem;border-radius:6px"
+       href="{{ url_for('phrases_page', kind=kind if kind != 'all' else None, pend=1) }}">Solo pendientes</a>
+  </div>
+  <span class="meta">Ordenadas por las que más aparecieron (esas rinden más). Las de fotos en
+    <code>_nsfw</code> se marcan solas; con el 🔞 corregís a mano.</span>
+</div>
+
+{% if not items %}
+<div class="panel"><p class="meta">
+  {% if pend %}✅ No quedan frases pendientes{% if kind == 'nsfw' %} en la lista NSFW{% elif kind == 'sfw' %} fuera de NSFW{% endif %}.
+  {% elif kind == 'nsfw' %}Todavía no hay frases marcadas como NSFW. Se marcan solas cuando sugerís
+  sobre fotos que están en una carpeta <code>_nsfw</code>, o con el 🔞 a mano.
+  {% else %}Todavía no hay frases. Usá "🔮 Sugerir" en el etiquetador y van apareciendo acá solas.{% endif %}
+</p></div>
+{% else %}
+{% for p in items %}
+<div class="panel">
+  <div class="row" style="justify-content:space-between">
+    <span class="meta">apareció <b>{{ p.count }}</b> vez(ces)</span>
+    <span class="row" style="margin:0">
+      <form method="post" action="{{ url_for('phrases_nsfw') }}" style="margin:0">
+        <input type="hidden" name="auto" value="{{ p.auto }}">
+        <input type="hidden" name="value" value="{{ 0 if p.nsfw else 1 }}">
+        <input type="hidden" name="kind" value="{{ kind }}">
+        <input type="hidden" name="pend" value="{{ 1 if pend else '' }}">
+        <button style="padding:.1rem .5rem;font-size:.8rem{% if p.nsfw %};background:var(--red);color:#fff;border:0{% endif %}"
+                title="{% if p.nsfw %}Sacar de la lista NSFW{% else %}Marcar como NSFW{% endif %}">🔞</button>
+      </form>
+      <form method="post" action="{{ url_for('phrases_forget') }}" style="margin:0"
+            onsubmit="return confirm('¿Sacar esta frase del listado?')">
+        <input type="hidden" name="auto" value="{{ p.auto }}">
+        <input type="hidden" name="kind" value="{{ kind }}">
+        <input type="hidden" name="pend" value="{{ 1 if pend else '' }}">
+        <button style="padding:.1rem .5rem;font-size:.8rem">🗑</button>
+      </form>
+    </span>
+  </div>
+  <div class="meta" style="font-style:italic; margin:.2rem 0 .4rem">“{{ p.auto }}”</div>
+  <form method="post" action="{{ url_for('phrases_save') }}">
+    <input type="hidden" name="auto" value="{{ p.auto }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="pend" value="{{ 1 if pend else '' }}">
+    <div class="row">
+      <input class="path" type="text" name="custom" value="{{ p.custom }}"
+             placeholder="escribila a tu manera… (vacío = usa la automática)">
+      <button class="primary">💾 Guardar</button>
+      {% if p.custom %}<span class="meta" style="color:var(--grn)">✓ reescrita</span>{% endif %}
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
+"""
+
+
+def _phrase_filters():
+    """(kind, pend, nsfw) del querystring/form: kind = all | nsfw | sfw."""
+    src = request.form if request.method == "POST" else request.args
+    kind = src.get("kind", "all")
+    if kind not in ("all", "nsfw", "sfw"):
+        kind = "all"
+    pend = src.get("pend") == "1"
+    nsfw = {"nsfw": True, "sfw": False}.get(kind)   # None = todas
+    return kind, pend, nsfw
+
+
+@app.route("/phrases")
+def phrases_page():
+    kind, pend, nsfw = _phrase_filters()
+    return render_template_string(
+        shell("phrases", PHRASES_TEMPLATE),
+        items=phrases_mod.list_all(only_pending=pend, nsfw=nsfw),
+        st=phrases_mod.stats(nsfw=nsfw),
+        kind=kind, pend=pend, message=request.args.get("msg", ""))
+
+
+def _back_to_phrases(msg):
+    """Vuelve a la lista conservando el filtro en el que estabas."""
+    kind, pend, _ = _phrase_filters()
+    return redirect(url_for("phrases_page", msg=msg,
+                            kind=None if kind == "all" else kind,
+                            pend=1 if pend else None))
+
+
+@app.route("/phrases/save", methods=["POST"])
+def phrases_save():
+    custom = request.form.get("custom", "")
+    phrases_mod.set_custom(request.form.get("auto", ""), custom)
+    return _back_to_phrases("Frase reescrita." if custom.strip()
+                            else "Frase vuelta a la automática.")
+
+
+@app.route("/phrases/nsfw", methods=["POST"])
+def phrases_nsfw():
+    """Marca/desmarca una frase como NSFW (para editar esa lista aparte)."""
+    val = request.form.get("value") == "1"
+    phrases_mod.set_nsfw(request.form.get("auto", ""), val)
+    return _back_to_phrases("Marcada como NSFW." if val else "Sacada de NSFW.")
+
+
+@app.route("/phrases/forget", methods=["POST"])
+def phrases_forget():
+    phrases_mod.forget(request.form.get("auto", ""))
+    return _back_to_phrases("Frase sacada del listado.")
+
+
+@app.route("/phrases/quick", methods=["POST"])
+def phrases_quick():
+    """Corregir una frase desde el etiquetador, sin ir a la pantalla de Frases."""
+    auto = request.form.get("auto", "")
+    custom = request.form.get("custom", "")
+    if not auto:
+        return {"ok": False}
+    return {"ok": True, "custom": phrases_mod.set_custom(auto, custom)}
+
+
 @app.route("/tags/shortcuts", methods=["POST"])
 def tags_shortcuts():
     """Guarda los botones-atajo del etiquetador (editables por el usuario)."""
@@ -2578,11 +3074,23 @@ def tags_suggest(name):
     if not path or not path.is_file():
         return {"ok": False, "error": "Esa foto ya no está."}
     vocab = sorted(set(tags_mod.all_tags()) | set(tags_mod.get_shortcuts()))
+    # motor: "blip" (rápido, incluido) o "vlm" (modelo de visión en Ollama)
+    engine = request.form.get("engine", "blip")
     try:
-        r = interrogator.interrogate(str(path), vocab)
+        r = interrogator.interrogate(str(path), vocab, engine=engine,
+                                     vlm_model=request.form.get("vlm_model") or None,
+                                     person=name)
     except Exception as e:
         return {"ok": False, "error": f"No se pudo analizar: {e}"}
-    return {"ok": True, "caption": r["caption"],   # frase ya traducida al español
+    # la frase automática se registra y, si vos la reescribiste, se usa la tuya.
+    # Si la foto está en una carpeta _nsfw, la frase se marca sola como NSFW
+    # (así después editás esa lista aparte).
+    auto = r["caption"]
+    es_nsfw = NSFW_DIR_NAME in Path(rel).parts
+    return {"ok": True,
+            "caption": phrases_mod.apply(auto, nsfw=es_nsfw),   # tu versión si existe
+            "auto": auto,                          # la automática (clave para editarla)
+            "details": [{"label": l, "value": v} for l, v in r.get("details", [])],
             "tags": [{"tag": t, "score": round(s, 3)} for t, s in r["tags"]]}
 
 

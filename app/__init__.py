@@ -22,6 +22,8 @@ PICK_THUMBS = DATA_DIR / "pick_thumbs"      # recortes del selector "¿cuál es 
 CORRECT_THUMBS = DATA_DIR / "correct_thumbs"  # recortes del corrector de entrenamiento
 PERSON_META_PATH = DATA_DIR / "person_meta.json"  # última corrección / búsqueda por persona
 TAGS_PATH = DATA_DIR / "tags.json"          # etiquetas manuales: por persona y por foto
+PHRASES_PATH = DATA_DIR / "phrases.json"    # frases del interrogator reescritas por el usuario
+POSTS_PATH = DATA_DIR / "posts.json"        # pie + comentarios de cada foto (modal estilo Insta)
 GALLERY_THUMBS = DATA_DIR / "gallery_thumbs"  # miniaturas cacheadas de las galerías (rápido)
 
 # Subcarpeta (dentro de la carpeta de una persona) a donde el corrector mueve

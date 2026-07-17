@@ -51,9 +51,44 @@ def stamp_many(names, event):
 
 
 def get(name):
-    """{"corrected": str|None, "searched": str|None} de una persona."""
+    """{"corrected": str|None, "searched": str|None, "voice": str} de una persona."""
     d = _load().get(name, {})
-    return {"corrected": d.get("corrected"), "searched": d.get("searched")}
+    return {"corrected": d.get("corrected"), "searched": d.get("searched"),
+            "voice": d.get("voice", "")}
+
+
+def get_voice(name):
+    """Cómo habla esta persona: se le suma al prompt del pie de foto.
+
+    Como sabemos de quién es la foto (está en su carpeta), el pie lo escribe ella
+    en primera persona. Esto es lo que la hace sonar distinta de las demás: una
+    cruda y directa, otra tímida. Vacío = la voz genérica de vlm.SYSTEM_PIE."""
+    return (_load().get(name, {}) or {}).get("voice", "")
+
+
+def set_voice(name, text):
+    data = _load()
+    text = (text or "").strip()
+    if text:
+        data.setdefault(name, {})["voice"] = text
+    elif name in data:
+        data[name].pop("voice", None)
+    _save(data)
+    return text
+
+
+def rename(old, new):
+    """La persona cambió de nombre: su meta (y su voz) la siguen."""
+    data = _load()
+    if old in data:
+        data[new] = data.pop(old)
+        _save(data)
+
+
+def forget(name):
+    data = _load()
+    if data.pop(name, None) is not None:
+        _save(data)
 
 
 def humanize(ts):
