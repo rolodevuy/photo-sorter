@@ -233,8 +233,12 @@ BASE_CSS = """
   /* galería */
   .grid { display:flex; flex-wrap:wrap; gap:14px; }
   .person { background:var(--panel); border:1px solid var(--bd); border-radius:10px;
-    padding:.6rem; width:150px; text-align:center; }
+    padding:.6rem; width:150px; text-align:center; position:relative; }
   .person a { color:inherit; text-decoration:none; }
+  /* checkbox para etiquetar de a muchas: encima de la foto, arriba a la izquierda */
+  .selbox { position:absolute; top:.5rem; left:.5rem; z-index:2; background:rgba(0,0,0,.55);
+    border-radius:5px; padding:.15rem .25rem; cursor:pointer; }
+  .selbox input { width:1.1rem; height:1.1rem; cursor:pointer; accent-color:var(--acc); }
   .person a:hover img, .person a:hover .noimg { outline:3px solid var(--acc); }
   .person img { width:130px; height:130px; object-fit:cover; border-radius:8px; }
   .noimg { width:130px; height:130px; border-radius:8px; background:var(--panel2);
@@ -337,6 +341,19 @@ BASE_CSS = """
     color:#cfd2da; font-size:.85rem; pointer-events:none; }
   #lb .lb-hint { position:fixed; top:16px; left:20px; color:#8b8d99; font-size:.8rem; }
 
+  /* --- esqueletos de carga --- */
+  /* La IA tarda entre 30s y 2 minutos por foto. Sin esto parece colgada: el
+     usuario aprieta, no pasa nada visible, y no sabe si lo apretó. */
+  @keyframes sk-brillo { 100% { background-position: -200% 0; } }
+  .sk { border-radius:5px; background:linear-gradient(90deg,
+          var(--panel2) 25%, var(--bd) 50%, var(--panel2) 75%);
+    background-size:200% 100%; animation:sk-brillo 1.3s linear infinite; }
+  .sk-linea { height:.7rem; margin:.45rem 0; }
+  .sk-chip { display:inline-block; height:1.3rem; width:4.5rem; margin:.15rem .2rem; }
+  /* respeta a quien pidió menos animación en el sistema */
+  @media (prefers-reduced-motion: reduce) { .sk { animation:none; } }
+  .trabajando { position:relative; opacity:.75; pointer-events:none; }
+
   /* --- visor estilo publicación (solo la galería de una persona) --- */
   /* foto a la izquierda, columna del post a la derecha */
   #lb.lb-post .post { position:absolute; inset:0; display:grid;
@@ -367,6 +384,11 @@ BASE_CSS = """
   #lb.lb-post .pfoot select { font-size:.75rem; max-width:230px; }
   #lb.lb-post .sm { padding:.15rem .5rem; font-size:.78rem; }
   #lb.lb-post .sm.on { border-color:var(--accent); color:var(--accent); }
+  /* los botones que disparan a la IA: grandes, porque son los que hay que
+     encontrar y porque hay que ver clarito que quedaron apretados */
+  #lb.lb-post .act { padding:.4rem .8rem; font-weight:600; min-width:11rem; }
+  #lb.lb-post .act.trabajando { opacity:1; border-color:var(--accent); color:var(--accent);
+    font-variant-numeric:tabular-nums; }
   /* las flechas no se pueden ir sobre la columna del post */
   #lb.lb-post #lb-next { right:calc(380px + 18px); }
   #lb.lb-post #lb-x { right:calc(380px + 20px); }
@@ -1354,6 +1376,70 @@ function filterPeople() {
   });
   const c = document.getElementById('pcount');
   if (c) c.textContent = visibles;
+  const v = document.getElementById('selvis');
+  if (v) v.textContent = visibles;
+}
+
+// --- etiquetar de a muchas ---
+// El caso: "estas 60 son hombres". Entrar una por una no es una opción.
+const BULK_URL = "{{ url_for('tags_person_bulk') }}";
+let selOn = false;
+
+function visibles() {
+  return [...document.querySelectorAll('.person[data-name]')]
+    .filter(c => c.style.display !== 'none');
+}
+function toggleSel() {
+  selOn = !selOn;
+  document.getElementById('selbar').style.display = selOn ? '' : 'none';
+  document.getElementById('selbtn').textContent = selOn ? '✕ Salir de etiquetar' : '☑ Etiquetar varias';
+  document.querySelectorAll('.selbox').forEach(b => b.style.display = selOn ? '' : 'none');
+  if (!selOn) selAll(false);
+  filterPeople();
+}
+function selAll(on) {
+  // solo las que se ven: si filtraste "gonza", no te lleva puestas las demás
+  const cards = on ? visibles() : [...document.querySelectorAll('.person[data-name]')];
+  cards.forEach(c => { const chk = c.querySelector('.selchk'); if (chk) chk.checked = on; });
+  selCount();
+}
+function selCount() {
+  const n = document.querySelectorAll('.selchk:checked').length;
+  document.getElementById('selcount').textContent = n;
+  return n;
+}
+function bulk(accion) {
+  const st = document.getElementById('bulkst');
+  const nombres = [...document.querySelectorAll('.selchk:checked')].map(c => c.value);
+  const tags = document.getElementById('bulktag').value.trim();
+  if (!nombres.length) { st.textContent = ' elegí al menos una persona'; return; }
+  if (!tags) { st.textContent = ' escribí la etiqueta'; return; }
+  st.textContent = ' guardando…';
+  fetch(BULK_URL, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({names: nombres.join('\\n'), tags: tags, action: accion})})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { st.textContent = ' ' + (d.error || 'error'); return; }
+      // repintar las tarjetas tocadas sin recargar (con 500 personas importa)
+      for (const [nombre, sus] of Object.entries(d.tags)) {
+        const card = document.querySelector(`.person[data-name="${CSS.escape(nombre)}"]`);
+        if (!card) continue;
+        card.dataset.tags = sus.join(' ');
+        let box = card.querySelector('.pcount');
+        if (sus.length) {
+          if (!box || !box.textContent.startsWith('🏷')) {
+            box = document.createElement('div');
+            box.className = 'pcount';
+            card.querySelector('a').after(box);
+          }
+          box.textContent = '🏷 ' + sus.join(', ');
+        } else if (box && box.textContent.startsWith('🏷')) {
+          box.remove();
+        }
+      }
+      const verbo = accion === 'add' ? 'agregada a' : 'quitada de';
+      st.textContent = ` ✓ ${verbo} ${d.n} persona(s)`;
+      setTimeout(() => st.textContent = '', 2500);
+    }).catch(e => st.textContent = ' ' + e);
 }
 </script>
 
@@ -1362,12 +1448,34 @@ function filterPeople() {
   <input type="text" id="pfilter" class="path" placeholder="🔍 Buscar por nombre o etiqueta (coma para varias)…"
          oninput="filterPeople()" autofocus>
   <span class="meta"><span id="pcount">{{ people|length }}</span> persona(s)</span>
+  <button class="secondary" onclick="toggleSel()" id="selbtn">☑ Etiquetar varias</button>
+</div>
+
+{# Etiquetar de a muchas: "todas estas son hombres" sin entrar una por una #}
+<div class="panel" id="selbar" style="display:none">
+  <div class="row">
+    <button class="secondary" onclick="selAll(true)">Seleccionar los {{ '' }}<span id="selvis">0</span> que se ven</button>
+    <button class="secondary" onclick="selAll(false)">Ninguna</button>
+    <span class="meta"><b id="selcount">0</b> seleccionada(s)</span>
+  </div>
+  <div class="row" style="margin-top:.4rem">
+    <input class="path" id="bulktag" list="tagsug" placeholder="etiqueta(s), coma para varias… ej: hombre"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();bulk('add')}">
+    <button class="primary" onclick="bulk('add')">＋ Agregar a las seleccionadas</button>
+    <button class="secondary" onclick="bulk('remove')" title="Sacarles esta etiqueta">－ Quitar</button>
+    <span class="meta" id="bulkst"></span>
+  </div>
+  <p class="meta">Agregar <b>suma</b> la etiqueta: no pisa las que ya tengan. El filtro de arriba
+     funciona igual, así que podés buscar y seleccionar solo los que quedaron a la vista.</p>
 </div>
 <datalist id="tagsug">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
 <div class="grid">
   {% for p in people %}
   <div class="person" id="p{{ loop.index0 }}" data-name="{{ p.name }}"
        data-tags="{{ p.tags|join(' ') }}" data-href="{{ url_for('person_page', name=p.name) }}">
+    <label class="selbox" style="display:none" title="Seleccionar a {{ p.name }}">
+      <input type="checkbox" class="selchk" value="{{ p.name }}" onchange="selCount()">
+    </label>
     <a href="{{ url_for('person_page', name=p.name) }}" title="Ver las fotos de {{ p.name }}">
     {% if p.thumb %}
       <img src="{{ url_for('known_thumb', name=p.name) }}" alt="{{ p.name }}">
@@ -1442,12 +1550,25 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="panel">
-  <div class="counter">💬 Comentarios de las fotos</div>
-  <p class="meta">Cuando abrís una foto de la galería, la IA le puede escribir comentarios
-     como si fueran de seguidores. Acá elegís con qué onda los escribe y con qué nombres
-     los firma.</p>
+  <div class="counter">💬 Comentarios y pie de foto</div>
+  <p class="meta">Cuando abrís una foto de la galería, la IA le escribe un pie y unos
+     comentarios como si fueran de seguidores. Acá elegís con qué onda.</p>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
+
+    <div style="margin:.6rem 0">
+      <label>Qué tan subido: <b id="crud-lbl">{{ crudeness_labels[crudeness] }}</b></label>
+      <input type="range" name="crudeness" min="0" max="{{ crudeness_labels|length - 1 }}"
+             step="1" value="{{ crudeness }}" style="width:100%;margin:.3rem 0"
+             oninput="document.getElementById('crud-lbl').textContent = {{ crudeness_labels|tojson }}[this.value]">
+      <div class="row" style="justify-content:space-between;margin:0">
+        {% for l in crudeness_labels %}<span class="meta">{{ l }}</span>{% endfor %}
+      </div>
+      <p class="meta">Vale para el pie y para los comentarios. De <b>explícito</b> para arriba,
+         un modelo con filtros te lava las frases: elegí el <code>abliterated</code> en el
+         desplegable del visor.</p>
+    </div>
+
     <div class="row">
       <label>Tono:</label>
       <select name="comment_tone">
@@ -1499,6 +1620,8 @@ def settings_page():
         tones=posts_mod.TONES,
         comment_tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
         comment_users=", ".join(cfg.get("comment_users") or posts_mod.DEFAULT_USERS),
+        crudeness_labels=[k for k, _ in posts_mod.CRUDENESS],
+        crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
         message=request.args.get("msg", ""))
 
 
@@ -1523,6 +1646,12 @@ def settings_save():
         users = [u.strip().lstrip("@") for u in request.form["comment_users"].split(",")]
         users = [u for u in users if u]
         cfg["comment_users"] = users        # vacío = los de fábrica
+    if "crudeness" in request.form:
+        try:
+            cfg["crudeness"] = max(0, min(int(request.form["crudeness"]),
+                                          len(posts_mod.CRUDENESS) - 1))
+        except ValueError:
+            pass
 
     save_config(cfg)
     return redirect(url_for("settings_page", msg="Ajustes guardados."))
@@ -2259,8 +2388,13 @@ POST_LIGHTBOX = """
       <div class="pbody">
         <div class="pcap" id="lb-cap-box">
           <p id="lb-cap" class="empty">Todavía no tiene pie de foto.</p>
+          <div id="lb-cap-sk" style="display:none">
+            <div class="sk sk-linea" style="width:96%"></div>
+            <div class="sk sk-linea" style="width:88%"></div>
+            <div class="sk sk-linea" style="width:60%"></div>
+          </div>
           <div class="row" style="margin:.3rem 0 0">
-            <button class="secondary sm" id="lb-cap-btn" onclick="genCaption()">✨ Escribir pie</button>
+            <button class="secondary act" id="lb-cap-btn" onclick="genCaption()">✨ Escribir pie</button>
             <button class="secondary sm" id="lb-cap-edit" onclick="editCap()" title="Reescribirlo a tu manera">✏️</button>
             <span class="meta" id="lb-cap-st"></span>
           </div>
@@ -2272,11 +2406,19 @@ POST_LIGHTBOX = """
           <div class="row" style="justify-content:space-between;margin:0 0 .3rem">
             <span class="meta">💬 Comentarios</span>
             <span>
-              <button class="secondary sm" id="lb-com-btn" onclick="genComments()">✨ Generar</button>
+              <button class="secondary act" id="lb-com-btn" onclick="genComments()">✨ Generar</button>
               <button class="secondary sm" id="lb-com-x" onclick="clearComments()" title="Borrarlos y empezar de nuevo">🗑</button>
             </span>
           </div>
           <div id="lb-coms"></div>
+          <div id="lb-com-sk" style="display:none">
+            {% for w in [70, 85, 62, 78, 55, 80] %}
+            <div style="padding:.35rem 0;border-bottom:1px solid var(--line)">
+              <span class="sk" style="display:inline-block;height:.7rem;width:3.5rem"></span>
+              <span class="sk" style="display:inline-block;height:.7rem;width:{{ w }}%;margin-left:.3rem"></span>
+            </div>
+            {% endfor %}
+          </div>
           <span class="meta" id="lb-com-st"></span>
         </div>
       </div>
@@ -2292,10 +2434,13 @@ POST_LIGHTBOX = """
           </div>
           <div class="chips" id="lb-sc" style="margin-top:.4rem"></div>
           <div class="row" style="margin-top:.5rem">
-            <button class="secondary sm" id="lb-sug" onclick="suggestTags()">🔮 Sugerir tags</button>
+            <button class="secondary act" id="lb-sug" onclick="suggestTags()">🔮 Sugerir tags</button>
             <span class="meta" id="lb-sug-st"></span>
           </div>
           <div class="chips" id="lb-sugtags" style="margin-top:.3rem"></div>
+          <div id="lb-sug-sk" style="display:none;margin-top:.3rem">
+            {% for w in [4.5, 6, 3.5, 5.5, 4] %}<span class="sk sk-chip" style="width:{{ w }}rem"></span>{% endfor %}
+          </div>
         </div>
       </div>
 
@@ -2332,6 +2477,10 @@ POST_LIGHTBOX = """
   function reset() { scale = 1; tx = 0; ty = 0; apply(); }
 
   function render() {
+    // Si pasaste de foto mientras la IA escribía, el esqueleto no puede quedar
+    // colgado en la foto nueva. El trabajo sigue en segundo plano y se guarda
+    // igual en la foto que lo pidió (por eso el `r === rel()` de más abajo).
+    Object.keys(TRABAJOS).forEach(k => trabajando(k, false));
     const d = slot(rel());
     $('lb-cap').textContent = d.caption || 'Todavía no tiene pie de foto.';
     $('lb-cap').className = d.caption ? '' : 'empty';
@@ -2372,20 +2521,56 @@ POST_LIGHTBOX = """
   window.lbClose = function() { lb.style.display = 'none'; img.src = ''; };
   window.lbStep = function(d) { show(idx + d); };
 
+  // --- estado "la IA está trabajando" ---
+  // Tarda entre 30s y 2 minutos. Sin señal clara, el usuario aprieta el botón,
+  // ve el texto viejo quieto y no sabe si lo apretó. Así que: se esconde lo
+  // viejo, aparece el esqueleto, y el botón dice qué está haciendo y cuánto.
+  const RELOJ = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  const TRABAJOS = {
+    cap: {btn: 'lb-cap-btn', st: 'lb-cap-st', sk: 'lb-cap-sk',
+          ver: ['lb-cap', 'lb-cap-edit'], texto: 'escribiendo el pie…', segundos: 90},
+    com: {btn: 'lb-com-btn', st: 'lb-com-st', sk: 'lb-com-sk',
+          ver: ['lb-coms', 'lb-com-x'], texto: 'escribiendo…', segundos: 60},
+    sug: {btn: 'lb-sug', st: 'lb-sug-st', sk: 'lb-sug-sk',
+          ver: ['lb-sugtags'], texto: 'pensando…', segundos: 20},
+  };
+  function trabajando(clave, on) {
+    const t = TRABAJOS[clave], b = $(t.btn);
+    b.disabled = on;
+    b.classList.toggle('trabajando', on);
+    $(t.sk).style.display = on ? '' : 'none';
+    t.ver.forEach(id => { if ($(id)) $(id).style.display = on ? 'none' : ''; });
+    const yaEstaba = !!b._tick;
+    clearInterval(b._tick);      // el reloj vive en el botón: dos trabajos no se pisan
+    b._tick = null;
+    if (!on) {
+      if (b.dataset.label) b.textContent = b.dataset.label;
+      return;
+    }
+    // guardar la etiqueta ANTES de pisarla con el reloj (y no re-guardar el
+    // reloj si ya estaba trabajando)
+    if (!yaEstaba) b.dataset.label = b.textContent;
+    let s = 0;
+    const pintar = () => { b.textContent = `${RELOJ[s % RELOJ.length]} ${t.texto} ${s}s`; s++; };
+    pintar();
+    b._tick = setInterval(pintar, 1000);
+    $(t.st).textContent = ` suele tardar ~${t.segundos}s`;
+  }
+
   // --- pie de foto ---
   function genCaption() {
-    const r = rel(), b = $('lb-cap-btn');
+    const r = rel();
     if (!window.VLM_MODELS.length) {
       $('lb-cap-st').textContent = ' Ollama no está corriendo.'; return;
     }
-    b.disabled = true;
-    $('lb-cap-st').textContent = ' escribiendo… (tarda ~2 min, es el modelo en CPU)';
+    trabajando('cap', true);
     post_(CAP_URL, {rel: r, model: $('lb-model').value}).then(d => {
-      b.disabled = false; $('lb-cap-st').textContent = d.ok ? '' : ' ' + d.error;
+      trabajando('cap', false);
+      $('lb-cap-st').textContent = d.ok ? '' : ' ' + d.error;
       if (!d.ok) return;
       slot(r).caption = d.caption;
       if (r === rel()) render();     // ya pasaste de foto: guardalo igual
-    }).catch(e => { b.disabled = false; $('lb-cap-st').textContent = ' ' + e; });
+    }).catch(e => { trabajando('cap', false); $('lb-cap-st').textContent = ' ' + e; });
   }
   function editCap() {
     const t = $('lb-cap-in');
@@ -2403,17 +2588,18 @@ POST_LIGHTBOX = """
 
   // --- comentarios ---
   function genComments() {
-    const r = rel(), b = $('lb-com-btn');
+    const r = rel();
     if (!window.VLM_MODELS.length) {
       $('lb-com-st').textContent = ' Ollama no está corriendo.'; return;
     }
-    b.disabled = true; $('lb-com-st').textContent = ' escribiendo… (~30s)';
+    trabajando('com', true);
     post_(COM_URL, {rel: r, model: $('lb-model').value}).then(d => {
-      b.disabled = false; $('lb-com-st').textContent = d.ok ? '' : ' ' + d.error;
+      trabajando('com', false);
+      $('lb-com-st').textContent = d.ok ? '' : ' ' + d.error;
       if (!d.ok) return;
       slot(r).comments = d.comments;
       if (r === rel()) render();
-    }).catch(e => { b.disabled = false; $('lb-com-st').textContent = ' ' + e; });
+    }).catch(e => { trabajando('com', false); $('lb-com-st').textContent = ' ' + e; });
   }
   function clearComments() {
     const r = rel();
@@ -2474,10 +2660,11 @@ POST_LIGHTBOX = """
     $('lb-tag-toggle').textContent = open ? '🏷 Etiquetar ▴' : '🏷 Etiquetar ▾';
   }
   function suggestTags() {
-    const r = rel(), b = $('lb-sug');
-    b.disabled = true; $('lb-sug-st').textContent = ' pensando…';
+    const r = rel();
+    trabajando('sug', true);
     post_(SUG_URL, {rel: r, engine: 'blip'}).then(d => {
-      b.disabled = false; $('lb-sug-st').textContent = d.ok ? '' : ' ' + d.error;
+      trabajando('sug', false);
+      $('lb-sug-st').textContent = d.ok ? '' : ' ' + d.error;
       if (!d.ok || r !== rel()) return;
       const box = $('lb-sugtags');
       box.innerHTML = '';
@@ -2488,7 +2675,7 @@ POST_LIGHTBOX = """
         b2.onclick = () => { if (!ownTags().includes(t.tag)) saveOwn(ownTags().concat([t.tag])); };
         box.appendChild(b2);
       });
-    }).catch(e => { b.disabled = false; $('lb-sug-st').textContent = ' ' + e; });
+    }).catch(e => { trabajando('sug', false); $('lb-sug-st').textContent = ' ' + e; });
   }
 
   Object.assign(window, {genCaption, editCap, genComments, clearComments,
@@ -2838,9 +3025,11 @@ def post_caption(name):
     path = _photo_path(name, rel)
     if not path:
         return {"ok": False, "error": "Esa foto ya no está."}
+    cfg = load_config()
     try:
-        text = posts_mod.generate_caption(name, rel, str(path),
-                                          model=request.form.get("model") or None)
+        text = posts_mod.generate_caption(
+            name, rel, str(path), model=request.form.get("model") or None,
+            crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT))
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "caption": text}
@@ -2871,6 +3060,7 @@ def post_comments(name):
             name, rel, str(path),
             tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
             users=cfg.get("comment_users") or None,
+            crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
             model=request.form.get("model") or None)
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -2902,6 +3092,35 @@ def tags_person(name):
     tags = [t for t in request.form.get("tags", "").split(",")]
     saved = tags_mod.set_person(name, tags)
     return {"ok": True, "tags": saved}
+
+
+@app.route("/tags/person/bulk", methods=["POST"])
+def tags_person_bulk():
+    """Suma (o saca) etiquetas a MUCHAS personas de una.
+
+    El caso real: "estas 60 son hombres". Entrar a cada perfil no es una opción.
+
+    Ojo con "add": SUMA. Si pisara la lista, etiquetar 60 personas de sexo les
+    borraría todo lo que ya tenían."""
+    names = [n for n in request.form.get("names", "").split("\n") if n.strip()]
+    tags = [t for t in request.form.get("tags", "").split(",") if t.strip()]
+    accion = request.form.get("action", "add")
+    if not names or not tags:
+        return {"ok": False, "error": "Faltan personas o etiquetas."}
+    conocidos = load_known()
+    out = {}
+    for n in names:
+        n = n.strip()
+        if n not in conocidos:      # se borró mientras tanto
+            continue
+        tenia = tags_mod.get_person(n)
+        if accion == "remove":
+            quitar = {tags_mod._norm(t) for t in tags}
+            nuevas = [t for t in tenia if tags_mod._norm(t) not in quitar]
+        else:
+            nuevas = tenia + tags   # set_person limpia duplicados y normaliza
+        out[n] = tags_mod.set_person(n, nuevas)
+    return {"ok": True, "n": len(out), "tags": out}
 
 
 @app.route("/tags/photo/<name>", methods=["POST"])
