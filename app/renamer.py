@@ -13,11 +13,19 @@ lee ni analiza el contenido de los archivos.
 Uso normal: desde la web (pestaña "Corregir carpeta").
 """
 
+import json
+import re
 from pathlib import Path
 
 from app import RENAME_EXTENSIONS
 
 INVALID = '<>:"/\\|?*'
+
+# El "archivo de referencia" que propuso el usuario: cuando el nomenclador
+# renombra, deja acá quién es cada foto. Así mibot (o quien sea) no necesita
+# reconocer la cara —que cuesta ~1,5s— sino leer una línea: instantáneo.
+# Vive DENTRO de la carpeta renombrada, al lado de las fotos.
+MANIFEST_NAME = "_nomenclador.json"
 
 
 def _clean_prefix(prefix):

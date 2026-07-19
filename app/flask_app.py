@@ -16,14 +16,18 @@ Uso:
 import hashlib
 import json
 import math
+import os
 import threading
 import time
 import unicodedata
 import webbrowser
 from pathlib import Path
 
-from flask import (Flask, abort, redirect, render_template_string, request,
-                   send_from_directory, url_for)
+import io
+import zipfile
+
+from flask import (Flask, Response, abort, redirect, render_template_string,
+                   request, send_from_directory, stream_with_context, url_for)
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -37,7 +41,8 @@ from app.corrector import apply_correction, scan_person_folder
 from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
 from app.finder import (EPS_DEFAULT, EPS_MAX, EPS_MIN, find_known, find_person,
                         move_to_person)
-from app.known import (add_faces, enroll_from_folder, forget_person, known_summary,
+from app.known import (add_faces, enroll_from_folder, forget_person,
+                       import_folder_as_person, known_summary, library_people,
                        load_known, move_photo, person_photos, save_face_crops,
                        save_known, safe_name, set_cover)
 from app.linkgrab import grab_links
@@ -47,6 +52,7 @@ from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
 from app import person_meta
 from app import tags as tags_mod
 from app import interrogator, vlm
+from app import sexpos
 from app import posts as posts_mod
 from app import phrases as phrases_mod
 from app.organizer import organize
@@ -63,12 +69,48 @@ SUSPECT_MARGIN = 0.20
 
 app = Flask(__name__)
 
+
+@app.after_request
+def _sin_cache_html(resp):
+    """Las PÁGINAS nunca se cachean: cada F5 trae la versión actual.
+
+    Estuvimos días con 'no veo los cambios' y la mitad era el navegador
+    sirviendo HTML viejo de su caché (ni el Ctrl+F5 salvaba siempre). Las
+    miniaturas sí se cachean (van por send_from_directory con su mimetype de
+    imagen); esto solo pisa el HTML."""
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/debug/jserror", methods=["POST"])
+def debug_jserror():
+    """Los errores de JS del navegador llegan acá y se imprimen en esta
+    consola — si no, quedan solo en la consola del navegador (F12) y nunca
+    se ven en la terminal donde corre PhotoSorter.bat."""
+    d = request.get_json(silent=True) or {}
+    print(f"\n[JS ERROR] {d.get('url', '')}: {d.get('msg', '')}\n{d.get('extra', '')}\n", flush=True)
+    return {"ok": True}
+
+
 # Estado del análisis en curso (corre en un hilo aparte)
 STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 # Estado de la búsqueda de duplicados (otro hilo)
 DUPE_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
 # Estado de la importación de personas conocidas (otro hilo)
 IMPORT_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": ""}
+# Estado del lote de posts (otro hilo): escribir el pie y/o los comentarios de
+# TODAS las fotos de una persona. Es para dejarlo toda la noche: a ~90s el pie,
+# 1500 fotos son más de 37 horas. Por eso guarda los tiempos REALES de cada foto
+# y con eso calcula lo que falta, en vez de estimar con un número inventado.
+POSTS_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": "",
+               "name": "", "que": "pie", "hechas": 0, "salteadas": 0, "fallaron": 0,
+               "segundos": [], "empezo": 0.0, "stop": False, "ultimos": []}
+# El etiquetador automático (otro lote, mismo patrón): selecciono fotos o dejo
+# que corra sobre todas las que no tienen etiquetas propias todavía.
+TAGS_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": "",
+              "name": "", "hechas": 0, "salteadas": 0, "fallaron": 0,
+              "empezo": 0.0, "stop": False, "ultimos": []}
 # Estado del buscador de persona (otro hilo); los resultados viven acá hasta
 # la próxima búsqueda (no se guardan en disco, salvo las miniaturas)
 FIND_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": "",
@@ -95,17 +137,24 @@ SPLIT_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error":
 
 BASE_CSS = """
   :root {
-    --bg:#0c0c0e; --side:#131319; --panel:#181920; --panel2:#20222b;
-    --bd:#2c2e38; --tx:#e7e8ec; --mut:#8b8d99; --acc:#5b8fd0; --acc2:#79a7df;
-    --grn:#3f9d5a; --red:#d6564e; --amb:#d99a3a; --viol:#9b6cc4;
+    /* Paleta "GitHub oscuro" (mockup Organizar overlay). Se remapea sobre las
+       variables que ya usaba todo el tema, así el cambio es global y de una. */
+    --bg:#0d1117; --side:#0f141b; --panel:#161b22; --panel2:#21262d;
+    --bd:#30363d; --tx:#e6edf3; --mut:#8b949e; --acc:#1f6feb; --acc2:#58a6ff;
+    --grn:#3fb950; --red:#f85149; --amb:#f2cc60; --viol:#a371f7;
+    --ov:rgba(13,17,23,.72);          /* fondo de overlays sobre imágenes */
+    --line:#21262d;                   /* borde sutil (paneles internos del visor) */
   }
   * { box-sizing: border-box; }
+  /* Inter si está instalada; si no, Segoe UI (casi igual). SIN Google Fonts:
+     la app es offline y no quiero que dependa de internet por una fuente. */
   body { margin:0; background:var(--bg); color:var(--tx);
-         font-family:"Instrument Sans","Segoe UI",system-ui,sans-serif; }
+         font-family:"Inter","Segoe UI",system-ui,sans-serif; }
   a { color:var(--acc2); text-decoration:none; }
-  a:hover { color:#c3d6ec; text-decoration:underline; }
+  a:hover { color:#79c0ff; text-decoration:underline; }
   h1 { margin:.2rem 0 .5rem; font-size:1.5rem; font-weight:650; }
-  code { background:#000; color:#cbd6e6; padding:1px 5px; border-radius:3px; font-size:.9em; }
+  code { background:var(--bg); color:#c9d1d9; padding:1px 6px; border-radius:5px;
+         border:1px solid var(--bd); font-size:.9em; }
   .hint { color:var(--mut); margin-bottom:1.5rem; max-width:70ch; }
   .meta { color:var(--mut); font-size:.85rem; }
   .counter { font-size:1.1rem; font-weight:650; margin-bottom:.5rem; }
@@ -136,7 +185,7 @@ BASE_CSS = """
 
   /* tarjetas / paneles */
   .panel, .card, .group { background:var(--panel); border:1px solid var(--bd);
-    border-radius:10px; padding:1rem; margin-bottom:1rem; }
+    border-radius:12px; padding:1rem; margin-bottom:1rem; }
 
   /* filas de formulario */
   .row { display:flex; align-items:center; gap:.5rem; margin-bottom:.6rem; flex-wrap:wrap; }
@@ -156,24 +205,35 @@ BASE_CSS = """
   progress::-webkit-progress-value { background:var(--acc); border-radius:4px; }
 
   /* botones */
-  button { padding:.45rem .9rem; font-size:1rem; cursor:pointer; border-radius:6px;
+  button { padding:.5rem .9rem; font-size:.95rem; cursor:pointer; border-radius:8px;
     border:1px solid var(--bd); background:var(--panel2); color:var(--tx); }
-  button:hover { border-color:#3c3e4a; }
+  button:hover { background:#30363d; border-color:#484f58; }
   button:disabled { opacity:.45; cursor:default; }
-  .primary { background:var(--acc); color:#0b1420; border:0; font-weight:600; }
-  .primary:hover { background:var(--acc2); }
+  .primary { background:var(--acc); color:#fff; border:1px solid #388bfd; font-weight:600; }
+  .primary:hover { background:#388bfd; border-color:#388bfd; }
   .secondary { background:var(--panel2); color:var(--tx); }
-  .organize, .apply { background:var(--grn); color:#07130c; border:0; font-weight:600;
+  .organize, .apply { background:#238636; color:#fff; border:1px solid #2ea043; font-weight:600;
     padding:.6rem 1.2rem; font-size:1.05rem; }
+  .organize:hover, .apply:hover { background:#2ea043; }
   .danger { background:var(--red); color:#fff; border:0; }
   .dismiss { float:right; background:none; border:0; font-size:1rem; cursor:pointer;
     color:inherit; opacity:.55; padding:0 .2rem; }
   .dismiss:hover { opacity:1; }
 
+  /* perilla de sensibilidad (NSFW): barra con relleno hasta el valor */
+  input[type="range"].sens { -webkit-appearance:none; appearance:none; width:180px; height:6px;
+    border-radius:999px; background:linear-gradient(90deg,var(--acc),var(--acc) var(--pct,50%),var(--bd) var(--pct,50%));
+    outline:none; cursor:pointer; }
+  input[type="range"].sens::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px;
+    border-radius:50%; background:#fff; border:2px solid var(--acc); cursor:pointer; }
+  input[type="range"].sens::-moz-range-thumb { width:18px; height:18px; border-radius:50%;
+    background:#fff; border:2px solid var(--acc); cursor:pointer; }
+  input[type="range"].sens::-moz-range-track { background:transparent; }
+
   /* avisos */
-  .msg { background:rgba(63,157,90,.13); border:1px solid var(--grn); color:#bfe6cb;
+  .msg { background:rgba(63,185,80,.13); border:1px solid var(--grn); color:#aee0b9;
     padding:.75rem 1rem; border-radius:8px; margin-bottom:1rem; }
-  .err { background:rgba(214,86,78,.13); border:1px solid var(--red); color:#f0c3bf;
+  .err { background:rgba(248,81,73,.13); border:1px solid var(--red); color:#f5b7b3;
     padding:.75rem 1rem; border-radius:8px; margin-bottom:1rem; }
 
   /* rostros / grupos (home + modal) */
@@ -230,35 +290,108 @@ BASE_CSS = """
   td, th { padding:.3rem .5rem; border-bottom:1px solid var(--bd); text-align:left; }
   .example { font-size:1.1rem; margin:.3rem 0; }
 
-  /* galería */
-  .grid { display:flex; flex-wrap:wrap; gap:14px; }
-  .person { background:var(--panel); border:1px solid var(--bd); border-radius:10px;
-    padding:.6rem; width:150px; text-align:center; position:relative; }
+  /* galería — tarjetas cuadradas estilo mockup */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:16px; }
+  .person { background:var(--panel); border:1px solid var(--bd); border-radius:12px;
+    overflow:hidden; display:flex; flex-direction:column; }
+  .person:hover { border-color:#484f58; }
   .person a { color:inherit; text-decoration:none; }
-  /* checkbox para etiquetar de a muchas: encima de la foto, arriba a la izquierda */
-  .selbox { position:absolute; top:.5rem; left:.5rem; z-index:2; background:rgba(0,0,0,.55);
-    border-radius:5px; padding:.15rem .25rem; cursor:pointer; }
+  /* la foto llena SIEMPRE un cuadrado, sin importar su forma original. El
+     padding-top:100% arma un cuadrado (funciona en todos lados) y la imagen va
+     absoluta adentro con object-fit:cover, así todas las cards quedan iguales. */
+  .pthumb { display:block; position:relative; width:100%; padding-top:100%;
+    overflow:hidden; cursor:pointer; }
+  .person img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+  .noimg { position:absolute; inset:0; background:var(--panel2);
+    display:flex; align-items:center; justify-content:center; font-size:3rem; color:var(--mut); }
+  .badge-faces { position:absolute; top:8px; left:8px; background:var(--ov); border:1px solid var(--bd);
+    border-radius:6px; padding:2px 8px; font-size:11px; color:#c9d1d9; backdrop-filter:blur(4px); }
+  .badge-ok { position:absolute; top:8px; right:8px; width:24px; height:24px; border-radius:999px;
+    background:var(--ov); border:1px solid var(--grn); color:var(--grn); display:flex; align-items:center;
+    justify-content:center; font-size:13px; font-weight:700; backdrop-filter:blur(4px); }
+  /* checkbox para etiquetar de a muchas: encima de la foto */
+  .selbox { position:absolute; bottom:8px; left:8px; z-index:2; background:var(--ov);
+    border:1px solid var(--bd); border-radius:6px; padding:.15rem .3rem; cursor:pointer; backdrop-filter:blur(4px); }
   .selbox input { width:1.1rem; height:1.1rem; cursor:pointer; accent-color:var(--acc); }
-  .person a:hover img, .person a:hover .noimg { outline:3px solid var(--acc); }
-  .person img { width:130px; height:130px; object-fit:cover; border-radius:8px; }
-  .noimg { width:130px; height:130px; border-radius:8px; background:var(--panel2);
-    display:flex; align-items:center; justify-content:center; font-size:2.5rem; color:var(--mut); }
-  .pname { font-weight:600; margin-top:.35rem; word-break:break-word; }
+  .pbody { padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .pname { font-weight:700; font-size:15px; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
   .pcount { color:var(--mut); font-size:.8rem; }
+  .pfill { flex:1; }
+  .forget-btn { width:100%; }
+  .forget-btn:hover { background:#3d2226; border-color:var(--red); color:#ff7b72; }
 
-  /* página de persona */
-  .cover-box { display:flex; align-items:center; gap:1rem; }
-  .cover-box img { height:150px; border-radius:8px; }
-  /* galería del perfil: masonry estilo VSCO — cada foto conserva su forma
-     (vertical alta, apaisada baja) y se encolumnan solas por ancho */
-  .masonry { column-width:220px; column-gap:12px; }
-  @media (max-width:640px) { .masonry { column-width:150px; column-gap:8px; } }
-  .masonry .shot { break-inside:avoid; -webkit-column-break-inside:avoid;
-    background:var(--panel); border:1px solid var(--bd); border-radius:10px;
-    padding:.4rem; margin:0 0 12px; text-align:center; }
-  .masonry .shot img { width:100%; height:auto; display:block; border-radius:8px;
+  /* página de persona — card compacta de 2 columnas (mockup Panel Portada) */
+  .pcard { display:grid; grid-template-columns:220px 1fr; background:var(--panel);
+    border:1px solid var(--bd); border-radius:12px; overflow:hidden; margin-bottom:1rem; }
+  .pcard-cover { background:var(--bg); border-right:1px solid var(--line); padding:16px;
+    display:flex; flex-direction:column; gap:12px; }
+  .cover-box { position:relative; width:100%; padding-top:100%; border-radius:10px;
+    overflow:hidden; border:1px solid var(--bd); }
+  .cover-box img, .cover-box .noimg { position:absolute; inset:0; width:100%; height:100%;
+    object-fit:cover; }
+  .cover-edit { position:absolute; bottom:8px; right:8px; z-index:2; width:32px; height:32px;
+    border-radius:50%; background:var(--ov); backdrop-filter:blur(4px); font-size:14px; }
+  .pcard-main { padding:16px 18px; position:relative; display:flex; flex-direction:column; gap:12px; }
+  .iconbtn { width:38px; height:38px; border-radius:10px; display:flex; align-items:center;
+    justify-content:center; font-size:17px; flex:none; }
+  .pcfg-menu { position:fixed; z-index:20; width:340px; max-width:88vw;
+    max-height:80vh; overflow-y:auto;
+    background:var(--panel2); border:1px solid var(--bd); border-radius:12px;
+    box-shadow:0 12px 32px rgba(0,0,0,.5); padding:12px; }
+  .pcfg-sep { border:0; border-top:1px solid var(--bd); margin:10px 0; }
+  .pcfg-item { display:block; width:100%; text-align:left; padding:9px 8px; border-radius:8px;
+    color:var(--tx); background:none; border:0; font-size:.9rem; cursor:pointer; }
+  .pcfg-item:hover { background:#262d3a; text-decoration:none; }
+  @media (max-width:640px) { .pcard { grid-template-columns:1fr; }
+    .pcard-cover { border-right:0; border-bottom:1px solid var(--line); } }
+  /* carrusel de favoritos dentro de la card */
+  .favwrap { display:flex; align-items:center; gap:6px; margin-top:.4rem; }
+  .favnav { padding:.6rem .4rem; flex:none; }
+  .favrow { flex:1; display:flex; gap:6px; overflow-x:auto; scroll-behavior:smooth;
+    scrollbar-width:none; }
+  .favrow img { width:84px; height:84px; flex:none; object-fit:cover; border-radius:8px;
+    border:1px solid var(--line); cursor:pointer; }
+  .favrow img:hover { border-color:var(--acc2); }
+  .favplay { width:84px; height:84px; flex:none; border-radius:8px; border:1px dashed var(--bd);
+    background:var(--bg); display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:2px; color:var(--mut); font-size:10px; line-height:1.1;
+    text-align:center; }
+  .favplay:hover { border-color:#484f58; color:var(--tx); text-decoration:none; }
+  /* página playlist de favoritos */
+  .favs-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
+    gap:12px; margin-top:1rem; }
+  .favcell { position:relative; width:100%; padding-top:100%; border-radius:10px;
+    overflow:hidden; border:1px solid var(--line); }
+  .favcell:hover { border-color:var(--acc2); }
+  .favcell img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
     cursor:zoom-in; }
-  .shot .fn { font-size:.72rem; color:var(--mut); margin:.25rem 0 .35rem; overflow:hidden;
+  .unfav { position:absolute; top:8px; right:8px; width:28px; height:28px;
+    border-radius:999px; background:var(--ov); border:1px solid var(--bd); color:var(--amb);
+    font-size:14px; cursor:pointer; backdrop-filter:blur(4px); padding:0; }
+  .unfav:hover { border-color:var(--amb); }
+  .favadd { border:1px dashed var(--bd); border-radius:10px; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:4px; color:var(--mut); min-height:150px; font-size:12px; }
+  .favadd:hover { border-color:#484f58; color:var(--tx); text-decoration:none; }
+  /* insignia NSFW en la grilla limpia */
+  .nsfw-badge { position:absolute; bottom:6px; left:6px; z-index:2; font-size:.85rem;
+    background:var(--ov); border:1px solid var(--red); border-radius:6px; padding:1px 5px;
+    backdrop-filter:blur(4px); }
+  /* acciones de la foto en el visor */
+  #lb.lb-post .pact { flex:0 0 auto; display:flex; align-items:center; gap:.5rem;
+    padding:.5rem .9rem; border-top:1px solid var(--line); }
+  /* galería del perfil: cuadrados uniformes (estilo mockup) — la foto llena un
+     cuadrado y los controles van compactos abajo */
+  .masonry { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; }
+  @media (max-width:640px) { .masonry { grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px; } }
+  .masonry .shot { background:var(--panel); border:1px solid var(--bd); border-radius:10px;
+    overflow:hidden; margin:0; text-align:center; display:flex; flex-direction:column; }
+  .masonry .shot:hover { border-color:#484f58; }
+  .shot-thumb { position:relative; width:100%; padding-top:100%; overflow:hidden; cursor:zoom-in; }
+  .masonry .shot img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+  .shot-body { padding:.45rem; display:flex; flex-direction:column; gap:.3rem; }
+  .shot .fn { font-size:.72rem; color:var(--mut); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
   .shot .primary { width:100%; }
   .opt { text-align:center; }
@@ -271,6 +404,7 @@ BASE_CSS = """
   .stay-box { display:inline-block; padding:.6rem; border-radius:8px; background:rgba(217,154,58,.14); }
 
   /* acordeón de personas encontradas (buscador general) */
+  details.lote > summary { cursor:pointer; color:var(--acc); margin:.4rem 0; }
   details.grp > summary { cursor:pointer; list-style:none; padding:.15rem 0;
     display:flex; align-items:center; gap:.5rem; user-select:none; }
   details.grp > summary::-webkit-details-marker { display:none; }
@@ -289,6 +423,24 @@ BASE_CSS = """
   .hit .cf { font-size:.8rem; color:var(--acc2); font-weight:600; }
   .hit .cf.nsfw { color:#e78; }
 
+  /* revisión NSFW estilo mockup: tarjeta 3/4 con pill ✓% y etiquetas encima */
+  .nsfw-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:14px; }
+  .nsfw-grid .hit { width:auto; padding:0; overflow:hidden; background:var(--bg);
+    border:1px solid var(--line); }
+  .nsfw-grid .hit:has(input:checked) { border-color:var(--acc); }
+  .hit-thumb { position:relative; width:100%; padding-top:133%; }
+  .hit-thumb img { position:absolute; inset:0; width:100%; height:100%; max-width:none;
+    max-height:none; object-fit:cover; cursor:zoom-in; border-radius:0; }
+  .hit-pill { position:absolute; top:8px; left:8px; display:inline-flex; align-items:center;
+    gap:6px; background:rgba(13,17,23,.78); border:1px solid var(--bd); border-radius:7px;
+    padding:4px 9px; font-size:12px; font-weight:600; color:var(--tx); cursor:pointer;
+    backdrop-filter:blur(4px); }
+  .hit-pill input { accent-color:var(--acc); margin:0; cursor:pointer; }
+  .hit-tags { position:absolute; bottom:8px; left:8px; right:8px; background:rgba(13,17,23,.78);
+    border:1px solid var(--bd); border-radius:6px; padding:2px 8px; font-size:11px;
+    color:#adbac7; backdrop-filter:blur(4px); overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+
   /* enlaces */
   ol { margin:.5rem 0; padding-left:2rem; }
   ol li { margin-bottom:.25rem; word-break:break-all; }
@@ -302,6 +454,14 @@ BASE_CSS = """
   .chip.inherited { opacity:.75; border-style:dashed; }
   .taginput { min-width:150px; border:0; background:transparent; color:var(--tx);
     font-size:.9rem; padding:.2rem; outline:none; }
+  /* dropdown de autocompletar etiquetas (tagAC, en BASE_JS): fixed, flota sobre
+     lo que sea, para no romper el layout del input que lo dispara */
+  .tagac { position:fixed; z-index:200; background:var(--panel2); border:1px solid var(--bd);
+    border-radius:8px; padding:4px; box-shadow:0 8px 24px rgba(0,0,0,.5);
+    max-height:220px; overflow-y:auto; display:none; }
+  .tagac-item { padding:.3rem .6rem; border-radius:6px; font-size:.85rem; cursor:pointer;
+    white-space:nowrap; }
+  .tagac-item:hover, .tagac-item.on { background:var(--acc); color:#fff; }
   .shot .phototags { display:flex; flex-wrap:wrap; gap:3px; margin-top:.25rem; }
   .shot .phototags .chip { font-size:.7rem; padding:.05rem .45rem; }
   .shot .ptadd { width:100%; font-size:.75rem; margin-top:.2rem; padding:.2rem .3rem; }
@@ -321,8 +481,8 @@ BASE_CSS = """
     cursor:pointer; user-select:none; }
 
   /* lightbox de galería: zoom con ruedita + arrastre + flechas */
-  #lb { display:none; position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:60;
-    overflow:hidden; touch-action:none; }
+  #lb { display:none; position:fixed; inset:0; background:rgba(1,4,9,.86); z-index:60;
+    overflow:hidden; touch-action:none; backdrop-filter:blur(6px); }
   #lb .stage { position:absolute; inset:0; z-index:1; display:flex; align-items:center; justify-content:center; }
   #lb img { max-width:94vw; max-height:92vh; user-select:none; -webkit-user-drag:none;
     transform-origin:center center; will-change:transform; cursor:grab; }
@@ -360,7 +520,23 @@ BASE_CSS = """
     grid-template-columns:minmax(0,1fr) 380px; }
   #lb.lb-post .stage { position:relative; inset:auto; overflow:hidden; }
   #lb.lb-post img { max-width:100%; max-height:100%; }
-  #lb.lb-post .side { background:var(--panel); border-left:1px solid var(--line);
+  /* botones flotantes sobre la foto (portada / personas) */
+  .stage-fab { position:absolute; top:14px; z-index:4; box-shadow:0 2px 10px rgba(0,0,0,.5); }
+  .stage-fab-l { left:14px; }
+  .stage-fab-r { right:14px; }
+  /* modal de "etiquetar persona" */
+  .modal-ov { position:fixed; inset:0; z-index:60; background:var(--ov);
+    display:flex; align-items:center; justify-content:center; }
+  .modal-box { background:var(--panel2); border:1px solid var(--bd); border-radius:12px;
+    box-shadow:0 12px 32px rgba(0,0,0,.5); padding:14px; width:360px; max-width:92vw;
+    max-height:80vh; display:flex; flex-direction:column; }
+  .pmodal-list { overflow-y:auto; flex:1; }
+  .pmodal-item { display:flex; align-items:center; gap:.6rem; padding:.5rem; border-radius:8px;
+    cursor:pointer; }
+  .pmodal-item:hover { background:#262d3a; }
+  .pmodal-item img { width:34px; height:34px; border-radius:50%; object-fit:cover; background:var(--bg); flex:none; }
+  .pmodal-item.added { opacity:.5; cursor:default; }
+  #lb.lb-post .side { background:var(--bg); border-left:1px solid var(--line);
     display:flex; flex-direction:column; min-height:0; }
   #lb.lb-post .phead { display:flex; align-items:center; gap:.6rem; padding:.7rem .9rem;
     border-bottom:1px solid var(--line); flex:0 0 auto; }
@@ -368,7 +544,32 @@ BASE_CSS = """
   #lb.lb-post .phead .meta { font-size:.72rem; word-break:break-all; }
   /* el cuerpo scrollea; el perfil y el pie de la columna quedan fijos */
   #lb.lb-post .pbody { flex:1 1 auto; overflow-y:auto; padding:.8rem .9rem; min-height:0; }
-  #lb.lb-post .pcap { margin-bottom:1rem; }
+  #lb.lb-post .favbtn { width:34px; height:34px; border-radius:8px; border:1px solid var(--bd);
+    background:var(--panel2); font-size:1.15rem; cursor:pointer; color:var(--mut); line-height:1;
+    flex:none; }
+  #lb.lb-post .favbtn.on { color:var(--amb); border-color:var(--amb); background:rgba(242,204,96,.12); }
+  /* la estrellita de la grilla: solo visible si la foto es favorita */
+  .shot { position:relative; }
+  .shot .favstar { position:absolute; top:.4rem; left:.4rem; z-index:2; display:none;
+    font-size:1.1rem; filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); pointer-events:none; }
+  .shot.is-fav .favstar { display:block; }
+  /* checkbox para el etiquetador automático: arriba a la derecha, no choca con
+     la estrella de favorito (arriba-izq) ni el badge NSFW (abajo-izq) */
+  .shot-selbox { position:absolute; top:6px; right:6px; z-index:3; display:none;
+    background:var(--ov); border:1px solid var(--bd); border-radius:6px;
+    padding:.15rem .3rem; cursor:pointer; backdrop-filter:blur(4px); }
+  .shot-selbox input { width:1.1rem; height:1.1rem; cursor:pointer; accent-color:var(--acc); }
+  .shot.tagsel-on { outline:2px solid var(--acc); outline-offset:-2px; }
+  #lb.lb-post .ppeople { margin-bottom:.8rem; padding-bottom:.6rem; border-bottom:1px solid var(--line); }
+  /* pie y comentarios como sub-tarjetas con borde (mockup Visor Foto) */
+  #lb.lb-post .pcard-sub { background:var(--panel); border:1px solid var(--panel2);
+    border-radius:10px; padding:12px 14px; margin-bottom:1rem; }
+  #lb.lb-post .pcard-sub > .meta:first-child { display:block; margin-bottom:.5rem; font-weight:600; }
+  /* pie: texto a la izquierda + botones ✨/✏️ compactos a la derecha (mockup) */
+  #lb.lb-post .caprow { display:flex; align-items:flex-start; gap:10px; }
+  #lb.lb-post .capmain { flex:1; min-width:0; }
+  #lb.lb-post .capfab { flex:none; width:34px; height:34px; min-width:0; padding:0;
+    display:flex; align-items:center; justify-content:center; font-size:15px; }
   #lb.lb-post .pcap p { margin:0; line-height:1.5; white-space:pre-wrap; }
   #lb.lb-post .empty { color:var(--dim); font-style:italic; }
   #lb.lb-post .capin { width:100%; margin-top:.4rem; min-height:5rem; resize:vertical;
@@ -379,6 +580,51 @@ BASE_CSS = """
   #lb.lb-post .com b { color:var(--fg); }
   #lb.lb-post .ptags { flex:0 0 auto; padding:.6rem .9rem; border-top:1px solid var(--line);
     max-height:45vh; overflow-y:auto; }
+  /* las sugerencias de IA pueden ser 40+: caja con scroll propio para que no
+     empujen todo el panel */
+  /* el modal de etiquetas: dos columnas — etiquetas a la izq, FOTO a la derecha
+     (para chequear cada sugerencia contra lo que se ve) */
+  .tagmodal { width:900px; max-width:96vw; }
+  .tagm-cols { display:flex; gap:16px; flex:1; min-height:0; overflow:hidden; }
+  .tagm-body { overflow-y:auto; flex:1 1 55%; min-width:0; min-height:0; padding-top:.2rem; }
+  .tagm-photo { flex:1 1 45%; min-width:0; display:flex; align-items:flex-start;
+    justify-content:center; }
+  .tagm-photo img { max-width:100%; max-height:72vh; object-fit:contain; border-radius:10px;
+    border:1px solid var(--bd); background:var(--bg); }
+  @media (max-width:720px) {
+    .tagm-cols { flex-direction:column-reverse; overflow-y:auto; }
+    .tagm-photo img { max-height:38vh; }
+  }
+  .suglist { display:flex; flex-direction:column; gap:.35rem; margin-top:.5rem; }
+  /* cada sugerencia: fila ANCHA con "+ agregar" grande y "✕ descartar" */
+  .suglist .sugchip { display:flex; width:100%; align-items:stretch; background:var(--panel2);
+    border:1px solid var(--bd); border-radius:8px; overflow:hidden; }
+  .suglist .sugadd { flex:1; background:none; border:0; color:var(--tx); font-size:1rem;
+    text-align:left; padding:.55rem .8rem; cursor:pointer; }
+  .suglist .sugadd:hover { background:#262d3a; color:var(--acc2); }
+  .suglist .sugx { background:none; border:0; border-left:1px solid var(--bd); color:var(--mut);
+    cursor:pointer; font-size:.9rem; padding:0 .9rem; }
+  .suglist .sugx:hover { background:#3d2226; color:var(--red); }
+  .suglist .sugchip.sug-nueva { border-color:var(--amb); }
+  .suglist .sugchip.sug-nueva .sugadd { color:var(--amb); }
+  /* acto detectado por el clasificador dedicado: verde, va primero, más confiable */
+  .suglist .sugchip.sug-acto { border-color:var(--grn); background:rgba(63,185,80,.1); }
+  .suglist .sugchip.sug-acto .sugadd { color:var(--grn); font-weight:600; }
+  /* "mostrar todas / menos" para las etiquetas propias cuando son muchas */
+  #lb.lb-post .ownmore { background:none; border:0; color:var(--acc2); cursor:pointer;
+    font-size:.75rem; padding:.15rem .45rem; align-self:center; }
+  #lb.lb-post .ownmore:hover { text-decoration:underline; }
+  /* etiquetas al fondo, discretas: un link chico, no un botón grande, para que
+     el pie y los comentarios se lleven toda la atención */
+  #lb.lb-post .ptags-min { margin-top:.8rem; padding-top:.6rem;
+    border-top:1px solid var(--line); display:flex; align-items:center; gap:.6rem;
+    flex-wrap:wrap; }
+  #lb.lb-post .linklike { background:none; border:0; color:var(--mut); cursor:pointer;
+    font-size:.82rem; padding:0; }
+  #lb.lb-post .linklike:hover { color:var(--acc2); text-decoration:underline; }
+  /* sugerencia nueva/dudosa (no está en tu vocabulario): marcada, no borrada */
+  #lb.lb-post .sugchip.sug-nueva { border-color:var(--amb); }
+  #lb.lb-post .sugchip.sug-nueva .sugadd { color:var(--amb); }
   #lb.lb-post .pfoot { flex:0 0 auto; display:flex; justify-content:space-between;
     align-items:center; gap:.5rem; padding:.5rem .9rem; border-top:1px solid var(--line); }
   #lb.lb-post .pfoot select { font-size:.75rem; max-width:230px; }
@@ -417,6 +663,7 @@ NAV_ITEMS = [
     ("⚠", "NSFW", "nsfw_page", "nsfw"),
     ("⚇", "Separar caras", "split_page", "split"),
     ("✎", "Frases", "phrases_page", "phrases"),
+    ("🧪", "Probador", "probador", "probador"),
     ("⚙", "Ajustes", "settings_page", "settings"),
 ]
 
@@ -433,13 +680,130 @@ def _nav_html(active):
             '<small>reconocimiento local</small></div>' + "".join(links) + "</nav>")
 
 
+# Autocompletar de etiquetas, compartido por TODAS las páginas (va en el shell,
+# no en cada template): lee las opciones del <datalist id="tagsug"> que cada
+# página ya rellena server-side, y arma un dropdown propio que tabea rápido
+# (el <datalist> nativo del navegador es lento/feo y no da flechitas ni Tab).
+# Va en el <head>, ANTES que cualquier otro script de la página: si el
+# listener se registra al final (como estaba, en BASE_JS), se pierde
+# cualquier error que pase durante la carga inicial de scripts anteriores
+# — que es justo donde suelen estar los bugs que rompen todo el resto.
+EARLY_JS = """
+<script>
+// manda los errores de JS del navegador a la consola donde corre la app
+// (si no, quedan solo en la consola del navegador y no se ven acá)
+(function() {
+  function report(msg, extra) {
+    try {
+      fetch('/debug/jserror', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({msg: String(msg), extra: extra || '', url: location.pathname})});
+    } catch (e) {}
+  }
+  addEventListener('error', e => {
+    report(e.message, (e.filename || '') + ':' + e.lineno + ':' + e.colno + '\\n' + (e.error && e.error.stack || ''));
+  });
+  addEventListener('unhandledrejection', e => {
+    report('promesa sin atrapar: ' + (e.reason && e.reason.message || e.reason), e.reason && e.reason.stack || '');
+  });
+})();
+</script>
+"""
+
+BASE_JS = """
+<script>
+function tagAC(input, opts) {
+  if (!input) return;
+  opts = opts || {};
+  const multi = !!opts.multi;      // true = el input puede llevar "tag1, tag2" (bulk)
+  const commit = opts.commit;      // (valor) => agregar esa etiqueta (modo simple)
+  const box = document.createElement('div');
+  box.className = 'tagac';
+  document.body.appendChild(box);
+  let items = [], active = -1;
+  const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+
+  function place() {
+    const r = input.getBoundingClientRect();
+    box.style.left = r.left + 'px';
+    box.style.top = (r.bottom + 4) + 'px';
+    box.style.width = Math.max(170, r.width) + 'px';
+  }
+  function hide() { box.style.display = 'none'; input.dataset.acOpen = ''; active = -1; }
+  function typed() {
+    if (!multi) return input.value.trim();
+    const parts = input.value.split(',');
+    return parts[parts.length - 1].trim();
+  }
+  function apply(tag) {
+    if (multi) {
+      const parts = input.value.split(',');
+      parts[parts.length - 1] = ' ' + tag;
+      input.value = parts.map(p => p.trim()).filter(Boolean).join(', ') + ', ';
+    } else {
+      if (commit) commit(tag);
+      input.value = '';
+    }
+    input.focus();
+    hide();
+  }
+  function highlight() {
+    [...box.children].forEach((c, i) => c.classList.toggle('on', i === active));
+  }
+  function render() {
+    const all = [...document.querySelectorAll('#tagsug option')].map(o => o.value);
+    const q = norm(typed());
+    if (!q) { hide(); return; }
+    items = all.filter(t => norm(t).includes(q) && norm(t) !== q).slice(0, 8);
+    if (!items.length) { hide(); return; }
+    box.innerHTML = '';
+    items.forEach(t => {
+      const d = document.createElement('div');
+      d.className = 'tagac-item';
+      d.textContent = t;
+      d.onmousedown = e => { e.preventDefault(); apply(t); };
+      box.appendChild(d);
+    });
+    active = -1;
+    place();
+    box.style.display = 'block';
+    input.dataset.acOpen = '1';
+  }
+  input.addEventListener('input', render);
+  // TODO el manejo de Enter vive ACÁ, en un solo lugar. Si además hubiera un
+  // onkeydown propio en el <input> (como el de ptag-input, que agrega el texto
+  // tipeado), los dos se disparan en la misma tecla y en modo simple duplicaba
+  // la etiqueta (la tipeada Y la resaltada). Por eso single-mode NO lleva
+  // onkeydown aparte: todo el Enter pasa por acá.
+  input.addEventListener('keydown', e => {
+    const open = box.style.display !== 'none';
+    if (open && e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); highlight(); return; }
+    if (open && e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); highlight(); return; }
+    if (open && (e.key === 'Tab' || (e.key === 'Enter' && active >= 0))) { e.preventDefault(); apply(items[active]); return; }
+    if (e.key === 'Enter' && !multi) {
+      // sin sugerencia resaltada: confirma lo tipeado tal cual (modo simple)
+      e.preventDefault();
+      const v = input.value.trim();
+      if (v && commit) commit(v);
+      input.value = '';
+      hide();
+      return;
+    }
+    if (e.key === 'Escape') { e.stopPropagation(); hide(); }
+  });
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+  window.addEventListener('scroll', () => { if (box.style.display !== 'none') place(); }, true);
+}
+</script>
+"""
+
+
 def shell(active, inner, head_extra=""):
     """Envuelve el contenido `inner` (HTML+Jinja de la página) con el <head>
     del tema oscuro y la barra lateral. Todo se renderiza junto por Jinja."""
     return (
         '<!doctype html><html lang="es"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>photo-sorter</title>" + head_extra +
+        "<title>photo-sorter</title>" + EARLY_JS + BASE_JS + head_extra +
         "<style>" + BASE_CSS + "</style></head><body>"
         '<div class="app">' + _nav_html(active) + '<main class="main">'
         + inner +
@@ -1319,6 +1683,25 @@ KNOWN_TEMPLATE = """
       así solo aprende de fotos donde la persona está sola.</span>
   </form>
 </div>
+
+<div class="panel">
+  <b>➕ Agregar una carpeta como persona</b>
+  <p class="meta">Elegís una carpeta y un nombre y <b>todas</b> las fotos de adentro se copian como
+    esa persona, <b>sin analizar caras</b>. Para cuando ya sabés de quién son (ej: una carpeta
+    «Alfredo» → todas son de Alfredo). Las originales no se tocan (se copian).</p>
+  <form method="post" action="{{ url_for('known_import_folder') }}">
+    <div class="row">
+      <input class="path" type="text" name="folder" id="imp-folder" placeholder="Carpeta con las fotos…">
+      <button type="button" onclick="browseImport()">📂 Elegir carpeta…</button>
+    </div>
+    <div class="row" style="margin-top:.45rem">
+      <label>Nombre:</label>
+      <input class="path" type="text" name="name" id="imp-name"
+             placeholder="ej: Alfredo (si lo dejás vacío, usa el nombre de la carpeta)">
+      <button class="primary">➕ Agregar como persona</button>
+    </div>
+  </form>
+</div>
 {% endif %}
 
 {% if imp.status == 'running' %}
@@ -1346,6 +1729,16 @@ function browse(field) {
     .then(d => { if (d.path) document.getElementsByName(field)[0].value = d.path; });
 }
 
+function browseImport() {   // carpeta a importar; autocompleta el nombre si está vacío
+  fetch('{{ url_for('browse') }}').then(r => r.json()).then(d => {
+    if (!d.path) return;
+    document.getElementById('imp-folder').value = d.path;
+    const nm = document.getElementById('imp-name');
+    const base = d.path.replace(/\\\\/g, '/').split('/').filter(Boolean).pop() || '';
+    if (!nm.value.trim()) nm.value = base;
+  });
+}
+
 function dismissImport(btn) {   // cierra el cartel de importación (✕ o timer)
   fetch('{{ url_for('known_import_dismiss') }}', {method: 'POST'});
   const box = btn.closest('.msg, .err');
@@ -1359,8 +1752,11 @@ const ALL_TAGS = {{ all_tags|tojson }};
 function filterPeople() {
   const raw = document.getElementById('pfilter').value.trim();
   const tokens = raw.split(',').map(t => norm(t.trim())).filter(Boolean);
-  // qué tokens son etiquetas reales (para arrastrar el filtro al perfil)
-  const tagToks = tokens.filter(t => ALL_TAGS.some(x => norm(x).includes(t)));
+  // qué tokens son etiquetas reales (para arrastrar el filtro al perfil). OJO:
+  // tiene que ser una etiqueta EXACTA, no subcadena — si no, buscar "ai" (por
+  // aisha) matchea "bailando" y arrastra ?tags=ai al perfil, que filtra sus
+  // fotos por "ai" y no muestra ninguna.
+  const tagToks = tokens.filter(t => ALL_TAGS.some(x => norm(x) === t));
   const tagsParam = tagToks.length ? '?tags=' + encodeURIComponent(tagToks.join(',')) : '';
   let visibles = 0;
   document.querySelectorAll('.person[data-name]').forEach(card => {
@@ -1423,18 +1819,9 @@ function bulk(accion) {
       for (const [nombre, sus] of Object.entries(d.tags)) {
         const card = document.querySelector(`.person[data-name="${CSS.escape(nombre)}"]`);
         if (!card) continue;
+        // solo actualizamos el dato para el filtro; la tarjeta no muestra tags
+        // (como en el mockup). Las etiquetas se ven/editan dentro de la persona.
         card.dataset.tags = sus.join(' ');
-        let box = card.querySelector('.pcount');
-        if (sus.length) {
-          if (!box || !box.textContent.startsWith('🏷')) {
-            box = document.createElement('div');
-            box.className = 'pcount';
-            card.querySelector('a').after(box);
-          }
-          box.textContent = '🏷 ' + sus.join(', ');
-        } else if (box && box.textContent.startsWith('🏷')) {
-          box.remove();
-        }
       }
       const verbo = accion === 'add' ? 'agregada a' : 'quitada de';
       st.textContent = ` ✓ ${verbo} ${d.n} persona(s)`;
@@ -1459,7 +1846,7 @@ function bulk(accion) {
     <span class="meta"><b id="selcount">0</b> seleccionada(s)</span>
   </div>
   <div class="row" style="margin-top:.4rem">
-    <input class="path" id="bulktag" list="tagsug" placeholder="etiqueta(s), coma para varias… ej: hombre"
+    <input class="path" id="bulktag" placeholder="etiqueta(s), coma para varias… ej: hombre"
            onkeydown="if(event.key==='Enter'){event.preventDefault();bulk('add')}">
     <button class="primary" onclick="bulk('add')">＋ Agregar a las seleccionadas</button>
     <button class="secondary" onclick="bulk('remove')" title="Sacarles esta etiqueta">－ Quitar</button>
@@ -1473,25 +1860,27 @@ function bulk(accion) {
   {% for p in people %}
   <div class="person" id="p{{ loop.index0 }}" data-name="{{ p.name }}"
        data-tags="{{ p.tags|join(' ') }}" data-href="{{ url_for('person_page', name=p.name) }}">
-    <label class="selbox" style="display:none" title="Seleccionar a {{ p.name }}">
-      <input type="checkbox" class="selchk" value="{{ p.name }}" onchange="selCount()">
-    </label>
-    <a href="{{ url_for('person_page', name=p.name) }}" title="Ver las fotos de {{ p.name }}">
-    {% if p.thumb %}
-      <img src="{{ url_for('known_thumb', name=p.name) }}" alt="{{ p.name }}">
-    {% else %}
-      <div class="noimg">👤</div>
-    {% endif %}
-    <div class="pname">{{ p.name }}</div>
+    <a class="pthumb" href="{{ url_for('person_page', name=p.name) }}" title="Ver las fotos de {{ p.name }}">
+      {% if p.thumb %}
+        <img src="{{ url_for('known_thumb', name=p.name) }}" alt="{{ p.name }}">
+      {% else %}
+        <div class="noimg">👤</div>
+      {% endif %}
+      <span class="badge-faces">{% if p.faces %}{{ p.count }} caras{% else %}importada{% endif %}</span>
+      {% if p.corrected %}<span class="badge-ok" title="Corregido {{ p.corrected }}">✓</span>{% endif %}
+      <label class="selbox" style="display:none" title="Seleccionar a {{ p.name }}">
+        <input type="checkbox" class="selchk" value="{{ p.name }}" onchange="selCount()">
+      </label>
     </a>
-    {% if p.tags %}<div class="pcount">🏷 {{ p.tags|join(', ') }}</div>{% endif %}
-    <div class="pcount">{{ p.count }} cara(s) aprendida(s)</div>
-    <div class="pcount">{% if p.corrected %}🧹 <b style="color:var(--grn)">corregido</b> {{ p.corrected }}{% else %}<span style="opacity:.6">🧹 sin corregir</span>{% endif %}</div>
-    <form method="post" action="{{ url_for('known_forget') }}"
-          onsubmit="return confirm('¿Olvidar a {{ p.name }}? Se dejará de reconocer sola.')">
-      <input type="hidden" name="name" value="{{ p.name }}">
-      <button>🗑 Olvidar</button>
-    </form>
+    <div class="pbody">
+      <div class="pname">{{ p.name }}</div>
+      <div class="pfill"></div>
+      <form method="post" action="{{ url_for('known_forget') }}"
+            onsubmit="return confirm('¿Olvidar a {{ p.name }}? Se dejará de reconocer sola.')">
+        <input type="hidden" name="name" value="{{ p.name }}">
+        <button class="forget-btn">🗑 Olvidar</button>
+      </form>
+    </div>
   </div>
   {% endfor %}
 </div>
@@ -1513,7 +1902,7 @@ function bulk(accion) {
 
 @app.route("/known")
 def known_page():
-    people = known_summary()
+    people = known_summary(get_library())
     tagsets = tags_mod.people_tagsets()
     for p in people:   # "corregido hace X" + etiquetas (suyas + de sus fotos)
         p["corrected"] = person_meta.humanize(person_meta.get(p["name"])["corrected"])
@@ -1524,6 +1913,40 @@ def known_page():
         known_dir=get_library(), all_tags=tags_mod.all_tags(),
         imp=IMPORT_STATE,
         message=request.args.get("msg", ""))
+
+
+@app.route("/known/import_folder", methods=["POST"])
+def known_import_folder():
+    """Importa una carpeta como una persona: copia TODAS sus fotos a
+    <Biblioteca>/<nombre>/ sin analizar caras. Todo lo de adentro es esa persona."""
+    folder = request.form.get("folder", "").strip()
+    name = request.form.get("name", "").strip()
+    library = get_library()
+    if not library:
+        return redirect(url_for("known_page",
+                                msg="Primero configurá la Biblioteca en Ajustes."))
+    try:
+        r = import_folder_as_person(library, folder, name)
+    except ValueError as e:
+        return redirect(url_for("known_page", msg=str(e)))
+    except Exception as e:
+        return redirect(url_for("known_page", msg="No se pudo importar: " + str(e)))
+    quien = name or Path(folder).name
+    if r["copiadas"]:
+        return redirect(url_for("known_page",
+            msg=f"Importadas {r['copiadas']} foto(s) como «{quien}» (sin analizar caras)."))
+    # 0 copiadas: explico POR QUÉ, con lo que realmente vi en la carpeta
+    if r["dup"]:
+        return redirect(url_for("known_page",
+            msg=f"«{quien}» ya tenía esas {r['dup']} foto(s): no había nada nuevo."))
+    if r["vistos"] == 0:
+        return redirect(url_for("known_page",
+            msg="Esa carpeta está vacía (o no tengo permiso para leerla)."))
+    detalle = ", ".join(f"{ext} ({n})" for ext, n in r["otras"][:8])
+    return redirect(url_for("known_page",
+        msg=(f"Vi {r['vistos']} archivo(s) pero ninguno es imagen que pueda usar. "
+             f"Encontré: {detalle}. Soporto: jpg, jpeg, png, webp, gif, bmp, jfif, avif. "
+             "(Ojo: Windows oculta las extensiones, un archivo puede no ser el formato que parece.)")))
 
 
 SETTINGS_TEMPLATE = """
@@ -1577,6 +2000,16 @@ SETTINGS_TEMPLATE = """
         {% endfor %}
       </select>
     </div>
+    <input type="hidden" name="guardar_post" value="1">
+    <div class="row">
+      <label><input type="checkbox" name="diminutivos" value="1"
+             {% if diminutivos %}checked{% endif %}> Hablar en diminutivo</label>
+      <span class="meta">"acá con friito", "comiendo una sopita", "casi desnudita".
+        En el pie y en los comentarios, con las palabras de <code>DIMINUTIVOS</code>
+        en <code>app/posts.py</code>: agregá las que uses. Los piropos
+        (<code>PIROPOS</code>: mamá→mamita) van solo en los comentarios y solo a
+        adultos.</span>
+    </div>
     <div class="row">
       <label>@usuarios:</label>
       <input class="path" type="text" name="comment_users" value="{{ comment_users }}"
@@ -1586,6 +2019,69 @@ SETTINGS_TEMPLATE = """
        chico devuelve "@usuario1", "@usuario2" y queda feo. Vaciá el campo para volver a
        los de fábrica.</p>
     <button class="primary">💾 Guardar</button>
+  </form>
+</div>
+
+<div class="panel">
+  <div class="counter">📝 Textos y filtros de los posts</div>
+  <p class="meta">Para afinar el pie y los comentarios sin tocar código. Todo lo de acá
+     se <b>suma</b> a lo de fábrica; vacío = queda como está.</p>
+  <form method="post" action="{{ url_for('settings_save') }}">
+    <input type="hidden" name="guardar_textos" value="1">
+
+    <div style="margin:.6rem 0">
+      <label>➕ Instrucción extra para el PIE de foto</label>
+      <textarea class="path" name="extra_pie" rows="2" style="width:100%"
+        placeholder="ej: que sea más corto y vulgar. que no hable del fondo.">{{ extra_pie }}</textarea>
+      <p class="meta">Se le agrega al final del prompt del pie. No toca lo de fábrica: lo complementa.</p>
+    </div>
+
+    <div style="margin:.6rem 0">
+      <label>➕ Instrucción extra para los COMENTARIOS</label>
+      <textarea class="path" name="extra_com" rows="2" style="width:100%"
+        placeholder="ej: que alguno pregunte por la ropa. que sean más largos.">{{ extra_com }}</textarea>
+    </div>
+
+    <details class="lote"><summary>Filtros por palabras (avanzado)</summary>
+      <div style="margin:.5rem 0">
+        <label>🔞 Palabras que marcan MENOR (además de las de fábrica)</label>
+        <textarea class="path" name="f_menor" rows="2" style="width:100%"
+          placeholder="una por línea… ej: sobrino">{{ f_menor }}</textarea>
+        <p class="meta">Suma a: <code>{{ def_menor }}</code>. Con cualquiera, la crudeza se fuerza a
+           sano y los comentadores que desean quedan afuera. Estas <b>no se pueden quitar</b>, solo agregar.</p>
+      </div>
+      <div style="margin:.5rem 0">
+        <label>🗣 Correcciones tú→vos (una por línea, formato <code>tienes=tenés</code>)</label>
+        <textarea class="path" name="f_tuteo" rows="2" style="width:100%"
+          placeholder="querés=queres">{{ f_tuteo }}</textarea>
+      </div>
+      <div style="margin:.5rem 0">
+        <label>🔁 Muletillas que se ignoran al comparar comentarios repetidos</label>
+        <textarea class="path" name="f_vacias" rows="2" style="width:100%"
+          placeholder="una por línea">{{ f_vacias }}</textarea>
+        <p class="meta">Palabras tan comunes que no cuentan para decidir si dos comentarios se parecen.</p>
+      </div>
+      <div style="margin:.5rem 0">
+        <label>🔤 Diminutivos y piropos (formato <code>palabra=forma1, forma2</code>)</label>
+        <textarea class="path" name="f_diminutivos" rows="2" style="width:100%"
+          placeholder="sopa=sopita">{{ f_diminutivos }}</textarea>
+        <textarea class="path" name="f_piropos" rows="2" style="width:100%;margin-top:.3rem"
+          placeholder="piropos (solo a adultos): reina=reinita, reinaza">{{ f_piropos }}</textarea>
+        <p class="meta">Solo actúan con el tilde "Hablar en diminutivo" de arriba. Los piropos, solo a adultos.</p>
+      </div>
+    </details>
+
+    <details class="lote"><summary>Reescribir los 5 niveles de crudeza</summary>
+      <p class="meta">Vacío = el texto de fábrica de ese nivel.</p>
+      {% for lbl, val, ph in crudeness_rows %}
+      <div class="row" style="margin:.25rem 0">
+        <label style="min-width:5rem">{{ lbl }}:</label>
+        <input class="path" name="f_crud_{{ loop.index0 }}" value="{{ val }}" placeholder="{{ ph }}">
+      </div>
+      {% endfor %}
+    </details>
+
+    <button class="primary">💾 Guardar textos y filtros</button>
   </form>
 </div>
 
@@ -1614,6 +2110,17 @@ def settings_page():
     n_people = 0
     if library and Path(library).is_dir():
         n_people = sum(1 for d in Path(library).iterdir() if d.is_dir())
+    # los diccionarios de override (palabra: [formas]) se muestran como texto
+    def _mapa_a_texto(d):
+        out = []
+        for k, v in (d or {}).items():
+            formas = v if isinstance(v, list) else [v]
+            out.append(f"{k}={', '.join(formas)}")
+        return "\n".join(out)
+    ov_crud = cfg.get("f_crudeness") or []
+    crudeness_rows = [
+        (clave, ov_crud[i] if i < len(ov_crud) else "", txt)
+        for i, (clave, txt) in enumerate(posts_mod.CRUDENESS)]
     return render_template_string(
         shell("settings", SETTINGS_TEMPLATE),
         cfg=cfg, library=library, n_people=n_people,
@@ -1622,6 +2129,17 @@ def settings_page():
         comment_users=", ".join(cfg.get("comment_users") or posts_mod.DEFAULT_USERS),
         crudeness_labels=[k for k, _ in posts_mod.CRUDENESS],
         crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
+        diminutivos=bool(cfg.get("diminutivos")),
+        # textos y filtros
+        extra_pie=cfg.get("post_extra_pie", ""),
+        extra_com=cfg.get("post_extra_com", ""),
+        f_menor="\n".join(cfg.get("f_menor_extra", [])),
+        f_tuteo="\n".join(cfg.get("f_tuteo_extra", [])),
+        f_vacias="\n".join(cfg.get("f_vacias_extra", [])),
+        f_diminutivos=_mapa_a_texto(cfg.get("f_diminutivos_extra")),
+        f_piropos=_mapa_a_texto(cfg.get("f_piropos_extra")),
+        def_menor=", ".join(sorted(posts_mod._MENOR)),
+        crudeness_rows=crudeness_rows,
         message=request.args.get("msg", ""))
 
 
@@ -1646,12 +2164,49 @@ def settings_save():
         users = [u.strip().lstrip("@") for u in request.form["comment_users"].split(",")]
         users = [u for u in users if u]
         cfg["comment_users"] = users        # vacío = los de fábrica
+    if "guardar_post" in request.form:      # el form de los comentarios
+        cfg["diminutivos"] = request.form.get("diminutivos") == "1"
     if "crudeness" in request.form:
         try:
             cfg["crudeness"] = max(0, min(int(request.form["crudeness"]),
                                           len(posts_mod.CRUDENESS) - 1))
         except ValueError:
             pass
+
+    if "guardar_textos" in request.form:      # el form de textos y filtros
+        f = request.form
+        cfg["post_extra_pie"] = f.get("extra_pie", "").strip()
+        cfg["post_extra_com"] = f.get("extra_com", "").strip()
+        # listas: una palabra/línea, sin vacías ni duplicados
+        def _lineas(campo):
+            vistas, out = set(), []
+            for x in f.get(campo, "").splitlines():
+                x = x.strip()
+                if x and x.lower() not in vistas:
+                    vistas.add(x.lower())
+                    out.append(x)
+            return out
+        cfg["f_menor_extra"] = _lineas("f_menor")
+        cfg["f_tuteo_extra"] = [x for x in _lineas("f_tuteo") if "=" in x]
+        cfg["f_vacias_extra"] = _lineas("f_vacias")
+        # diccionarios: "palabra=forma1, forma2" por línea
+        def _mapa(campo):
+            d = {}
+            for linea in f.get(campo, "").splitlines():
+                if "=" not in linea:
+                    continue
+                k, v = linea.split("=", 1)
+                k = k.strip()
+                formas = [w.strip() for w in v.split(",") if w.strip()]
+                if k and formas:
+                    d[k] = formas
+            return d
+        cfg["f_diminutivos_extra"] = _mapa("f_diminutivos")
+        cfg["f_piropos_extra"] = _mapa("f_piropos")
+        # los 5 niveles de crudeza: "" en un nivel = el de fábrica
+        crud = [f.get(f"f_crud_{i}", "").strip()
+                for i in range(len(posts_mod.CRUDENESS))]
+        cfg["f_crudeness"] = crud if any(crud) else []
 
     save_config(cfg)
     return redirect(url_for("settings_page", msg="Ajustes guardados."))
@@ -2081,6 +2636,30 @@ PERSON_TEMPLATE = """
 </div>
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 
+{# el lote corriendo: se muestra en la página de la persona que lo lanzó #}
+<div class="panel" id="lotebox" style="display:none">
+  <div class="row" style="justify-content:space-between">
+    <b>✨ Escribiendo posts de <span id="lote-name"></span></b>
+    <button class="secondary" onclick="loteStop()" id="lote-stop">■ Parar</button>
+  </div>
+  <progress id="lote-bar" value="0" max="1" style="width:100%"></progress>
+  <p class="meta">
+    <b><span id="lote-cur">0</span>/<span id="lote-tot">0</span></b> ·
+    falta <b id="lote-eta">calculando…</b> · lleva <span id="lote-lleva">0 s</span><br>
+    <span id="lote-foto" class="fn"></span><br>
+    ✓ <span id="lote-hechas">0</span> hechas ·
+    ⏭ <span id="lote-salt">0</span> ya tenían ·
+    ✕ <span id="lote-fall">0</span> fallaron
+  </p>
+  <p class="meta" id="lote-err" style="color:var(--red)"></p>
+  <div style="margin-top:.5rem">
+    <span class="meta">Últimos, para que veas cómo van saliendo (si vienen mal, pará):</span>
+    <ul id="lote-ultimos" class="meta" style="margin:.2rem 0 0;padding-left:1.1rem"></ul>
+  </div>
+  <p class="meta">Podés cerrar esta página o apagar la pantalla: sigue igual.
+     Lo hecho queda guardado foto por foto, así que cortarlo no pierde nada.</p>
+</div>
+
 {% if pick_rel %}
 <div class="panel">
   <b>Esa foto tiene {{ pick_count }} caras — ¿cuál es {{ name }}?</b>
@@ -2102,60 +2681,127 @@ PERSON_TEMPLATE = """
 </div>
 {% endif %}
 
-<div class="panel">
-  <div class="cover-box">
-    {% if has_thumb %}
-      <img src="{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}" alt="portada de {{ name }}">
-    {% else %}
-      <div class="noimg">👤</div>
-    {% endif %}
-    <div>
-      <b>Portada actual</b>
-      <p class="meta">Es la imagen que se muestra en la galería de conocidos y junto al
-         "¿Es {{ name }}?" del asistente. Elegí abajo la foto que quieras de portada.</p>
-      <p class="meta">
-        🧹 Última corrección: <b>{{ corrected_ago or 'nunca' }}</b> ·
-        🔍 Última búsqueda: <b>{{ searched_ago or 'nunca' }}</b>
-      </p>
-      <div style="margin:.4rem 0">
-        <span class="meta">🏷 Etiquetas de {{ name }} (valen para todas sus fotos):</span>
-        <div class="chips" id="ptags" style="margin-top:.3rem">
-          <input class="taginput" id="ptag-input" list="tagsug" placeholder="escribí y Enter…"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault();addPersonTag(this.value);this.value=''}">
-        </div>
-      </div>
-      <div style="margin:.6rem 0">
-        <span class="meta">🗣 Cómo habla {{ name }}
-          <span title="El pie de foto lo escribe ella en primera persona. Esto es lo que la hace sonar distinta de las demás.">ⓘ</span>
-        </span>
-        <div class="row" style="margin-top:.3rem">
-          <input class="path" id="pvoice" value="{{ voice }}"
-                 placeholder="ej: sos directa y vulgar, decís las cosas por su nombre…"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault();saveVoice()}">
-          <button class="secondary" onclick="saveVoice()">💾</button>
-          <span class="meta" id="pvoice-st"></span>
-        </div>
-        <p class="meta">Se le suma al prompt del pie. Vacío = la voz genérica.</p>
-      </div>
-      <p><a href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta →</a></p>
-      {% if photos %}
-      <form method="post" action="{{ url_for('correct_start', name=name) }}">
-        <button title="Revisa la carpeta, confirma las fotos obvias solo y te pregunta por las dudosas. Al final {{ name }} queda solo con caras verificadas.">
-          🧹 Corregir entrenamiento (quién es quién en estas fotos)
-        </button>
-      </form>
+<div class="pcard">
+  <!-- Columna izquierda: portada + fechas -->
+  <div class="pcard-cover">
+    <div class="cover-box" title="Portada — abrí una foto de abajo y usá 🖼 Portada">
+      {% if has_thumb %}
+        <img src="{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}" alt="portada de {{ name }}">
+      {% else %}
+        <div class="noimg">👤</div>
+      {% endif %}
+      {% if display %}
+      <button class="secondary iconbtn cover-edit" onclick="document.getElementById('fotos').scrollIntoView({behavior:'smooth'})"
+              title="Cambiar portada: abrí una foto y usá 🖼 Portada">✏️</button>
       {% endif %}
     </div>
+    <div class="meta" style="line-height:1.7">
+      <div>🧹 Últ. corrección: <b style="color:var(--tx)">{{ corrected_ago or 'nunca' }}</b></div>
+      <div>🔍 Últ. búsqueda: <b style="color:var(--tx)">{{ searched_ago or 'nunca' }}</b></div>
+    </div>
+  </div>
+
+  <!-- Columna derecha: nombre + ⚙ + etiquetas -->
+  <div class="pcard-main">
+    <div class="row" style="justify-content:space-between; align-items:center; margin:0">
+      <h1 style="margin:0; font-size:19px">{{ name }}</h1>
+      <button class="secondary iconbtn" onclick="toggleCfg(this)" title="Configuración de {{ name }}">⚙</button>
+    </div>
+
+    <!-- Menú ⚙: voz + acciones -->
+    <div id="pcfg" class="pcfg-menu" style="display:none">
+      <label class="meta">🗣 Cómo habla {{ name }}</label>
+      <div class="row" style="margin:.25rem 0 0">
+        <input class="path" id="pvoice" value="{{ voice }}" style="flex:1"
+               placeholder="ej: sos directa y vulgar…"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();saveVoice()}">
+        <button class="secondary" onclick="saveVoice()" title="Guardar">💾</button>
+        <span class="meta" id="pvoice-st"></span>
+      </div>
+      <p class="meta" style="margin:.3rem 0 0">Se suma al prompt del pie · vacío = voz genérica.</p>
+      <hr class="pcfg-sep">
+      {% if display %}
+      <button class="pcfg-item" onclick="cfgTagSel()">🏷 Etiquetar con IA…</button>
+      {% endif %}
+      <a class="pcfg-item" href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta</a>
+      <a class="pcfg-item" href="{{ url_for('person_export', name=name) }}">📦 Exportar perfil (.zip)</a>
+      {% if photos %}
+      <form method="post" action="{{ url_for('correct_start', name=name) }}" style="margin:0">
+        <button class="pcfg-item" title="Revisa la carpeta y deja a {{ name }} solo con caras verificadas.">🧹 Corregir entrenamiento</button>
+      </form>
+      <details class="lote" style="margin-top:.2rem">
+        <summary class="pcfg-item" style="cursor:pointer">✨ Escribir los posts de todas sus fotos…</summary>
+        {% if lote and lote.name == name and lote.status == 'running' %}
+          <p class="meta">Corriendo. Podés cerrar esta página: sigue igual.</p>
+        {% else %}
+        <form method="post" action="{{ url_for('post_lote', name=name) }}">
+          <div class="row" style="margin-top:.4rem">
+            <select name="que" id="lote-que" onchange="loteEta()">
+              <option value="pie">Solo el pie</option>
+              <option value="comentarios">Solo los comentarios</option>
+              <option value="ambos">Pie y comentarios</option>
+            </select>
+            <button class="primary" onclick="return confirm('Van ' + document.getElementById('lote-falta').textContent + ' de laburo. ¿Arranco?')">▶ Arrancar</button>
+          </div>
+          <p class="meta">{{ n_sin_post }} de {{ display_total }} sin hacer · tarda <b id="lote-falta">…</b></p>
+        </form>
+        {% endif %}
+      </details>
+      {% endif %}
+    </div>
+
+    <!-- Etiquetas -->
+    <div>
+      <span class="meta">🏷 Etiquetas de {{ name }} <span style="opacity:.6">· valen para todas sus fotos</span></span>
+      <div class="chips" id="ptags" style="margin-top:.4rem">
+        <input class="taginput" id="ptag-input" placeholder="escribí y Enter…">
+      </div>
+    </div>
+
+    {% if favs %}
+    <!-- Favoritos: carrusel -->
+    <div>
+      <span class="meta">⭐ Favoritos</span>
+      <div class="favwrap">
+        <button class="secondary favnav" onclick="favScroll(-1)" title="Anterior">‹</button>
+        <div class="favrow" id="favrow">
+          {% for r in favs %}
+          <img src="{{ url_for('person_thumb', name=name, rel=r) }}" loading="lazy"
+               alt="{{ r }}" title="{{ r }}" onclick="favOpen({{ r|tojson }})">
+          {% endfor %}
+          <a class="favplay" href="{{ url_for('person_favs', name=name) }}" title="Ver la página de favoritas">
+            <span style="font-size:18px">▶</span><span>ver<br>todas</span>
+          </a>
+        </div>
+        <button class="secondary favnav" onclick="favScroll(1)" title="Siguiente">›</button>
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 
 {% if photos or nsfw_count %}
+{% if filter_con %}
+<div class="row" style="margin-bottom:.4rem">
+  <span class="chip">👥 también aparece <b>{{ filter_con }}</b>
+    <a class="x" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, nsfw='1' if show_nsfw else None) }}" title="Quitar este filtro">×</a></span>
+</div>
+{% endif %}
 <form class="row" method="get" action="{{ url_for('person_page', name=name) }}" id="ffiltro">
   {% if show_nsfw %}<input type="hidden" name="nsfw" value="1">{% endif %}
+  {% if filter_con %}<input type="hidden" name="con" value="{{ filter_con }}">{% endif %}
+  {% if solo_fav %}<input type="hidden" name="fav" value="1">{% endif %}
   <input type="text" id="ffilter" name="tags" class="path" value="{{ filter_tags }}"
          placeholder="🏷 filtrar sus fotos por etiqueta (coma para varias) + Enter…"
          list="tagsug">
   <button class="secondary">Filtrar</button>
+  {% if solo_fav %}
+  <a class="secondary on" style="padding:.35rem .7rem;border-radius:6px"
+     href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, con=filter_con or None, nsfw='1' if show_nsfw else None) }}">⭐ Solo favoritos ✕</a>
+  {% else %}
+  <a class="secondary" style="padding:.35rem .7rem;border-radius:6px"
+     href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, con=filter_con or None, fav=1, nsfw='1' if show_nsfw else None) }}">☆ Solo favoritos</a>
+  {% endif %}
   {% if filter_tags %}
   <a class="secondary" style="padding:.35rem .7rem;border-radius:6px"
      href="{{ url_for('person_page', name=name, nsfw='1' if show_nsfw else None) }}">✕ limpiar</a>
@@ -2174,6 +2820,7 @@ PERSON_TEMPLATE = """
 {% if n_pages > 1 %}
 <div class="row" style="justify-content:center;gap:.3rem">
   {% set base = {'name': name, 'tags': filter_tags or None, 'per': per,
+                 'con': filter_con or None, 'fav': '1' if solo_fav else None,
                  'nsfw': '1' if show_nsfw else None} %}
   {% if page > 1 %}
   <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', page=page-1, **base) }}#fotos">‹ Anterior</a>
@@ -2190,11 +2837,50 @@ PERSON_TEMPLATE = """
   <span class="meta">clic en una foto abre el visor (ruedita = zoom, arrastrar = mover, ← → = pasar dentro de esta página).</span>
   {% if nsfw_count %}
     {% if show_nsfw %}
-    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per) }}#fotos">🙈 Ocultar NSFW ({{ nsfw_count }})</a>
+    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per) }}#fotos">🙈 Ver normales</a>
     {% else %}
-    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, nsfw=1) }}#fotos">🔞 Mostrar NSFW ({{ nsfw_count }})</a>
+    <a class="secondary" style="padding:.35rem .7rem;border-radius:6px" href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, nsfw=1) }}#fotos">🔞 Solo NSFW ({{ nsfw_count }})</a>
     {% endif %}
   {% endif %}
+  {% if display %}
+  <button class="secondary" id="tagsel-toggle" onclick="toggleTagSel()">☑ Etiquetar con IA…</button>
+  {% endif %}
+</div>
+
+{# Panel de selección para el etiquetador automático: aparece con el botón de
+   arriba. "Seleccionadas" cuenta solo lo que ves en ESTA página (como el
+   etiquetado de a muchas de la Galería general). Sin ninguna tildada, etiqueta
+   TODAS las que no tienen etiquetas propias todavía. #}
+<div class="panel" id="tagselbar" style="display:none">
+  <div class="row">
+    <button class="secondary" onclick="tagSelAll(true)">Seleccionar visibles</button>
+    <button class="secondary" onclick="tagSelAll(false)">Ninguna</button>
+    <span class="meta"><b id="tagselcount">0</b> seleccionada(s) de esta página</span>
+  </div>
+  <div class="row">
+    <button class="primary" id="tagsel-go" onclick="tagLoteStart()">▶ Etiquetar TODAS sin etiquetas propias</button>
+    <span class="meta">Mira cada foto y le pone etiquetas sola — mismo motor que el pie. Saltea las que
+       ya tienen etiquetas propias, así se puede cortar y retomar.</span>
+  </div>
+</div>
+
+{# el lote de etiquetado con IA corriendo #}
+<div class="panel" id="tagbox" style="display:none">
+  <div class="row" style="justify-content:space-between">
+    <b>🏷 Etiquetando con IA</b>
+    <button class="secondary" onclick="tagLoteStop()" id="tag-stop">■ Parar</button>
+  </div>
+  <progress id="tag-bar" value="0" max="1" style="width:100%"></progress>
+  <p class="meta">
+    <b><span id="tag-cur">0</span>/<span id="tag-tot">0</span></b> ·
+    lleva <span id="tag-lleva">0 s</span><br>
+    <span id="tag-foto" class="fn"></span><br>
+    ✓ <span id="tag-hechas">0</span> hechas ·
+    ⏭ <span id="tag-salt">0</span> ya tenían ·
+    ✕ <span id="tag-fall">0</span> fallaron
+  </p>
+  <p class="meta" id="tag-err" style="color:var(--red)"></p>
+  <ul id="tag-ultimos" class="meta" style="margin:.2rem 0 0;padding-left:1.1rem"></ul>
 </div>
 {{ pager() }}
 {% if not display %}
@@ -2205,43 +2891,36 @@ PERSON_TEMPLATE = """
 {% endif %}
 <div class="masonry" id="fotos">
   {% for f in display %}
-  <div class="shot" data-tags="{{ f.tags|join(' ') }}">
-    <img src="{{ url_for('person_thumb', name=name, rel=f.rel) }}" loading="lazy" alt="{{ f.rel }}"
-         onclick="lbOpen({{ loop.index0 }})">
-    {% if f.nsfw %}<div class="fn" style="color:var(--red)">🔞 {{ f.rel }}</div>
-    {% else %}<div class="fn" title="{{ f.rel }}">{{ f.rel }}</div>{% endif %}
-    <button class="primary" onclick="setCover(this, {{ f.rel|tojson }})">⭐ Usar de portada</button>
-    <div class="phototags" data-rel="{{ f.rel }}"></div>
-    <input class="ptadd" list="tagsug" placeholder="🏷 etiqueta + Enter"
-           onkeydown="if(event.key==='Enter'){event.preventDefault();addPhotoTag(this,this.value);this.value=''}">
-    <form method="post" action="{{ url_for('person_move_photo', name=name) }}" style="margin-top:.3rem">
-      <input type="hidden" name="rel" value="{{ f.rel }}">
-      <select name="to" style="width:100%;font-size:.8rem"
-              onchange="if (this.value) this.form.requestSubmit()">
-        <option value="">🚚 No es {{ name }}… mover a</option>
-        <option value="__review__">🗂 Sacar a _revisar</option>
-        {% for p in people %}{% if p != name %}<option value="{{ p }}">👤 {{ p }}</option>{% endif %}{% endfor %}
-      </select>
-    </form>
+  <div class="shot{% if f.fav %} is-fav{% endif %}" data-tags="{{ f.tags|join(' ') }}" data-rel="{{ f.rel }}">
+    <span class="favstar" title="Favorito">⭐</span>
+    {% if f.nsfw %}<span class="nsfw-badge" title="{{ f.rel }}">🔞</span>{% endif %}
+    <label class="shot-selbox" title="Seleccionar para etiquetar con IA">
+      <input type="checkbox" class="tagselchk" value="{{ f.rel }}" onchange="tagSelCount()">
+    </label>
+    <div class="shot-thumb" onclick="lbOpen({{ loop.index0 }})" title="{{ f.rel }}">
+      <img src="{{ url_for('person_thumb', name=name, rel=f.rel) }}" loading="lazy" alt="{{ f.rel }}">
+    </div>
   </div>
   {% endfor %}
 </div>
 {{ pager() }}
 
 <datalist id="tagsug">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
+{# todas las personas conocidas, para etiquetar quién está en la foto (@) #}
+<datalist id="knownlist">{% for p in people %}{% if p != name %}<option value="{{ p }}">{% endif %}{% endfor %}</datalist>
 
 <script>
+window.KNOWN = {{ people|tojson }};            // todas las personas de la base
 window.LB_PHOTOS = [
   {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}",rel:{{ f.rel|tojson }}},{% endfor %}
 ];
-window.POSTS = {{ posts|tojson }};             // {rel: {caption, comments}}
+window.POSTS = {{ posts|tojson }};             // {rel: {caption, comments, people}}
 window.VLM_MODELS = {{ vlm_models|tojson }};
 window.HAS_COVER = {{ has_thumb|tojson }};
 window.COVER_URL_THUMB = "{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}";
 const PERSON = {{ name|tojson }};
 let PERSON_TAGS = {{ person_tags|tojson }};
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
-window.SHORTCUTS = {{ shortcuts|tojson }};    // botones-atajo del modal
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
 
@@ -2272,6 +2951,7 @@ function addPersonTag(v) {
   PERSON_TAGS.push(v); renderPersonTags();
   post(PTAGS_URL, {tags: PERSON_TAGS.join(',')}).then(refreshAllPhotoTags);
 }
+tagAC(document.getElementById('ptag-input'), {commit: addPersonTag});
 function removePersonTag(t) {
   PERSON_TAGS = PERSON_TAGS.filter(x => x !== t); renderPersonTags();
   post(PTAGS_URL, {tags: PERSON_TAGS.join(',')}).then(refreshAllPhotoTags);
@@ -2307,6 +2987,163 @@ function removePhotoTag(div, t) {
 
 renderPersonTags();
 refreshAllPhotoTags();
+
+// --- el lote de posts (dejarlo toda la noche) ---
+// El estimado ANTES de arrancar sale de medidas reales: ~90s el pie, ~60s los
+// comentarios. Con 1500 fotos eso da más de 37 horas, y es justo lo que hay que
+// saber antes de darle a Arrancar y no después.
+const SEGS_POR = {pie: 90, comentarios: 60, ambos: 150};
+const SIN_POST = {{ n_sin_post|tojson }};
+function humano(s) {
+  if (s < 90) return Math.round(s) + ' s';
+  if (s < 5400) return Math.round(s / 60) + ' min';
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+function loteEta() {
+  const sel = document.getElementById('lote-que');
+  const el = document.getElementById('lote-falta');
+  if (sel && el) el.textContent = '~' + humano(SIN_POST * SEGS_POR[sel.value]);
+}
+function loteStop() {
+  document.getElementById('lote-stop').disabled = true;
+  post("{{ url_for('post_lote_stop') }}", {});
+}
+function loteMirar() {
+  fetch("{{ url_for('post_lote_estado') }}").then(r => r.json()).then(d => {
+    const box = document.getElementById('lotebox');
+    if (d.status !== 'running') {
+      box.style.display = 'none';
+      // terminó mientras mirabas: recargar para ver los posts nuevos
+      if (box.dataset.corria === '1') location.reload();
+      return;
+    }
+    box.dataset.corria = '1';
+    box.style.display = '';
+    document.getElementById('lote-name').textContent = d.name;
+    document.getElementById('lote-bar').value = d.current;
+    document.getElementById('lote-bar').max = d.total || 1;
+    document.getElementById('lote-cur').textContent = d.current;
+    document.getElementById('lote-tot').textContent = d.total;
+    document.getElementById('lote-eta').textContent = d.falta;
+    document.getElementById('lote-lleva').textContent = d.lleva;
+    document.getElementById('lote-foto').textContent = d.photo;
+    document.getElementById('lote-hechas').textContent = d.hechas;
+    document.getElementById('lote-salt').textContent = d.salteadas;
+    document.getElementById('lote-fall').textContent = d.fallaron;
+    document.getElementById('lote-err').textContent = d.error || '';
+    const ul = document.getElementById('lote-ultimos');
+    ul.innerHTML = '';
+    (d.ultimos || []).forEach(t => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      ul.appendChild(li);
+    });
+  }).catch(() => {});
+}
+loteEta();
+loteMirar();
+setInterval(loteMirar, 3000);
+
+// --- etiquetador automático: selecciono fotos (o ninguna = todas sin
+// etiquetas propias) y la IA les pone etiquetas sola, foto por foto ---
+function cfgTagSel() {
+  document.getElementById('pcfg').style.display = 'none';
+  if (!tagSelOn) toggleTagSel();
+  document.getElementById('tagselbar').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+let tagSelOn = false;
+function toggleTagSel() {
+  tagSelOn = !tagSelOn;
+  document.querySelectorAll('.shot-selbox').forEach(b => b.style.display = tagSelOn ? 'block' : 'none');
+  document.getElementById('tagselbar').style.display = tagSelOn ? '' : 'none';
+  document.getElementById('tagsel-toggle').textContent = tagSelOn ? '✕ Cerrar selección' : '☑ Etiquetar con IA…';
+  if (!tagSelOn) tagSelAll(false);
+}
+function tagSelAll(on) {
+  document.querySelectorAll('.tagselchk').forEach(c => { c.checked = on; c.closest('.shot').classList.toggle('tagsel-on', on); });
+  tagSelCount();
+}
+function tagSelCount() {
+  const chk = [...document.querySelectorAll('.tagselchk:checked')];
+  chk.forEach(c => c.closest('.shot').classList.add('tagsel-on'));
+  document.querySelectorAll('.tagselchk:not(:checked)').forEach(c => c.closest('.shot').classList.remove('tagsel-on'));
+  document.getElementById('tagselcount').textContent = chk.length;
+  document.getElementById('tagsel-go').textContent = chk.length
+    ? `▶ Etiquetar ${chk.length} seleccionada(s)`
+    : '▶ Etiquetar TODAS sin etiquetas propias';
+}
+function tagLoteStart() {
+  if (!window.VLM_MODELS.length) { alert('Ollama no está corriendo.'); return; }
+  const rels = [...document.querySelectorAll('.tagselchk:checked')].map(c => c.value);
+  const aviso = rels.length ? `Etiquetar ${rels.length} foto(s) seleccionada(s). ¿Arranco?`
+                            : 'Etiquetar TODAS las fotos que todavía no tienen etiquetas propias. ¿Arranco?';
+  if (!confirm(aviso)) return;
+  post("{{ url_for('tags_lote', name=name) }}", {rels: rels.join('\\n')})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { alert(d.error || 'No se pudo arrancar.'); return; }
+      toggleTagSel();
+      tagLoteMirar();
+    });
+}
+function tagLoteStop() {
+  document.getElementById('tag-stop').disabled = true;
+  post("{{ url_for('tags_lote_stop') }}", {});
+}
+function tagLoteMirar() {
+  fetch("{{ url_for('tags_lote_estado') }}").then(r => r.json()).then(d => {
+    const box = document.getElementById('tagbox');
+    if (d.status !== 'running') {
+      box.style.display = 'none';
+      if (box.dataset.corria === '1') location.reload();
+      return;
+    }
+    box.dataset.corria = '1';
+    document.getElementById('tag-stop').disabled = false;
+    box.style.display = '';
+    document.getElementById('tag-bar').value = d.current;
+    document.getElementById('tag-bar').max = d.total || 1;
+    document.getElementById('tag-cur').textContent = d.current;
+    document.getElementById('tag-tot').textContent = d.total;
+    document.getElementById('tag-lleva').textContent = d.lleva;
+    document.getElementById('tag-foto').textContent = d.photo;
+    document.getElementById('tag-hechas').textContent = d.hechas;
+    document.getElementById('tag-salt').textContent = d.salteadas;
+    document.getElementById('tag-fall').textContent = d.fallaron;
+    document.getElementById('tag-err').textContent = d.error || '';
+    const ul = document.getElementById('tag-ultimos');
+    ul.innerHTML = '';
+    (d.ultimos || []).forEach(t => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      ul.appendChild(li);
+    });
+  }).catch(() => {});
+}
+tagLoteMirar();
+setInterval(tagLoteMirar, 3000);
+
+// --- menú de configuración de la persona (⚙) ---
+function toggleCfg(btn) {
+  const m = document.getElementById('pcfg');
+  const abrir = m.style.display === 'none';
+  if (abrir) {
+    const b = btn.getBoundingClientRect();
+    m.style.display = 'block';
+    let left = b.right - m.offsetWidth;
+    if (left < 8) left = 8;
+    m.style.top = (b.bottom + 6) + 'px';
+    m.style.left = left + 'px';
+  } else {
+    m.style.display = 'none';
+  }
+}
+// cerrar el menú al hacer clic afuera
+document.addEventListener('click', e => {
+  const m = document.getElementById('pcfg');
+  if (!m || m.style.display === 'none') return;
+  if (!m.contains(e.target) && !e.target.closest('.iconbtn')) m.style.display = 'none';
+});
 
 // --- cómo habla esta persona (va al prompt del pie de foto) ---
 const VOICE_URL = "{{ url_for('person_voice', name=name) }}";
@@ -2375,39 +3212,57 @@ POST_LIGHTBOX = """
   <button class="lb-btn" id="lb-prev" onclick="lbStep(-1)" title="Anterior">‹</button>
   <button class="lb-btn" id="lb-next" onclick="lbStep(1)" title="Siguiente">›</button>
   <div class="post">
-    <div class="stage"><img id="lb-img" src="" alt=""></div>
+    <div class="stage">
+      <img id="lb-img" src="" alt="">
+      <button class="secondary sm stage-fab stage-fab-l" onclick="lbCover(this)"
+              title="Usar esta foto como portada de la galería">🖼 Portada</button>
+      <button class="secondary sm stage-fab stage-fab-r" onclick="openPeopleModal()"
+              title="Etiquetar quién más está en la foto">👥 Personas ▾</button>
+    </div>
     <aside class="side">
       <header class="phead">
         <img id="lb-av" class="av" src="" alt="">
-        <div>
+        <div style="flex:1">
           <b id="lb-who"></b>
           <div class="meta" id="lb-fn"></div>
         </div>
+        <button id="lb-fav" class="favbtn" onclick="toggleFav()" title="Favorito">☆</button>
       </header>
 
       <div class="pbody">
-        <div class="pcap" id="lb-cap-box">
-          <p id="lb-cap" class="empty">Todavía no tiene pie de foto.</p>
-          <div id="lb-cap-sk" style="display:none">
-            <div class="sk sk-linea" style="width:96%"></div>
-            <div class="sk sk-linea" style="width:88%"></div>
-            <div class="sk sk-linea" style="width:60%"></div>
-          </div>
-          <div class="row" style="margin:.3rem 0 0">
-            <button class="secondary act" id="lb-cap-btn" onclick="genCaption()">✨ Escribir pie</button>
-            <button class="secondary sm" id="lb-cap-edit" onclick="editCap()" title="Reescribirlo a tu manera">✏️</button>
-            <span class="meta" id="lb-cap-st"></span>
+        <div class="pcap pcard-sub" id="lb-cap-box">
+          <div class="caprow">
+            <div class="capmain">
+              <p id="lb-cap" class="empty">Todavía no tiene pie de foto.</p>
+              <div id="lb-cap-sk" style="display:none">
+                <div class="sk sk-linea" style="width:96%"></div>
+                <div class="sk sk-linea" style="width:88%"></div>
+                <div class="sk sk-linea" style="width:60%"></div>
+              </div>
+              <span class="meta" id="lb-cap-st"></span>
+            </div>
+            <button class="primary capfab" id="lb-cap-btn" onclick="genCaption()" title="Escribir el pie con IA">✨</button>
+            <button class="secondary capfab" id="lb-cap-edit" onclick="editCap()" title="Reescribirlo a tu manera">✏️</button>
           </div>
           <textarea id="lb-cap-in" class="capin" style="display:none"
                     placeholder="escribilo a tu manera… (Ctrl+Enter para guardar)"></textarea>
         </div>
 
-        <div class="pcoms">
+        <!-- personas etiquetadas: solo aparece si hay alguien (se agrega con el
+             botón "👥 Personas" de arriba de la foto) -->
+        <div class="ppeople" id="lb-people-box" style="display:none">
+          <div class="chips" id="lb-people">
+            <input class="taginput" id="lb-people-in" list="knownlist" autocomplete="off"
+                   placeholder="@ agregar a otra persona…">
+          </div>
+        </div>
+
+        <div class="pcoms pcard-sub">
           <div class="row" style="justify-content:space-between;margin:0 0 .3rem">
             <span class="meta">💬 Comentarios</span>
-            <span>
-              <button class="secondary act" id="lb-com-btn" onclick="genComments()">✨ Generar</button>
-              <button class="secondary sm" id="lb-com-x" onclick="clearComments()" title="Borrarlos y empezar de nuevo">🗑</button>
+            <span style="display:flex;gap:.35rem">
+              <button class="primary capfab" id="lb-com-btn" onclick="genComments()" title="Generar comentarios con IA">✨</button>
+              <button class="secondary capfab" id="lb-com-x" onclick="clearComments()" title="Borrarlos y empezar de nuevo">🗑</button>
             </span>
           </div>
           <div id="lb-coms"></div>
@@ -2421,27 +3276,28 @@ POST_LIGHTBOX = """
           </div>
           <span class="meta" id="lb-com-st"></span>
         </div>
+
+        <!-- etiquetas: al fondo y discreto, para no ensuciar el pie/comentarios -->
+        <div class="ptags-min">
+          <button class="linklike" id="lb-tag-toggle" onclick="openTagModal()">🏷 Etiquetas / Sugerir con IA</button>
+          <span class="meta" id="lb-tag-summary"></span>
+        </div>
       </div>
 
-      <div class="ptags">
-        <button class="secondary" id="lb-tag-toggle" onclick="toggleTags()">🏷 Etiquetar ▾</button>
-        <div id="lb-tag-panel" style="display:none">
-          <span class="meta">Heredadas de {{ name }}:</span>
-          <div class="chips" id="lb-inh"></div>
-          <span class="meta">Etiquetas de ESTA foto:</span>
-          <div class="chips" id="lb-own">
-            <input class="taginput" id="lb-tin" list="tagsug" placeholder="escribí y Enter…">
-          </div>
-          <div class="chips" id="lb-sc" style="margin-top:.4rem"></div>
-          <div class="row" style="margin-top:.5rem">
-            <button class="secondary act" id="lb-sug" onclick="suggestTags()">🔮 Sugerir tags</button>
-            <span class="meta" id="lb-sug-st"></span>
-          </div>
-          <div class="chips" id="lb-sugtags" style="margin-top:.3rem"></div>
-          <div id="lb-sug-sk" style="display:none;margin-top:.3rem">
-            {% for w in [4.5, 6, 3.5, 5.5, 4] %}<span class="sk sk-chip" style="width:{{ w }}rem"></span>{% endfor %}
-          </div>
-        </div>
+      <!-- acciones de ESTA foto (antes estaban en cada tarjeta de la grilla) -->
+      <div class="pact">
+        <button type="button" class="secondary sm" id="lb-nsfw-btn" onclick="marcarNsfw()"
+                title="Marcar como NSFW: la mueve a _nsfw y corre el detector de acto 🎯">🔞 NSFW</button>
+        <form method="post" action="{{ url_for('person_move_photo', name=name) }}"
+              id="lb-move-form" style="flex:1; margin:0">
+          <input type="hidden" name="rel" id="lb-move-rel" value="">
+          <select name="to" style="width:100%; font-size:.78rem"
+                  onchange="if (this.value) this.form.submit()">
+            <option value="">🚚 No es {{ name }}… mover a</option>
+            <option value="__review__">🗂 Sacar a _revisar</option>
+            {% for p in people %}{% if p != name %}<option value="{{ p }}">👤 {{ p }}</option>{% endif %}{% endfor %}
+          </select>
+        </form>
       </div>
 
       <div class="pfoot">
@@ -2452,6 +3308,63 @@ POST_LIGHTBOX = """
       </div>
     </aside>
   </div>
+  <div id="lb-people-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) closePeopleModal()">
+    <div class="modal-box">
+      <div class="row" style="justify-content:space-between;margin:0">
+        <b>🏷️ Etiquetar persona</b>
+        <button class="secondary sm" onclick="closePeopleModal()" title="Cerrar">✕</button>
+      </div>
+      <input class="path" id="pmodal-search" placeholder="🔍 Buscar por nombre…" autocomplete="off"
+             oninput="pmodalFilter()" style="width:100%;margin:.5rem 0">
+      <div id="pmodal-list" class="pmodal-list"></div>
+    </div>
+  </div>
+
+  <!-- modal grande de etiquetas: aplicadas + agregar a mano + sugerir con IA -->
+  <div id="lb-tag-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) closeTagModal()">
+    <div class="modal-box tagmodal">
+      <div class="row" style="justify-content:space-between;margin:0 0 .3rem">
+        <b style="font-size:1.05rem">🏷️ Etiquetas de la foto</b>
+        <button class="secondary sm" onclick="closeTagModal()" title="Cerrar">✕</button>
+      </div>
+      <div class="tagm-cols">
+        <!-- izquierda: etiquetas y sugerencias -->
+        <div class="tagm-body">
+          <span class="meta">Heredadas de {{ name }} <span style="opacity:.6">· valen para todas sus fotos</span></span>
+          <div class="chips" id="lb-inh"></div>
+
+          <span class="meta" style="display:block;margin-top:.7rem">Etiquetas de ESTA foto:</span>
+          <div class="chips" id="lb-own">
+            <input class="taginput" id="lb-tin" placeholder="escribí una y Enter…">
+          </div>
+
+          <div class="row" style="margin-top:.9rem; align-items:center; gap:.5rem">
+            <span class="meta">Modelo:</span>
+            <select id="lb-tagmodel" title="Con qué modelo mira la foto para etiquetar"
+                    style="font-size:.82rem; max-width:60%">
+              {% for m in vlm_models %}
+              <option value="{{ m }}" {% if m == tag_modelo %}selected{% endif %}>{% if m in vlm_crudos %}🔞 {% else %}👁 {% endif %}{{ m }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <span class="meta" style="display:block;margin:.25rem 0 .6rem">
+            🔞 = sin censura (no rebota lo explícito, pero <b>ve peor</b>) ·
+            👁 = ve mejor pero puede suavizar lo crudo</span>
+          <div class="row">
+            <button class="primary act" id="lb-sug" onclick="suggestTags()">🔮 Sugerir con IA</button>
+            <span class="meta" id="lb-sug-st"></span>
+          </div>
+          <span class="meta" id="lb-sug-count" style="display:block;margin-top:.5rem"></span>
+          <div class="suglist" id="lb-sugtags"></div>
+          <div id="lb-sug-sk" style="display:none;margin-top:.4rem">
+            {% for w in [92, 78, 85, 70, 88, 62] %}<div class="sk sk-linea" style="width:{{ w }}%;height:1.6rem"></div>{% endfor %}
+          </div>
+        </div>
+        <!-- derecha: la foto, para chequear cada sugerencia contra lo que se ve -->
+        <div class="tagm-photo"><img id="tagm-photo" src="" alt="la foto"></div>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 (function() {
@@ -2459,18 +3372,26 @@ POST_LIGHTBOX = """
   const lb = document.getElementById('lb'), img = document.getElementById('lb-img');
   const $ = id => document.getElementById(id);
   let idx = 0, scale = 1, tx = 0, ty = 0, drag = false, sx = 0, sy = 0;
+  let sugeridas = new Set();   // etiquetas ya sugeridas por IA (para "sugerir más")
+  let sugStop = false;         // el usuario apretó Parar (corta el auto-continuo)
+  let sugCorriendo = false;    // hay una corrida de sugerencias en curso
+  let ownExpanded = false;     // ¿mostrar TODAS las etiquetas propias o colapsadas?
+  const OWN_LIMIT = 3;         // cuántas propias se ven antes del "mostrar todas"
+                              // (no importan a la vista; están igual para la IA)
   const CAP_URL = "{{ url_for('post_caption', name=name) }}";
   const CAPED_URL = "{{ url_for('post_caption_edit', name=name) }}";
   const COM_URL = "{{ url_for('post_comments', name=name) }}";
   const COMX_URL = "{{ url_for('post_comments_clear', name=name) }}";
   const SUG_URL = "{{ url_for('tags_suggest', name=name) }}";
+  const SUG_STREAM_URL = "{{ url_for('tags_suggest_stream', name=name) }}";
+  const PEOPLE_URL = "{{ url_for('post_people', name=name) }}";
 
   const rel = () => P[idx].rel;
   const post_ = (url, body) => fetch(url, {method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams(body)}).then(r => r.json());
   const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[]}); }
+  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[], people:[]}); }
 
   // --- zoom y arrastre (igual que el visor pelado) ---
   function apply() { img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; }
@@ -2484,7 +3405,8 @@ POST_LIGHTBOX = """
     const d = slot(rel());
     $('lb-cap').textContent = d.caption || 'Todavía no tiene pie de foto.';
     $('lb-cap').className = d.caption ? '' : 'empty';
-    $('lb-cap-btn').textContent = d.caption ? '✨ Reescribir pie' : '✨ Escribir pie';
+    // el botón queda siempre como ✨ (compacto): lo que cambia es el tooltip
+    $('lb-cap-btn').title = d.caption ? 'Reescribir el pie con IA' : 'Escribir el pie con IA';
     $('lb-cap-edit').style.display = d.caption ? '' : 'none';
     cancelCap();
     const box = $('lb-coms');
@@ -2495,12 +3417,162 @@ POST_LIGHTBOX = """
       el.innerHTML = '<b>@' + esc(c.user) + '</b> ' + esc(c.text);
       box.appendChild(el);
     });
-    $('lb-com-btn').textContent = d.comments.length ? '✨ Otros' : '✨ Generar';
+    $('lb-com-btn').title = d.comments.length ? 'Generar más comentarios con IA' : 'Generar comentarios con IA';
     $('lb-com-x').style.display = d.comments.length ? '' : 'none';
     $('lb-cap-st').textContent = ''; $('lb-com-st').textContent = '';
     $('lb-sug-st').textContent = ''; $('lb-sugtags').innerHTML = '';
+    if ($('lb-sug-count')) $('lb-sug-count').textContent = '';
+    sugeridas = new Set();                       // arranca de cero en cada foto
+    ownExpanded = false;                         // etiquetas propias colapsadas
+    sugStop = true;                              // corta cualquier auto-continuo en curso
+    if ($('lb-sug')) {
+      $('lb-sug').textContent = '🔮 Sugerir con IA';
+      $('lb-sug').classList.remove('trabajando');
+    }
+    renderPeople();
+    renderFav();
     renderTags();
+    $('lb-move-rel').value = rel();   // el "mover a" siempre apunta a ESTA foto
+    // el botón NSFW no va si la foto YA es nsfw
+    $('lb-nsfw-btn').style.display = rel().split('/').includes('_nsfw') ? 'none' : '';
   }
+
+  // portada desde el visor (reusa setCover, que ya actualiza la card de arriba)
+  window.lbCover = function(btn) { setCover(btn, rel()); };
+  // marcar ESTA foto como NSFW: la mueve a _nsfw y ahí corre el detector de acto.
+  // ASÍNCRONO: actualiza en el lugar, NO recarga (no te cierra el visor).
+  window.marcarNsfw = function() {
+    const r = rel();
+    if (!confirm('¿Marcar esta foto como NSFW? Se mueve a _nsfw y ahí corre el detector de acto (🎯).')) return;
+    post_("{{ url_for('post_mark_nsfw', name=name) }}", {rel: r}).then(d => {
+      if (!d.ok) { alert(d.error || 'No se pudo marcar.'); return; }
+      // muevo el estado en memoria a la nueva ruta, sin recargar
+      if (POSTS[r]) { POSTS[d.new_rel] = POSTS[r]; delete POSTS[r]; }
+      if (PHOTO_TAGS[r]) { PHOTO_TAGS[d.new_rel] = PHOTO_TAGS[r]; delete PHOTO_TAGS[r]; }
+      P[idx].rel = d.new_rel; P[idx].url = d.new_url;   // el visor sigue en ESTA foto
+      $('lb-move-rel').value = d.new_rel;
+      $('lb-nsfw-btn').style.display = 'none';           // ya es nsfw
+      // saco su tarjeta de la grilla de atrás (ya no va en la vista no-nsfw)
+      const card = document.querySelector('.shot[data-rel="' + (window.CSS && CSS.escape ? CSS.escape(r) : r) + '"]');
+      if (card) card.remove();
+      const pos = $('lb-pos'), antes = pos.textContent;
+      pos.textContent = '✓ marcada NSFW';
+      setTimeout(() => { if (rel() === d.new_rel) pos.textContent = antes; }, 2500);
+    });
+  };
+  // carrusel de favoritos de la card
+  window.favScroll = function(dir) {
+    const t = document.getElementById('favrow');
+    if (t) t.scrollBy({left: dir * 270, behavior: 'smooth'});
+  };
+  window.favOpen = function(r) {
+    const i = P.findIndex(p => p.rel === r);
+    if (i >= 0) lbOpen(i);
+    else location = '?fav=1';   // está en otra página del paginado
+  };
+
+  // --- favorito (⭐) ---
+  const FAV_URL = "{{ url_for('post_fav', name=name) }}";
+  function renderFav() {
+    const on = !!slot(rel()).fav;
+    const b = $('lb-fav');
+    b.textContent = on ? '⭐' : '☆';
+    b.classList.toggle('on', on);
+  }
+  function toggleFav() {
+    const r = rel(), nuevo = !slot(r).fav;
+    slot(r).fav = nuevo; renderFav();
+    post_(FAV_URL, {rel: r, fav: nuevo ? '1' : ''}).then(d => {
+      if (d.ok) { slot(r).fav = d.fav; renderFav(); syncGridFav(r, d.fav); }
+    });
+  }
+  function syncGridFav(r, on) {   // marca la tarjeta de atrás
+    const card = document.querySelector(`.shot[data-rel="${CSS.escape(r)}"]`);
+    if (card) card.classList.toggle('is-fav', on);
+  }
+  window.toggleFav = toggleFav;
+
+  // --- personas en la foto (@) ---
+  function people() { return (slot(rel()).people || []).slice(); }
+  function savePeople(lista) {
+    const r = rel();
+    slot(r).people = lista;
+    post_(PEOPLE_URL, {rel: r, people: lista.join(',')}).then(d => {
+      if (d.ok) { slot(r).people = d.people; renderPeople(); }
+    });
+  }
+  function renderPeople() {
+    const box = $('lb-people'), input = $('lb-people-in');
+    const gente = people();
+    // la sección solo aparece si hay alguien etiquetado (se agrega con el botón
+    // "👥 Personas" de arriba de la foto)
+    $('lb-people-box').style.display = gente.length ? '' : 'none';
+    box.querySelectorAll('.chip').forEach(c => c.remove());
+    gente.forEach(p => {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      // el nombre es un link: filtra la galería a las fotos donde también está
+      const url = '{{ url_for("person_page", name=name) }}?con=' + encodeURIComponent(p);
+      c.innerHTML = '<a href="' + url + '" title="Ver las fotos donde también está ' +
+        esc(p) + '" style="color:inherit">@' + esc(p) + '</a> <span class="x">×</span>';
+      c.querySelector('.x').onclick = () => savePeople(people().filter(x => x !== p));
+      box.insertBefore(c, input);
+    });
+  }
+  $('lb-people-in').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = e.target.value.trim().replace(/^@/, '');
+      // solo si existe en la base y no está ya puesto
+      if (v && window.KNOWN.includes(v) && v !== PERSON && !people().includes(v))
+        savePeople(people().concat([v]));
+      e.target.value = '';
+    } else if (e.key === 'Escape') { e.stopPropagation(); }
+  });
+
+  // --- modal "🏷️ Etiquetar persona": buscar y agregar con avatar ---
+  function pmodalFilter() {
+    const q = $('pmodal-search').value.trim().toLowerCase();
+    const ya = people();
+    const cands = (window.KNOWN || [])
+      .filter(p => p !== PERSON)
+      .filter(p => !q || p.toLowerCase().includes(q))
+      .sort();
+    const list = $('pmodal-list');
+    list.innerHTML = '';
+    if (!cands.length) {
+      list.innerHTML = '<p class="meta" style="padding:.5rem">Nadie más en la base.</p>';
+      return;
+    }
+    cands.forEach(p => {
+      const puesta = ya.includes(p);
+      const it = document.createElement('div');
+      it.className = 'pmodal-item' + (puesta ? ' added' : '');
+      const av = document.createElement('img');
+      av.src = '/known_thumb/' + encodeURIComponent(p);
+      av.alt = '';
+      av.onerror = () => { av.style.visibility = 'hidden'; };
+      const nm = document.createElement('span');
+      nm.style.flex = '1';
+      nm.textContent = p;
+      const st = document.createElement('span');
+      st.className = 'meta';
+      st.textContent = puesta ? '✓ ya está' : '+ agregar';
+      it.appendChild(av); it.appendChild(nm); it.appendChild(st);
+      if (!puesta) it.onclick = () => { savePeople(people().concat([p])); pmodalFilter(); };
+      list.appendChild(it);
+    });
+  }
+  function openPeopleModal() {
+    $('pmodal-search').value = '';
+    pmodalFilter();
+    $('lb-people-modal').style.display = 'flex';
+    $('pmodal-search').focus();
+  }
+  function closePeopleModal() { $('lb-people-modal').style.display = 'none'; }
+  window.openPeopleModal = openPeopleModal;
+  window.closePeopleModal = closePeopleModal;
+  window.pmodalFilter = pmodalFilter;
 
   function show(i) {
     idx = (i + P.length) % P.length;
@@ -2531,30 +3603,25 @@ POST_LIGHTBOX = """
           ver: ['lb-cap', 'lb-cap-edit'], texto: 'escribiendo el pie…', segundos: 90},
     com: {btn: 'lb-com-btn', st: 'lb-com-st', sk: 'lb-com-sk',
           ver: ['lb-coms', 'lb-com-x'], texto: 'escribiendo…', segundos: 60},
+    // sug NO esconde lb-sugtags: las etiquetas caen en vivo ahí mientras trabaja
     sug: {btn: 'lb-sug', st: 'lb-sug-st', sk: 'lb-sug-sk',
-          ver: ['lb-sugtags'], texto: 'pensando…', segundos: 20},
+          ver: [], texto: 'mirando la foto…', segundos: 35},
   };
   function trabajando(clave, on) {
-    const t = TRABAJOS[clave], b = $(t.btn);
+    const t = TRABAJOS[clave], b = $(t.btn), st = $(t.st);
     b.disabled = on;
     b.classList.toggle('trabajando', on);
     $(t.sk).style.display = on ? '' : 'none';
     t.ver.forEach(id => { if ($(id)) $(id).style.display = on ? 'none' : ''; });
-    const yaEstaba = !!b._tick;
-    clearInterval(b._tick);      // el reloj vive en el botón: dos trabajos no se pisan
+    clearInterval(b._tick);   // el reloj vive en la línea de estado, no en el botón
     b._tick = null;
-    if (!on) {
-      if (b.dataset.label) b.textContent = b.dataset.label;
-      return;
-    }
-    // guardar la etiqueta ANTES de pisarla con el reloj (y no re-guardar el
-    // reloj si ya estaba trabajando)
-    if (!yaEstaba) b.dataset.label = b.textContent;
+    if (!on) { st.textContent = ''; return; }
+    // el timer va a la línea de estado (el botón queda con su ícono, dimmed):
+    // así el botón puede ser un ✨ compacto sin que el reloj le rompa el ancho
     let s = 0;
-    const pintar = () => { b.textContent = `${RELOJ[s % RELOJ.length]} ${t.texto} ${s}s`; s++; };
+    const pintar = () => { st.textContent = ` ${RELOJ[s % RELOJ.length]} ${t.texto} ${s}s`; s++; };
     pintar();
     b._tick = setInterval(pintar, 1000);
-    $(t.st).textContent = ` suele tardar ~${t.segundos}s`;
   }
 
   // --- pie de foto ---
@@ -2593,7 +3660,9 @@ POST_LIGHTBOX = """
       $('lb-com-st').textContent = ' Ollama no está corriendo.'; return;
     }
     trabajando('com', true);
-    post_(COM_URL, {rel: r, model: $('lb-model').value}).then(d => {
+    // si ya tiene comentarios, los nuevos se SUMAN a los que están
+    post_(COM_URL, {rel: r, model: $('lb-model').value,
+                    sumar: slot(r).comments.length ? '1' : ''}).then(d => {
       trabajando('com', false);
       $('lb-com-st').textContent = d.ok ? '' : ' ' + d.error;
       if (!d.ok) return;
@@ -2627,59 +3696,175 @@ POST_LIGHTBOX = """
       c.className = 'chip inherited'; c.textContent = t; inh.appendChild(c);
     });
     const box = $('lb-own'), input = $('lb-tin');
-    box.querySelectorAll('.chip').forEach(c => c.remove());
-    ownTags().forEach(t => {
+    box.querySelectorAll('.chip, .ownmore').forEach(c => c.remove());
+    const own = ownTags();
+    // muchas etiquetas tapan el resto del panel: se muestran las primeras
+    // OWN_LIMIT y un "mostrar todas" para desplegar el resto
+    const visibles = ownExpanded ? own : own.slice(0, OWN_LIMIT);
+    visibles.forEach(t => {
       const c = document.createElement('span');
       c.className = 'chip';
       c.innerHTML = esc(t) + ' <span class="x">×</span>';
       c.querySelector('.x').onclick = () => saveOwn(ownTags().filter(x => x !== t));
       box.insertBefore(c, input);
     });
-    const sc = $('lb-sc');
-    sc.innerHTML = '';
-    (window.SHORTCUTS || []).forEach(t => {
-      const on = ownTags().includes(t);
+    if (own.length > OWN_LIMIT) {
       const b = document.createElement('button');
-      b.className = 'secondary sm' + (on ? ' on' : '');
-      b.textContent = (on ? '✓ ' : '+ ') + t;
-      b.onclick = () => saveOwn(on ? ownTags().filter(x => x !== t) : ownTags().concat([t]));
-      sc.appendChild(b);
-    });
+      b.className = 'ownmore';
+      b.textContent = ownExpanded ? '▲ mostrar menos'
+                                  : `▼ mostrar todas (${own.length})`;
+      b.onclick = () => { ownExpanded = !ownExpanded; renderTags(); };
+      box.insertBefore(b, input);
+    }
+    // resumen chico en el panel lateral (así ves cuántas hay sin abrir el modal)
+    const sum = $('lb-tag-summary');
+    if (sum) {
+      const heredadas = PERSON_TAGS.length, propias = own.length;
+      sum.textContent = (propias || heredadas)
+        ? `${propias} propia(s) · ${heredadas} heredada(s)` : 'sin etiquetas todavía';
+    }
   }
-  $('lb-tin').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const v = e.target.value.trim();
-      if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v]));
-      e.target.value = '';
-    } else if (e.key === 'Escape') { e.stopPropagation(); }
-  });
-  function toggleTags() {
-    const p = $('lb-tag-panel'), open = p.style.display === 'none';
-    p.style.display = open ? '' : 'none';
-    $('lb-tag-toggle').textContent = open ? '🏷 Etiquetar ▴' : '🏷 Etiquetar ▾';
+  // Enter/Escape los maneja tagAC entero (ver BASE_JS): un solo lugar, así no
+  // se duplica la etiqueta cuando hay una sugerencia resaltada.
+  tagAC($('lb-tin'), {commit: v => { if (!ownTags().includes(v)) saveOwn(ownTags().concat([v])); }});
+  function openTagModal() {
+    renderTags();                          // refresca aplicadas
+    $('tagm-photo').src = P[idx].url;      // la foto actual, para chequear contra ella
+    $('lb-tag-modal').style.display = 'flex';
   }
-  function suggestTags() {
+  function closeTagModal() { $('lb-tag-modal').style.display = 'none'; }
+  // agrega una sugerencia: un chip con "+ tag" (clic = agregar) y un ✕
+  // (clic = descartar). Descartada o agregada, la etiqueta queda en `sugeridas`,
+  // así el próximo "Sugerir" NO la vuelve a traer. nueva=true la marca en ámbar.
+  function addSugBtn(tag, nueva, acto) {
+    const chip = document.createElement('span');
+    chip.className = 'sugchip' + (nueva ? ' sug-nueva' : '') + (acto ? ' sug-acto' : '');
+    const add = document.createElement('button');
+    add.className = 'sugadd';
+    // acto=true: viene del clasificador dedicado de posiciones (anclado, más
+    // confiable que el VLM) -> 🎯. nueva=true: palabra rara del VLM -> ⚠.
+    add.textContent = (acto ? '🎯 ' : (nueva ? '⚠ ' : '+ ')) + tag;
+    add.title = acto ? 'Detectado por el clasificador de actos (más confiable que el VLM)'
+              : (nueva ? 'Palabra rara: fijate que no sea invento del modelo' : 'Agregar');
+    add.onclick = () => {
+      if (!ownTags().includes(tag)) saveOwn(ownTags().concat([tag]));
+      chip.remove();
+      actualizarSugCount();
+    };
+    const x = document.createElement('button');
+    x.className = 'sugx';
+    x.textContent = '✕';
+    x.title = 'Descartar (no volver a sugerirla)';
+    x.onclick = () => { chip.remove(); actualizarSugCount(); };  // queda en sugeridas
+    chip.appendChild(add); chip.appendChild(x);
+    $('lb-sugtags').appendChild(chip);
+  }
+  function actualizarSugCount() {
+    const n = $('lb-sugtags').querySelectorAll('.sugchip').length;
+    $('lb-sug-count').textContent = n ? `${n} sugerencia(s) · + agregar · ✕ descartar` : '';
+  }
+  // ¿la etiqueta es PARECIDA a alguna ya vista/agregada/descartada? Compara por
+  // palabras significativas (sin "de/en/la…", plural≈singular): si las de una son
+  // subconjunto de las de la otra, es la misma idea. Así "aretes plateado" tapa a
+  // "aretes plateados en las dos orejas": si descarté la primera, no quiero la otra.
+  const _STOP = new Set(['de','en','la','el','las','los','un','una','unos','unas',
+    'con','y','a','al','del','su','sus','se','lo','le','dos','tres','muy','esta','este']);
+  function _palabras(t) {
+    return t.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+      .split(/\\s+/).map(w => w.replace(/s$/, '')).filter(w => w && !_STOP.has(w));
+  }
+  function parecida(tag) {
+    const a = new Set(_palabras(tag));
+    if (!a.size) return false;
+    for (const s of [...sugeridas, ...ownTags()]) {
+      const b = new Set(_palabras(s));
+      if (!b.size) continue;
+      const [chico, grande] = a.size <= b.size ? [a, b] : [b, a];
+      let dentro = true;
+      for (const w of chico) if (!grande.has(w)) { dentro = false; break; }
+      if (dentro) return true;   // una es subconjunto de la otra -> misma idea
+    }
+    return false;
+  }
+  // UNA pasada de streaming: pide etiquetas (excluyendo lo ya visto), las APPENDEA
+  // a la lista en vivo, y devuelve cuántas NUEVAS trajo. El server sube la temp y
+  // le pide "escarbar" cuando `evitar` no viene vacío.
+  async function _unaPasada() {
     const r = rel();
-    trabajando('sug', true);
-    post_(SUG_URL, {rel: r, engine: 'blip'}).then(d => {
-      trabajando('sug', false);
-      $('lb-sug-st').textContent = d.ok ? '' : ' ' + d.error;
-      if (!d.ok || r !== rel()) return;
-      const box = $('lb-sugtags');
-      box.innerHTML = '';
-      d.tags.forEach(t => {
-        const b2 = document.createElement('button');
-        b2.className = 'secondary sm';
-        b2.textContent = '+ ' + t.tag + ' (' + Math.round(t.score * 100) + '%)';
-        b2.onclick = () => { if (!ownTags().includes(t.tag)) saveOwn(ownTags().concat([t.tag])); };
-        box.appendChild(b2);
-      });
-    }).catch(e => { trabajando('sug', false); $('lb-sug-st').textContent = ' ' + e; });
+    const evitar = [...new Set([...sugeridas, ...ownTags()])];
+    let nuevas = 0;
+    try {
+      // mando el modelo elegido en el modal (el server cae a tag_model() si no)
+      const modelo = ($('lb-tagmodel') || {}).value || '';
+      const resp = await fetch(SUG_STREAM_URL, {method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({rel: r, evitar: evitar.join(','), vlm_model: modelo})});
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (r !== rel() || sugStop) { reader.cancel(); break; }
+        buf += dec.decode(value, {stream: true});
+        let nl;
+        while ((nl = buf.indexOf('\\n')) >= 0) {
+          const linea = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!linea.trim()) continue;
+          let d; try { d = JSON.parse(linea); } catch (e) { continue; }
+          if (d.error) { $('lb-sug-st').textContent = ' ' + d.error; continue; }
+          const tag = d.tag;
+          // el acto (🎯) nunca se filtra por parecido: es anclado y va sí o sí
+          if (!tag || sugeridas.has(tag) || ownTags().includes(tag)) continue;
+          if (!d.acto && parecida(tag)) { sugeridas.add(tag); continue; }  // parecida: la recuerdo pero no la muestro
+          $('lb-sug-sk').style.display = 'none';
+          sugeridas.add(tag);
+          nuevas++;
+          addSugBtn(tag, d.nueva, d.acto);
+          actualizarSugCount();
+        }
+      }
+    } catch (e) {
+      $('lb-sug-st').textContent = ' ' + e;
+    }
+    return nuevas;
+  }
+
+  // AUTO-CONTINUO: apretás una vez y sigue pidiendo tanda tras tanda EN VIVO,
+  // acumulando, para que leas lo que va cayendo sin apretar "más". Para cuando:
+  // apretás Parar (segundo click), 2 rondas seguidas sin nada nuevo, o el tope.
+  // El mismo botón hace de "Sugerir" y de "Parar".
+  const SUG_MAX_RONDAS = 5;   // pocas: más allá, el modelo empieza a inventar
+  async function suggestTags() {
+    if (!window.VLM_MODELS.length) {
+      $('lb-sug-st').textContent = ' Ollama no está corriendo.'; return;
+    }
+    if (sugCorriendo) { sugStop = true; return; }   // segundo click = Parar
+    const startRel = rel();
+    sugCorriendo = true; sugStop = false;
+    sugeridas = new Set(); $('lb-sugtags').innerHTML = ''; actualizarSugCount();  // fresco
+    $('lb-sug-sk').style.display = '';
+    $('lb-sug').textContent = '⏹ Parar';
+    $('lb-sug').classList.add('trabajando');
+    let dry = 0, rondas = 0;
+    while (!sugStop && rel() === startRel && rondas < SUG_MAX_RONDAS && dry < 2) {
+      const n = await _unaPasada();
+      rondas++;
+      dry = n === 0 ? dry + 1 : 0;
+      $('lb-sug-st').textContent = ` ${sugeridas.size} etiquetas · buscando más…`;
+    }
+    $('lb-sug-sk').style.display = 'none';
+    sugCorriendo = false;
+    if (rel() === startRel) {                       // no cambiaste de foto
+      $('lb-sug').textContent = '🔮 Sugerir con IA';
+      $('lb-sug').classList.remove('trabajando');
+      $('lb-sug-st').textContent = sugeridas.size ? ` ${sugeridas.size} etiquetas`
+                                                  : ' no encontró nada';
+    }
   }
 
   Object.assign(window, {genCaption, editCap, genComments, clearComments,
-                         toggleTags, suggestTags});
+                         openTagModal, closeTagModal, suggestTags});
 
   lb.addEventListener('wheel', e => {
     if (!e.target.closest('.stage')) return;    // la columna del post scrollea normal
@@ -2707,6 +3892,12 @@ POST_LIGHTBOX = """
   });
   document.addEventListener('keydown', e => {
     if (lb.style.display !== 'block') return;
+    if (e.key === 'Escape' && $('lb-people-modal').style.display !== 'none') {
+      closePeopleModal(); return;
+    }
+    if (e.key === 'Escape' && $('lb-tag-modal').style.display !== 'none') {
+      closeTagModal(); return;
+    }
     // escribiendo una etiqueta o el pie: las flechas son para el texto
     const t = e.target.tagName;
     if (t === 'INPUT' || t === 'TEXTAREA') { if (e.key !== 'Escape') return; }
@@ -2803,11 +3994,17 @@ def person_page(name):
     normal = person_photos(known_dir, name) if known_dir else []
     nsfw_list = person_photos(known_dir, name, only_nsfw=True) if known_dir else []
     show_nsfw = request.args.get("nsfw") == "1"
-    # lista mostrada: normales, y si el toggle está activo también las NSFW.
-    # Cada foto lleva sus etiquetas efectivas (propias + heredadas) para filtrar.
-    display = [{"rel": r, "nsfw": False, "tags": tags_mod.effective_photo(name, r)} for r in normal]
+    # El toggle es EXCLUYENTE: normal = solo las normales; "Solo NSFW" = solo las
+    # NSFW (no las mezcla). Cada foto lleva sus etiquetas efectivas para filtrar.
+    todos_posts = posts_mod.get_many(name, normal + nsfw_list)
+    def _fav(r):
+        return todos_posts.get(r, {}).get("fav", False)
     if show_nsfw:
-        display += [{"rel": r, "nsfw": True, "tags": tags_mod.effective_photo(name, r)} for r in nsfw_list]
+        display = [{"rel": r, "nsfw": True, "tags": tags_mod.effective_photo(name, r),
+                    "fav": _fav(r)} for r in nsfw_list]
+    else:
+        display = [{"rel": r, "nsfw": False, "tags": tags_mod.effective_photo(name, r),
+                    "fav": _fav(r)} for r in normal]
     photos = normal   # para los avisos "no hay imágenes / configurá carpeta"
 
     # El filtro por etiquetas es del SERVIDOR, no del navegador: si filtrara la
@@ -2818,6 +4015,16 @@ def person_page(name):
     if buscadas:
         display = [f for f in display
                    if all(any(t in _norm_search(x) for x in f["tags"]) for t in buscadas)]
+    # filtro por co-aparición: solo las fotos donde TAMBIÉN está esta persona
+    filter_con = request.args.get("con", "")
+    if filter_con:
+        con_posts = posts_mod.get_many(name, [f["rel"] for f in display])
+        display = [f for f in display
+                   if filter_con in con_posts[f["rel"]]["people"]]
+    # filtro por favoritos (⭐)
+    solo_fav = request.args.get("fav") == "1"
+    if solo_fav:
+        display = [f for f in display if f["fav"]]
     n_filtradas = len(display)
 
     # Paginado: sin esto, 1500 fotos son 1500 <select> con TODA la gente adentro
@@ -2863,20 +4070,30 @@ def person_page(name):
         # el pie y los comentarios ya guardados de cada foto: el modal los
         # muestra al instante, sin esperar al modelo
         posts=posts_mod.get_many(name, [f["rel"] for f in display]),
+        # favoritos de la persona (para el carrusel de la card)
+        favs=[r for r in normal + nsfw_list if todos_posts.get(r, {}).get("fav")],
+        # para el lote: cuántas le faltan de TODAS las suyas (no de esta página)
+        n_sin_post=sum(1 for p in posts_mod.get_many(
+            name, normal + nsfw_list).values() if not p["caption"]),
+        display_total=len(normal) + len(nsfw_list),
+        lote=POSTS_STATE,
         # si Ollama no está corriendo, la lista viene vacía y el modal lo avisa
         vlm_models=vlm.list_models(),
-        shortcuts=tags_mod.get_shortcuts(),
+        tag_modelo=vlm.tag_model(),        # el que usa el sugeridor por defecto
+        vlm_crudos=vlm.modelos_descensurados(),  # los sin censura (se marcan 🔞)
         people=people,       # para el desplegable "mover a otra persona"
         person_tags=tags_mod.get_person(name),
         photo_tags=photo_tags,
         all_tags=tags_mod.all_tags(),
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
+        filter_con=filter_con,         # filtro por co-aparición (👥 también aparece X)
+        solo_fav=solo_fav,             # filtro por favoritos (⭐)
         photos=photos,
         display=display,
         # paginado
         page=page, n_pages=n_pages, per=per, per_options=PER_OPTIONS,
         n_filtradas=n_filtradas,
-        n_todas=len(normal) + (len(nsfw_list) if show_nsfw else 0),
+        n_todas=len(nsfw_list) if show_nsfw else len(normal),
         desde=(page - 1) * per + 1 if display else 0,
         hasta=(page - 1) * per + len(display),
         nsfw_count=len(nsfw_list),
@@ -3001,6 +4218,31 @@ def person_move_photo(name):
                                 f"había aprendido de esa foto, corré el corrector para limpiarla.)"))
 
 
+@app.route("/post/<name>/nsfw", methods=["POST"])
+def post_mark_nsfw(name):
+    """Marca UNA foto como NSFW: la mueve a <persona>/_nsfw/. Así corre el
+    clasificador de acto (🎯) sin tener que pasar por el escáner de carpeta."""
+    library = get_library()
+    rel = request.form.get("rel", "")
+    if not library or not rel:
+        return {"ok": False, "error": "Falta la foto."}
+    if NSFW_DIR_NAME in Path(rel).parts:
+        return {"ok": False, "error": "Ya está marcada como NSFW."}
+    moved, errors = move_to_nsfw(Path(library) / name, [rel])
+    if not moved:
+        return {"ok": False, "error": errors[0][1] if errors else "No se pudo mover."}
+    # las etiquetas y el pie/comentarios acompañan a la foto a su nueva ruta
+    new_rel = f"{NSFW_DIR_NAME}/{rel.replace('/', '_')}"
+    try:
+        tags_mod.move_photo_tags(name, rel, name, new_rel)
+        posts_mod.move_photo(name, rel, new_rel)
+    except Exception:
+        pass
+    # el front actualiza en el lugar (sin recargar): necesita la ruta y url nuevas
+    return {"ok": True, "new_rel": new_rel,
+            "new_url": url_for("person_photo", name=name, rel=new_rel)}
+
+
 def _norm_search(s):
     """Para buscar etiquetas: sin mayúsculas y sin tildes, así "penetracion"
     encuentra "penetración". Igual que normt() del navegador."""
@@ -3013,6 +4255,206 @@ def _photo_path(name, rel):
     library = get_library()
     p = Path(library) / name / rel if library else None
     return p if p and p.is_file() else None
+
+
+def _posts_worker(name, rels, que, cfg):
+    """Escribe el pie y/o los comentarios de muchas fotos, de a una.
+
+    De a UNA a propósito: Ollama corre en el mismo CPU, así que mandarle dos
+    juntas no acelera nada, solo hace que tarden las dos.
+
+    Saltea las que ya tienen lo pedido, así se puede cortar y retomar sin perder
+    lo hecho ni pagarlo de nuevo."""
+    library = get_library(cfg)
+    modelo = cfg.get("post_model") or None
+    crudeza = cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT)
+    dim = bool(cfg.get("diminutivos"))
+    for i, rel in enumerate(rels, 1):
+        if POSTS_STATE["stop"]:
+            break
+        POSTS_STATE.update(current=i, photo=rel)
+        path = Path(library) / name / rel
+        if not path.is_file():
+            POSTS_STATE["salteadas"] += 1
+            continue
+        ya = posts_mod.get(name, rel)
+        falta_pie = que in ("pie", "ambos") and not ya["caption"]
+        falta_com = que in ("comentarios", "ambos") and not ya["comments"]
+        if not falta_pie and not falta_com:
+            POSTS_STATE["salteadas"] += 1
+            continue
+        t0 = time.time()
+        try:
+            # el pie primero: si van los dos, los comentarios lo leen y le contestan
+            if falta_pie:
+                pie = posts_mod.generate_caption(name, rel, str(path), model=modelo,
+                                                 crudeness=crudeza, diminutivos=dim)
+                # los últimos pies, en vivo: para juzgar la calidad SIN esperar al
+                # final ni recargar la galería (era la queja: "espero 2 hs para
+                # saber si viene mal")
+                POSTS_STATE["ultimos"] = ([f"{rel}: {pie}"] + POSTS_STATE["ultimos"])[:5]
+            if falta_com:
+                coms = posts_mod.generate_comments(
+                    name, rel, str(path), model=modelo, crudeness=crudeza,
+                    diminutivos=dim, tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
+                    users=cfg.get("comment_users") or None)
+                if not falta_pie and coms:      # solo comentarios: mostrar uno
+                    POSTS_STATE["ultimos"] = ([f"{rel}: 💬 {coms[0]['text']}"]
+                                              + POSTS_STATE["ultimos"])[:5]
+            POSTS_STATE["hechas"] += 1
+            # los tiempos reales de las últimas 20: con eso se estima lo que falta
+            POSTS_STATE["segundos"] = (POSTS_STATE["segundos"] + [time.time() - t0])[-20:]
+        except Exception as e:
+            # una foto que falla no puede cortar una corrida de toda la noche
+            POSTS_STATE["fallaron"] += 1
+            POSTS_STATE["error"] = f"{rel}: {e}"
+    POSTS_STATE["status"] = "stopped" if POSTS_STATE["stop"] else "done"
+
+
+def _posts_eta():
+    """Cuánto falta, en segundos, según lo que tardaron las últimas fotos.
+
+    None si todavía no hay ninguna medida (los primeros segundos)."""
+    s = POSTS_STATE
+    if not s["segundos"]:
+        return None
+    promedio = sum(s["segundos"]) / len(s["segundos"])
+    return int(promedio * max(0, s["total"] - s["current"]))
+
+
+def _humano(segs):
+    """"37 h 30 min", "2 min": el número crudo en segundos no le dice nada a nadie."""
+    if segs is None:
+        return "calculando…"
+    if segs < 90:
+        return f"{int(segs)} s"
+    if segs < 5400:
+        return f"{round(segs / 60)} min"
+    h, m = divmod(int(segs / 60), 60)
+    return f"{h} h {m} min" if m else f"{h} h"
+
+
+@app.route("/post/<name>/lote", methods=["POST"])
+def post_lote(name):
+    """Arranca el lote: pies y/o comentarios de todas las fotos de la persona."""
+    if POSTS_STATE["status"] == "running":
+        return redirect(url_for("person_page", name=name, msg="Ya hay un lote corriendo."))
+    library = get_library()
+    if not library:
+        return redirect(url_for("person_page", name=name))
+    que = request.form.get("que", "pie")
+    rels = person_photos(library, name) + person_photos(library, name, only_nsfw=True)
+    if not rels:
+        return redirect(url_for("person_page", name=name, msg="No tiene fotos."))
+    POSTS_STATE.update(status="running", current=0, total=len(rels), photo="",
+                       error="", name=name, que=que, hechas=0, salteadas=0,
+                       fallaron=0, segundos=[], empezo=time.time(), stop=False,
+                       ultimos=[])
+    threading.Thread(target=_posts_worker, args=(name, rels, que, load_config()),
+                     daemon=True).start()
+    return redirect(url_for("person_page", name=name))
+
+
+@app.route("/post/lote/stop", methods=["POST"])
+def post_lote_stop():
+    """Corta el lote. Lo hecho hasta acá queda guardado."""
+    POSTS_STATE["stop"] = True
+    return {"ok": True}
+
+
+@app.route("/post/lote/estado")
+def post_lote_estado():
+    """Para que la página se actualice sola sin recargar."""
+    s = POSTS_STATE
+    return {"status": s["status"], "current": s["current"], "total": s["total"],
+            "photo": s["photo"], "name": s["name"], "hechas": s["hechas"],
+            "salteadas": s["salteadas"], "fallaron": s["fallaron"],
+            "error": s["error"], "falta": _humano(_posts_eta()),
+            "lleva": _humano(time.time() - s["empezo"] if s["empezo"] else 0),
+            "ultimos": s["ultimos"]}
+
+
+def _tags_worker(name, rels, cfg):
+    """Le pone etiquetas a muchas fotos, de a una: mira cada foto con el modelo
+    de visión y anota lo que ve (ver vlm.suggest_tags — sin vocabulario fijo).
+
+    Saltea las que YA tienen etiquetas propias (no las heredadas de la persona,
+    esas no cuentan), así se puede cortar y retomar sin repetir laburo. Suma a
+    lo que hubiera, nunca reemplaza."""
+    library = get_library(cfg)
+    # el lote de etiquetado usa el mismo modelo "que mira bien" que el sugeridor
+    modelo = vlm.tag_model()
+    # salvaguarda: si la persona está etiquetada como menor, el sugeridor NO
+    # describe cuerpo ni nada sexual (igual que el pie y los comentarios)
+    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    for i, rel in enumerate(rels, 1):
+        if TAGS_STATE["stop"]:
+            break
+        TAGS_STATE.update(current=i, photo=rel)
+        path = Path(library) / name / rel
+        if not path.is_file():
+            TAGS_STATE["salteadas"] += 1
+            continue
+        propias = tags_mod.get_photo(name, rel)
+        if propias:
+            TAGS_STATE["salteadas"] += 1
+            continue
+        try:
+            nuevas = vlm.suggest_tags(str(path), model=modelo,
+                                      quien=name, crudo=not menor)
+            if nuevas:
+                tags_mod.set_photo(name, rel, propias + nuevas)
+                TAGS_STATE["ultimos"] = ([f"{rel}: {', '.join(nuevas)}"] + TAGS_STATE["ultimos"])[:5]
+            TAGS_STATE["hechas"] += 1
+        except Exception as e:
+            # una foto que falla no puede cortar el lote entero
+            TAGS_STATE["fallaron"] += 1
+            TAGS_STATE["error"] = f"{rel}: {e}"
+    TAGS_STATE["status"] = "stopped" if TAGS_STATE["stop"] else "done"
+
+
+@app.route("/tags/<name>/lote", methods=["POST"])
+def tags_lote(name):
+    """Arranca el etiquetador automático: las fotos seleccionadas, o si no
+    seleccionaste ninguna, TODAS las que no tienen etiquetas propias."""
+    if TAGS_STATE["status"] == "running":
+        return {"ok": False, "error": "Ya hay un etiquetado corriendo."}
+    library = get_library()
+    if not library:
+        return {"ok": False, "error": "Falta configurar la Biblioteca."}
+    elegidas = [r for r in request.form.get("rels", "").split("\n") if r.strip()]
+    if elegidas:
+        rels = elegidas
+    else:
+        todas = person_photos(library, name) + person_photos(library, name, only_nsfw=True)
+        rels = [r for r in todas if not tags_mod.get_photo(name, r)]
+    if not rels:
+        return {"ok": False, "error": "No hay fotos para etiquetar."}
+    TAGS_STATE.update(status="running", current=0, total=len(rels), photo="",
+                      error="", name=name, hechas=0, salteadas=0, fallaron=0,
+                      empezo=time.time(), stop=False, ultimos=[])
+    threading.Thread(target=_tags_worker, args=(name, rels, load_config()),
+                     daemon=True).start()
+    return {"ok": True}
+
+
+@app.route("/tags/lote/stop", methods=["POST"])
+def tags_lote_stop():
+    """Corta el etiquetado. Lo hecho hasta acá queda guardado."""
+    TAGS_STATE["stop"] = True
+    return {"ok": True}
+
+
+@app.route("/tags/lote/estado")
+def tags_lote_estado():
+    """Para que la página se actualice sola sin recargar."""
+    s = TAGS_STATE
+    return {"status": s["status"], "current": s["current"], "total": s["total"],
+            "photo": s["photo"], "name": s["name"], "hechas": s["hechas"],
+            "salteadas": s["salteadas"], "fallaron": s["fallaron"],
+            "error": s["error"],
+            "lleva": _humano(time.time() - s["empezo"] if s["empezo"] else 0),
+            "ultimos": s["ultimos"]}
 
 
 @app.route("/post/<name>/caption", methods=["POST"])
@@ -3029,10 +4471,33 @@ def post_caption(name):
     try:
         text = posts_mod.generate_caption(
             name, rel, str(path), model=request.form.get("model") or None,
-            crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT))
+            crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
+            diminutivos=bool(cfg.get("diminutivos")))
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "caption": text}
+
+
+@app.route("/post/<name>/fav", methods=["POST"])
+def post_fav(name):
+    """Marca/desmarca la foto como favorita (⭐)."""
+    rel = request.form.get("rel", "")
+    if not rel:
+        return {"ok": False}
+    return {"ok": True, "fav": posts_mod.set_fav(name, rel,
+                                                 request.form.get("fav") == "1")}
+
+
+@app.route("/post/<name>/people", methods=["POST"])
+def post_people(name):
+    """Guarda quiénes MÁS aparecen en la foto (etiquetado a mano con @).
+
+    Se validan contra la base, así no se cuela un nombre que no existe."""
+    rel = request.form.get("rel", "")
+    if not rel:
+        return {"ok": False}
+    gente = [p for p in request.form.get("people", "").split(",") if p.strip()]
+    return {"ok": True, "people": posts_mod.set_people(name, rel, gente)}
 
 
 @app.route("/post/<name>/caption/edit", methods=["POST"])
@@ -3061,7 +4526,11 @@ def post_comments(name):
             tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
             users=cfg.get("comment_users") or None,
             crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
-            model=request.form.get("model") or None)
+            model=request.form.get("model") or None,
+            diminutivos=bool(cfg.get("diminutivos")),
+            # "más comentarios" SUMA a los que ya están, como una publicación de
+            # verdad; el 🗑 es el que borra
+            sumar=request.form.get("sumar") == "1")
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "comments": got}
@@ -3074,6 +4543,42 @@ def post_comments_clear(name):
     if rel:
         posts_mod.clear_comments(name, rel)
     return {"ok": True}
+
+
+@app.route("/person/<name>/export")
+def person_export(name):
+    """Exporta TODO lo de una persona en un .zip: sus etiquetas, la voz, las
+    fechas, la portada y los posts (pies + comentarios + quién aparece).
+
+    NO mete las fotos originales: esas ya están en tu Biblioteca y pesan. Esto es
+    el "perfil" —lo que el programa aprendió y vos cargaste— para respaldar o
+    llevarte a otra máquina."""
+    if name not in load_known():
+        abort(404)
+    library = get_library()
+    fotos = (person_photos(library, name) +
+             person_photos(library, name, only_nsfw=True)) if library else []
+    perfil = {
+        "nombre": name,
+        "etiquetas_persona": tags_mod.get_person(name),
+        "etiquetas_fotos": {r: tags_mod.get_photo(name, r)
+                            for r in fotos if tags_mod.get_photo(name, r)},
+        "voz": person_meta.get_voice(name),
+        "meta": person_meta.get(name),
+        "posts": posts_mod.get_many(name, fotos),
+        "exportado": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"{safe_name(name)}/perfil.json",
+                   json.dumps(perfil, ensure_ascii=False, indent=2))
+        thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+        if thumb.is_file():
+            z.write(thumb, f"{safe_name(name)}/portada.jpg")
+    buf.seek(0)
+    return Response(buf.getvalue(), mimetype="application/zip",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{safe_name(name)}_perfil.zip"'})
 
 
 @app.route("/person/<name>/voice", methods=["POST"])
@@ -3295,10 +4800,15 @@ def tags_suggest(name):
     vocab = sorted(set(tags_mod.all_tags()) | set(tags_mod.get_shortcuts()))
     # motor: "blip" (rápido, incluido) o "vlm" (modelo de visión en Ollama)
     engine = request.form.get("engine", "blip")
+    # salvaguarda: si la persona está etiquetada como menor, el sugeridor NO
+    # describe cuerpo ni nada sexual (igual que el pie y los comentarios)
+    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    # "sugerir más": las que ya salieron, para que el modelo tire otras
+    evitar = [t for t in request.form.get("evitar", "").split(",") if t.strip()]
     try:
         r = interrogator.interrogate(str(path), vocab, engine=engine,
                                      vlm_model=request.form.get("vlm_model") or None,
-                                     person=name)
+                                     person=name, crudo=not menor, evitar=evitar)
     except Exception as e:
         return {"ok": False, "error": f"No se pudo analizar: {e}"}
     # la frase automática se registra y, si vos la reescribiste, se usa la tuya.
@@ -3311,6 +4821,670 @@ def tags_suggest(name):
             "auto": auto,                          # la automática (clave para editarla)
             "details": [{"label": l, "value": v} for l, v in r.get("details", [])],
             "tags": [{"tag": t, "score": round(s, 3)} for t, s in r["tags"]]}
+
+
+@app.route("/tags/suggest_stream/<name>", methods=["POST"])
+def tags_suggest_stream(name):
+    """Igual que el sugeridor VLM pero en STREAMING: manda una etiqueta por línea
+    (NDJSON) apenas el modelo la larga, para que aparezcan en vivo en vez de
+    esperar toda la respuesta. La mirada del modelo se paga una sola vez."""
+    library = get_library()
+    rel = request.form.get("rel", "")
+    path = Path(library) / name / rel if library else None
+    if not path or not path.is_file():
+        return {"ok": False, "error": "Esa foto ya no está."}, 404
+    # misma salvaguarda de menores que el resto (versión sana si es menor)
+    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    es_nsfw = NSFW_DIR_NAME in Path(rel).parts
+    evitar = [t for t in request.form.get("evitar", "").split(",") if t.strip()]
+    # el etiquetado usa el modelo que MEJOR mira (qwen2.5vl si está); el pie y los
+    # comentarios siguen con el del desplegable. Si el form manda uno, gana.
+    model = request.form.get("vlm_model") or vlm.tag_model()
+    # "diccionario" de confianza para marcar (no borrar) palabras raras: lo que
+    # el usuario YA usó en toda su base + la jerga cruda semilla. Una etiqueta de
+    # una sola palabra que no está en ninguno = "nueva/dudosa" (posible invento).
+    conocidas = {t.lower() for t in tags_mod.all_tags()} | vlm.VOCAB_CRUDO
+
+    def gen():
+        ev_local = list(evitar)
+        # ACTO: clasificador dedicado (porntech/sex-position). Va PRIMERO y anclado.
+        # Solo en fotos NSFW y NUNCA en menores. Nunca debe romper el sugeridor.
+        if es_nsfw and not menor and sexpos.disponible():
+            try:
+                acto = sexpos.clasificar(str(path))
+                if acto and acto[0].lower() not in {e.strip().lower() for e in ev_local}:
+                    ev_local.append(acto[0])     # que el VLM no lo repita
+                    yield json.dumps({"tag": acto[0], "nueva": False,
+                                      "acto": True}) + "\n"
+            except Exception:
+                pass
+        try:
+            for tag in vlm.suggest_tags_stream(str(path), model=model, quien=name,
+                                               crudo=not menor, evitar=ev_local):
+                nueva = len(tag.split()) == 1 and tag.lower() not in conocidas
+                yield json.dumps({"tag": tag, "nueva": nueva}) + "\n"
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
+
+
+PROBADOR_TEMPLATE = """
+<style>
+  .pbthumbs { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.5rem;
+    max-height:14rem; overflow:auto; }
+  .pbthumb-wrap { position:relative; }
+  .pbthumb { width:74px; height:74px; border-radius:8px; object-fit:cover; cursor:pointer;
+    border:2px solid transparent; }
+  .pbthumb:hover { border-color:var(--acc); }
+  .pbthumb.sel { border-color:var(--acc); }
+  /* previa flotante en hover (fuera del contenedor con scroll, no se recorta) */
+  .pbhover { position:fixed; z-index:60; width:240px; height:240px; object-fit:contain;
+    border:2px solid var(--acc); border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.6);
+    background:#000; pointer-events:none; display:none; }
+  .pbthumb-nsfw { position:absolute; top:2px; left:2px; font-size:.75rem;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.7)); pointer-events:none; }
+  .pbthumb.marked { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc) inset; }
+  .pbthumb.viendo { outline:3px solid var(--acc2); outline-offset:1px; }
+  .pbthumb-wrap.oculto { display:none; }              /* ocultar ya etiquetadas */
+  .pbthumb-done { position:absolute; top:2px; right:2px; font-size:.7rem; color:#fff;
+    background:#2e9c5b; border-radius:50%; width:1.05rem; height:1.05rem; line-height:1.05rem;
+    text-align:center; pointer-events:none; }
+  .pbthumb-ready { position:absolute; bottom:3px; right:3px; width:.55rem; height:.55rem;
+    border-radius:50%; background:#4fd18b; box-shadow:0 0 0 1px rgba(0,0,0,.5); pointer-events:none; }
+  .linklike2 { color:var(--acc2); cursor:pointer; text-decoration:underline; }
+  #pb-preview { cursor:pointer; }
+  .pbrow { display:grid; grid-template-columns:1fr 1rem minmax(0,1fr) 1.4rem;
+    align-items:center; gap:.5rem; margin:.3rem 0; }
+  .pbhead { display:grid; grid-template-columns:1fr 1rem minmax(0,1fr) 1.4rem;
+    gap:.5rem; margin:.2rem 0 .4rem; font-size:.78rem; color:var(--mut);
+    text-transform:uppercase; letter-spacing:.03em; }
+  .pborig { color:var(--mut); font-size:.92rem; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .pbarrow { color:var(--mut); text-align:center; }
+  .pbrow input { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
+    padding:.4rem .6rem; color:var(--tx); font-size:.95rem; min-width:0; }
+  .pbrow input.edit { border-color:var(--amb); }
+  .pbrow .pbx { background:none; border:0; color:var(--mut); cursor:pointer; font-size:1rem; }
+  .pbrow .pbx:hover { color:var(--red); }
+  .pbrow.dropped .pborig { text-decoration:line-through; opacity:.5; }
+  .pbrow.acto .pborig { color:#4fd18b; }
+  .pbrow.acto input { border-color:#3a9d63; }
+  /* revisión: lista a la izquierda, foto GRANDE pegada a la derecha */
+  .pb-review { display:grid; grid-template-columns:1fr minmax(260px, 40%); gap:1rem; align-items:start; }
+  .pb-review-foto { position:sticky; top:1rem; }
+  .pb-review-foto img { width:100%; max-height:78vh; object-fit:contain; border-radius:10px;
+    background:#000; cursor:pointer; display:block; }
+  #pb-keys { margin-top:.55rem; opacity:.7; }
+  #pb-keys kbd { background:var(--bg); border:1px solid var(--bd); border-radius:4px;
+    padding:0 .35rem; font-size:.8em; }
+  @media (max-width:820px) { .pb-review { grid-template-columns:1fr; } }
+</style>
+<h1>🧪 Probador de etiquetas</h1>
+<p class="hint">Elegí una o <b>varias</b> fotos y etiquetalas de un saque: la IA va
+resolviendo de a una y, mientras revisás la primera, ya va preparando la siguiente.
+Corregís lo que está mal (ej: <b>rusa → paja rusa</b>) o descartás lo inventado (✕),
+guardás y pasás a la que sigue. Las correcciones quedan como diccionario para TODA la app.</p>
+
+<div class="panel">
+  <div class="row">
+    <label>Persona:</label>
+    <select id="pb-persona" onchange="pbPersona()">
+      <option value="">— elegí una persona —</option>
+      {% for p in people %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+    <span class="meta">o</span>
+    <label class="linklike2">subir un archivo<input type="file" id="pb-file" accept="image/*" hidden></label>
+  </div>
+  <div id="pb-thumbs" class="pbthumbs"></div>
+  <div class="row" id="pb-selbar" style="display:none; margin-top:.4rem">
+    <span class="meta"><b id="pb-seln">0</b> seleccionada(s)</span>
+    <button type="button" class="secondary" onclick="pbSelTodas()">todas</button>
+    <button type="button" class="secondary" onclick="pbSelNinguna()">ninguna</button>
+    <label class="meta" style="cursor:pointer"><input type="checkbox" id="pb-hide-done" onchange="pbAplicarOcultar()"> 🙈 ocultar ya etiquetadas (<b id="pb-done-n">0</b>✓)</label>
+    <span class="meta">· Shift-clic = rango · Ctrl-clic = de a una</span>
+  </div>
+  <img id="pb-hover" class="pbhover" alt="">
+  <img id="pb-preview" onclick="pbAbrirFull()" title="Clic para abrir la foto entera en otra pestaña"
+       style="display:none; max-width:240px; border-radius:8px; margin-top:.6rem">
+  <div class="row" style="margin-top:.6rem">
+    <label>Modelo:</label>
+    <select id="pb-model">
+      {% for m in vlm_models %}<option value="{{ m }}" {% if m == tag_modelo %}selected{% endif %}>{% if m in vlm_crudos %}🔞 {% else %}👁 {% endif %}{{ m }}</option>{% endfor %}
+    </select>
+    <label style="font-weight:400"><input type="checkbox" id="pb-crudo" checked> crudo (NSFW)</label>
+  </div>
+  <div class="row" style="margin-top:.6rem">
+    <button class="primary" id="pb-go" onclick="pbGo()" disabled>🔮 Etiquetar</button>
+    <button class="secondary" id="pb-nsfw" onclick="pbNsfw()" disabled title="Mover esta foto a _nsfw">🔞 Marcar NSFW</button>
+    <span class="meta" id="pb-st"></span>
+  </div>
+  <progress id="pb-prog" style="display:none; width:100%; margin-top:.5rem"></progress>
+</div>
+
+<div class="panel" id="pb-lista-panel" style="display:none">
+  <div class="pb-review">
+    <div class="pb-review-tags">
+      <b>Etiquetas — comparás y corregís</b>
+      <p class="meta">Izquierda = lo que <b>vio la IA</b> (no se toca) · derecha = <b>nuestra
+      interpretación</b> (editala si está mal; queda como conversión para siempre) · ✕ descarta.</p>
+      <div id="pb-empty" style="display:none; padding:.6rem .8rem; border:1px solid var(--amb);
+           border-radius:8px; background:rgba(200,150,40,.08); margin:.4rem 0">
+        <b id="pb-empty-msg">⚠ La IA no devolvió etiquetas para esta foto.</b>
+        <p class="meta" style="margin:.2rem 0 .5rem">Puede ser la foto (borrosa, sin nada que
+          describir) o que el modelo se colgó en esta. Probá de nuevo, o saltala.</p>
+        <button class="secondary" onclick="pbReintentar()">↻ Reintentar esta foto</button>
+      </div>
+      <div id="pb-listwrap">
+        <div class="pbhead"><span>👁 vio la IA</span><span></span><span>✏️ interpretación</span><span></span></div>
+        <div id="pb-lista"></div>
+      </div>
+      <div class="row" style="margin-top:.6rem">
+        <button class="primary" id="pb-next" onclick="pbGuardarSiguiente()">💾 Guardar y siguiente ▶</button>
+        <button class="secondary" id="pb-skip" onclick="pbSaltar()" title="Sin guardar, pasa a la próxima" style="display:none">⏭ Saltar</button>
+        <span class="meta" id="pb-qcount"></span>
+        <span class="meta" id="pb-save-st"></span>
+      </div>
+      <p class="meta" id="pb-keys"><kbd>Enter</kbd> guardar y siguiente · <kbd>S</kbd> saltar ·
+        <kbd>R</kbd> reintentar · <kbd>←</kbd><kbd>→</kbd> navegar</p>
+    </div>
+    <div class="pb-review-foto">
+      <img id="pb-bigphoto" onclick="pbAbrirFull()" title="Clic para abrir la foto entera en otra pestaña">
+    </div>
+  </div>
+</div>
+
+<script>
+const pbg = id => document.getElementById(id);
+let pbActual = null;      // foto en foco {tipo:'galeria'|'upload', name, rel, url, nsfw, file}
+let pbFotos = [];         // [{name, rel, url, nsfw, thumb, el}] de la persona actual
+let pbSel = new Set();    // índices seleccionados (para el lote)
+let pbAnchor = null;      // último clic (para el rango con Shift)
+let pbModo = 'galeria';   // 'galeria' | 'upload'
+
+function pbPersona() {
+  const name = pbg('pb-persona').value;
+  const box = pbg('pb-thumbs'); box.innerHTML = '';
+  pbFotos = []; pbSel.clear(); pbAnchor = null; pbModo = 'galeria';
+  pbFinBatch();
+  if (!name) { pbSelbar(); return; }
+  fetch('/probador/fotos/' + encodeURIComponent(name)).then(r => r.json()).then(d => {
+    let ndone = 0;
+    (d.fotos || []).forEach((f, i) => {
+      const w = document.createElement('span'); w.className = 'pbthumb-wrap';
+      const im = document.createElement('img'); im.className = 'pbthumb'; im.src = f.thumb; im.title = f.rel;
+      pbFotos.push({name: name, rel: f.rel, url: f.url, nsfw: f.nsfw, thumb: f.thumb, el: im, wrap: w, tagged: !!f.tagged});
+      im.onclick = (e) => pbClickThumb(e, i);
+      im.onmouseenter = () => pbHoverShow(im, f.url);
+      im.onmouseleave = pbHoverHide;
+      w.appendChild(im);
+      if (f.nsfw) { const b = document.createElement('span'); b.className = 'pbthumb-nsfw'; b.textContent = '🔞'; w.appendChild(b); }
+      if (f.tagged) { ndone++; const t = document.createElement('span'); t.className = 'pbthumb-done'; t.textContent = '✓'; t.title = 'ya tiene etiquetas'; w.appendChild(t); }
+      box.appendChild(w);
+    });
+    pbg('pb-done-n').textContent = ndone;
+    pbAplicarOcultar();
+    pbSelbar();
+  });
+}
+function pbFotoDe(rel) { return pbFotos.find(f => f.rel === rel); }
+function pbAplicarOcultar() {          // 🙈 ocultar las que ya tienen etiquetas
+  const ocultar = pbg('pb-hide-done').checked;
+  pbFotos.forEach(f => f.wrap.classList.toggle('oculto', ocultar && f.tagged));
+}
+function pbMarcarEtiquetada(foto) {    // ✓ + saca de la vista si "ocultar" está activo
+  if (!foto || foto.tagged) return;
+  foto.tagged = true;
+  const rd = foto.wrap.querySelector('.pbthumb-ready'); if (rd) rd.remove();
+  if (!foto.wrap.querySelector('.pbthumb-done')) {
+    const t = document.createElement('span'); t.className = 'pbthumb-done'; t.textContent = '✓';
+    t.title = 'ya tiene etiquetas'; foto.wrap.appendChild(t);
+  }
+  pbg('pb-done-n').textContent = pbFotos.filter(x => x.tagged).length;
+  if (pbg('pb-hide-done').checked) foto.wrap.classList.add('oculto');
+}
+
+// clic: normal = solo esa · Shift = rango desde el ancla · Ctrl/Cmd = suma de a una
+function pbClickThumb(e, i) {
+  if (e.shiftKey && pbAnchor !== null) {
+    const a = Math.min(pbAnchor, i), b = Math.max(pbAnchor, i);
+    for (let k = a; k <= b; k++) pbSel.add(k);
+  } else if (e.ctrlKey || e.metaKey) {
+    if (pbSel.has(i)) pbSel.delete(i); else pbSel.add(i);
+    pbAnchor = i;
+  } else {
+    pbSel.clear(); pbSel.add(i); pbAnchor = i;
+  }
+  pbRepaint();
+  pbPreview(i);                 // muestra la última clickeada
+}
+function pbSelTodas() { pbFotos.forEach((_, i) => pbSel.add(i)); pbRepaint(); }
+function pbSelNinguna() { pbSel.clear(); pbRepaint(); }
+function pbRepaint() {
+  pbFotos.forEach((f, i) => f.el.classList.toggle('marked', pbSel.has(i)));
+  pbSelbar();
+}
+function pbSelbar() {
+  const n = pbSel.size;
+  pbg('pb-selbar').style.display = pbFotos.length ? '' : 'none';
+  pbg('pb-seln').textContent = n;
+  const go = pbg('pb-go');
+  go.disabled = (pbModo !== 'upload') && n === 0;
+  go.textContent = pbModo === 'upload' ? '🔮 Etiquetar' : ('🔮 Etiquetar' + (n ? ' (' + n + ')' : ''));
+}
+function pbPreview(i) {          // pone la previa + botón NSFW de una foto
+  const f = pbFotos[i]; if (!f) return;
+  pbActual = {tipo: 'galeria', name: f.name, rel: f.rel, url: f.url, nsfw: f.nsfw};
+  const img = pbg('pb-preview'); img.src = f.url; img.style.display = '';
+  pbg('pb-nsfw').disabled = f.nsfw;
+  pbg('pb-nsfw').textContent = f.nsfw ? '🔞 ya es NSFW' : '🔞 Marcar NSFW';
+}
+function pbAbrirFull() {         // la foto entera, de verdad, en otra pestaña (no modal)
+  if (pbActual && pbActual.url) window.open(pbActual.url, '_blank');
+}
+
+pbg('pb-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f || !f.type.startsWith('image/')) return;
+  pbg('pb-persona').value = ''; pbg('pb-thumbs').innerHTML = '';
+  pbFotos = []; pbSel.clear(); pbAnchor = null; pbModo = 'upload';
+  pbFinBatch();
+  pbActual = {tipo: 'upload', file: f, url: URL.createObjectURL(f)};
+  const img = pbg('pb-preview'); img.src = pbActual.url; img.style.display = '';
+  pbg('pb-nsfw').disabled = true; pbg('pb-nsfw').textContent = '🔞 Marcar NSFW';
+  pbSelbar();
+});
+
+const PB_RELOJ = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+const PB_ETQ_URL = "{{ url_for('probador_etiquetar') }}";
+const PB_GRD_URL = "{{ url_for('probador_guardar') }}";
+// estado del lote
+let pbQueue = [], pbQi = 0, pbCache = new Map(), pbInflight = new Map(),
+    pbShownRel = null, pbTimer = null;
+
+function pbGo() {                       // botón Etiquetar: subida suelta o lote
+  if (pbModo === 'upload') return pbEtiquetarUpload();
+  const idx = [...pbSel].sort((a, b) => a - b);
+  if (!idx.length) return;
+  pbQueue = idx.map(i => pbFotos[i]);
+  pbQi = 0; pbCache.clear(); pbInflight.clear();
+  pbShow(0);
+}
+
+function pbLoading(on) {                // barra + spinner "mirando la foto… Ns"
+  if (on) {
+    pbg('pb-prog').style.display = '';
+    let s = 0;
+    const tick = () => { pbg('pb-st').textContent = ' ' + PB_RELOJ[s % 10] + ' mirando la foto… ' + s + 's'; s++; };
+    tick(); pbTimer = setInterval(tick, 1000);
+  } else {
+    if (pbTimer) { clearInterval(pbTimer); pbTimer = null; }
+    pbg('pb-prog').style.display = 'none'; pbg('pb-st').textContent = '';
+  }
+}
+
+// pide las etiquetas de UNA foto; cachea el resultado y no repite pedidos en vuelo
+function pbFetch(foto) {
+  if (!foto) return Promise.resolve(null);
+  if (pbCache.has(foto.rel)) return Promise.resolve(pbCache.get(foto.rel));
+  if (pbInflight.has(foto.rel)) return pbInflight.get(foto.rel);
+  const fd = new FormData();
+  fd.append('model', pbg('pb-model').value);
+  fd.append('crudo', pbg('pb-crudo').checked ? '1' : '0');
+  fd.append('evitar', '[]');
+  fd.append('name', foto.name); fd.append('rel', foto.rel);
+  const p = fetch(PB_ETQ_URL, {method: 'POST', body: fd}).then(r => r.json())
+    .then(d => { const res = d.ok ? {pares: d.pares || []} : {error: d.error || 'error'};
+                 pbCache.set(foto.rel, res); pbInflight.delete(foto.rel);
+                 // puntito verde = ya etiquetada y lista para revisar (solo si trajo algo)
+                 if (res.pares && res.pares.length && foto.wrap && !foto.wrap.querySelector('.pbthumb-ready')) {
+                   const dot = document.createElement('span'); dot.className = 'pbthumb-ready';
+                   dot.title = 'ya etiquetada, lista para revisar'; foto.wrap.appendChild(dot);
+                 }
+                 return res; })
+    .catch(e => { const res = {error: '' + e}; pbCache.set(foto.rel, res); pbInflight.delete(foto.rel); return res; });
+  pbInflight.set(foto.rel, p);
+  return p;
+}
+
+// muestra la foto i de la cola; cuando llega, dispara el etiquetado de la i+1
+async function pbShow(i) {
+  const foto = pbQueue[i]; if (!foto) return;
+  pbQi = i;
+  pbActual = {tipo: 'galeria', name: foto.name, rel: foto.rel, url: foto.url, nsfw: foto.nsfw};
+  pbShownRel = foto.rel;
+  const img = pbg('pb-preview'); img.src = foto.url; img.style.display = '';
+  pbg('pb-bigphoto').src = foto.url;             // foto grande al lado de la lista
+  pbg('pb-nsfw').disabled = foto.nsfw;
+  pbg('pb-nsfw').textContent = foto.nsfw ? '🔞 ya es NSFW' : '🔞 Marcar NSFW';
+  pbFotos.forEach(f => f.el.classList.toggle('viendo', f.rel === foto.rel));
+  pbCounter();
+  pbg('pb-lista-panel').style.display = ''; pbg('pb-lista').innerHTML = '';
+  pbOcultarVacio();
+  pbLoading(true);
+  const res = await pbFetch(foto);
+  if (pbShownRel !== foto.rel) return;          // el usuario ya saltó a otra
+  pbLoading(false);
+  if (res && res.error) pbMostrarVacio(res.error, true);
+  else pbLlenar(res ? res.pares : []);
+  if (pbQueue[i + 1]) pbFetch(pbQueue[i + 1]);   // ADELANTO la próxima (lookahead 1)
+}
+
+function pbMostrarVacio(msg, esError) {          // caja clara cuando no vino nada / error
+  pbg('pb-empty').style.display = '';
+  pbg('pb-listwrap').style.display = 'none';
+  pbg('pb-empty-msg').textContent = (esError ? '⛔ Error: ' : '⚠ ') + msg;
+  pbg('pb-empty').style.borderColor = esError ? 'var(--red)' : 'var(--amb)';
+  pbg('pb-st').textContent = '';
+}
+function pbOcultarVacio() {
+  pbg('pb-empty').style.display = 'none';
+  pbg('pb-listwrap').style.display = '';
+}
+function pbReintentar() {                         // vuelve a pedir ESTA foto (olvida el vacío)
+  if (pbModo === 'upload') { pbEtiquetarUpload(); return; }
+  const foto = pbQueue[pbQi]; if (!foto) return;
+  pbCache.delete(foto.rel); pbInflight.delete(foto.rel);
+  pbShow(pbQi);
+}
+
+function pbCounter() {
+  const total = pbQueue.length, cur = pbQi + 1, last = pbQi >= total - 1;
+  pbg('pb-qcount').textContent = total > 1 ? ('foto ' + cur + '/' + total) : '';
+  pbg('pb-next').textContent = last ? '💾 Guardar y terminar' : '💾 Guardar y siguiente ▶';
+  pbg('pb-skip').style.display = total > 1 ? '' : 'none';
+}
+
+function pbLlenar(pares) {
+  pbg('pb-lista-panel').style.display = '';
+  if (!pares || !pares.length) { pbMostrarVacio('La IA no devolvió etiquetas para esta foto.', false); return; }
+  pbOcultarVacio();
+  const lista = pbg('pb-lista'); lista.innerHTML = '';
+  pares.forEach(p => pbFila(p.orig, p.final, p.acto));
+}
+
+function pbEtiquetarUpload() {          // subida suelta: una sola, sin cola
+  if (!pbActual || pbActual.tipo !== 'upload') return;
+  pbQueue = []; pbShownRel = null;
+  pbCounter();
+  pbg('pb-lista-panel').style.display = ''; pbg('pb-lista').innerHTML = '';
+  pbg('pb-bigphoto').src = pbActual.url || '';
+  pbOcultarVacio();
+  pbLoading(true);
+  const fd = new FormData();
+  fd.append('model', pbg('pb-model').value);
+  fd.append('crudo', pbg('pb-crudo').checked ? '1' : '0');
+  fd.append('evitar', '[]');
+  fd.append('foto', pbActual.file);
+  fetch(PB_ETQ_URL, {method: 'POST', body: fd}).then(r => r.json()).then(d => {
+    pbLoading(false);
+    if (!d.ok) { pbg('pb-st').textContent = ' ' + (d.error || 'error'); return; }
+    pbLlenar(d.pares || []);
+  }).catch(e => { pbLoading(false); pbg('pb-st').textContent = ' ' + e; });
+}
+// orig = lo que dijo la IA (izq, no editable) · final = interpretación (der, editable)
+// acto = viene del detector de actos dedicado (sexpos), va marcado 🎯 en verde
+function pbFila(orig, final, acto) {
+  const row = document.createElement('div'); row.className = 'pbrow' + (acto ? ' acto' : '');
+  const izq = document.createElement('span'); izq.className = 'pborig';
+  izq.textContent = orig; izq.title = orig;
+  const flecha = document.createElement('span'); flecha.className = 'pbarrow'; flecha.textContent = '→';
+  const inp = document.createElement('input'); inp.value = final; inp.dataset.orig = final;
+  inp.oninput = () => inp.classList.toggle('edit', inp.value.trim() !== inp.dataset.orig);
+  const x = document.createElement('button'); x.className = 'pbx'; x.textContent = '✕'; x.title = 'Descartar';
+  x.onclick = () => row.remove();
+  row.appendChild(izq); row.appendChild(flecha); row.appendChild(inp); row.appendChild(x);
+  pbg('pb-lista').appendChild(row);
+}
+
+function pbNsfw() {
+  if (!pbActual || pbActual.tipo !== 'galeria' || pbActual.nsfw) return;
+  if (!confirm('¿Marcar esta foto como NSFW? Se mueve a _nsfw.')) return;
+  const oldRel = pbActual.rel;
+  fetch('/post/' + encodeURIComponent(pbActual.name) + '/nsfw', {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({rel: oldRel})}).then(r => r.json()).then(d => {
+      if (!d.ok) { alert(d.error || 'No se pudo.'); return; }
+      pbActual.rel = d.new_rel; pbActual.url = d.new_url; pbActual.nsfw = true;
+      // CLAVE: la foto se MOVIÓ a _nsfw, así que hay que actualizar su ruta también
+      // en pbFotos (de ahí sale la ruta al Etiquetar) y olvidar la cacheada vieja.
+      const foto = pbFotoDe(oldRel);
+      if (foto) {
+        foto.rel = d.new_rel; foto.url = d.new_url; foto.nsfw = true;
+        foto.el.title = d.new_rel; foto.el.src = d.new_url;
+        if (!foto.wrap.querySelector('.pbthumb-nsfw')) {
+          const b = document.createElement('span'); b.className = 'pbthumb-nsfw'; b.textContent = '🔞';
+          foto.wrap.appendChild(b);
+        }
+      }
+      pbCache.delete(oldRel); pbInflight.delete(oldRel);
+      if (pbShownRel === oldRel) pbShownRel = d.new_rel;
+      pbg('pb-preview').src = d.new_url;
+      pbg('pb-nsfw').disabled = true; pbg('pb-nsfw').textContent = '🔞 ya es NSFW';
+      pbg('pb-st').textContent = ' ✓ marcada NSFW';
+      setTimeout(() => pbg('pb-st').textContent = '', 2000);
+    });
+}
+
+function pbGuardarActual(despues) {     // guarda la lista de la foto en foco
+  const pares = {}, tags = [];
+  document.querySelectorAll('#pb-lista .pbrow input').forEach(inp => {
+    const v = inp.value.trim(), o = (inp.dataset.orig || '').trim();
+    if (!v) return; tags.push(v);
+    if (v.toLowerCase() !== o.toLowerCase()) pares[o] = v;   // corregida -> conversión
+  });
+  const relGuardada = (pbActual && pbActual.tipo === 'galeria') ? pbActual.rel : null;
+  const tuvo = tags.length > 0;                 // solo marcamos ✓ si de verdad guardó algo
+  pbg('pb-save-st').textContent = ' guardando…';
+  const body = new URLSearchParams({pares: JSON.stringify(pares), tags: JSON.stringify(tags)});
+  if (relGuardada) { body.append('name', pbActual.name); body.append('rel', relGuardada); }
+  fetch(PB_GRD_URL, {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body})
+    .then(r => r.json()).then(d => {
+      pbg('pb-save-st').textContent = d.ok
+        ? (' ✓ ' + d.aplicadas + ' etiqueta(s) · ' + d.conversiones + ' conversión(es)') : ' error';
+      setTimeout(() => pbg('pb-save-st').textContent = '', 3000);
+      if (d.ok && tuvo && relGuardada) pbMarcarEtiquetada(pbFotoDe(relGuardada));
+      if (despues) despues();
+    })
+    .catch(e => { pbg('pb-save-st').textContent = ' ' + e; });
+}
+function pbGuardarSiguiente() { pbGuardarActual(pbAvanzar); }
+function pbSaltar() { pbAvanzar(); }
+function pbAvanzar() {                   // pasa a la próxima de la cola (o termina)
+  if (pbModo === 'upload' || pbQueue.length <= 1) { pbFinBatch(); return; }
+  if (pbQi + 1 < pbQueue.length) pbShow(pbQi + 1);
+  else pbFinBatch(pbQueue.length);
+}
+function pbFinBatch(n) {                 // cierra el lote y limpia el resaltado
+  pbQueue = []; pbShownRel = null;
+  pbg('pb-lista-panel').style.display = 'none';
+  pbg('pb-qcount').textContent = '';
+  pbFotos.forEach(f => f.el.classList.remove('viendo'));
+  if (n) { pbg('pb-save-st').textContent = ' ✓ listo, ' + n + ' foto(s) revisada(s)';
+           setTimeout(() => pbg('pb-save-st').textContent = '', 4000); }
+}
+
+/* ---- previa flotante al pasar el mouse por una miniatura ---- */
+function pbHoverShow(el, url) {
+  const h = pbg('pb-hover'); h.src = url;
+  const r = el.getBoundingClientRect(), S = 240, gap = 10;
+  let left = r.right + gap;
+  if (left + S > window.innerWidth) left = r.left - gap - S;   // no entra: al otro lado
+  left = Math.max(4, left);
+  let top = r.top + r.height / 2 - S / 2;
+  top = Math.max(4, Math.min(top, window.innerHeight - S - 4));
+  h.style.left = left + 'px'; h.style.top = top + 'px'; h.style.display = 'block';
+}
+function pbHoverHide() { pbg('pb-hover').style.display = 'none'; }
+
+/* ---- atajos de teclado (solo mientras revisás una foto) ---- */
+function pbNavegar(delta) {              // ←/→ : moverse por la cola sin guardar
+  if (pbModo === 'upload' || !pbQueue.length) return;
+  const j = pbQi + delta;
+  if (j >= 0 && j < pbQueue.length) pbShow(j);
+}
+window.addEventListener('keydown', e => {
+  if (getComputedStyle(pbg('pb-lista-panel')).display === 'none') return;   // no hay revisión abierta
+  const ae = document.activeElement;
+  const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (typing) { ae.blur(); return; }   // dentro de un campo: confirma el campo, NO avanza
+    pbGuardarSiguiente();                 // fuera de un campo: guardar y siguiente
+    return;
+  }
+  if (typing) return;                     // escribiendo: dejar tipear letras/flechas normal
+  const k = e.key.toLowerCase();
+  if (k === 's') { e.preventDefault(); pbSaltar(); }
+  else if (k === 'r') { e.preventDefault(); pbReintentar(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); pbNavegar(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); pbNavegar(-1); }
+});
+</script>
+"""
+
+
+@app.route("/probador")
+def probador():
+    """Probador: elegís una foto (galería o subida), la IA la etiqueta, corregís/
+    descartás en una lista, y al guardar las correcciones quedan como diccionario
+    y las etiquetas van a la foto."""
+    # las personas: las de la base de caras MÁS las importadas por carpeta (que
+    # no tienen cara aprendida). Igual que la Galería, para que no falte ninguna.
+    personas = sorted(set(load_known()) | set(library_people(get_library())),
+                      key=str.lower)
+    return render_template_string(
+        shell("probador", PROBADOR_TEMPLATE),
+        vlm_models=vlm.list_models(), tag_modelo=vlm.tag_model(),
+        vlm_crudos=vlm.modelos_descensurados(), people=personas)
+
+
+@app.route("/probador/fotos/<name>")
+def probador_fotos(name):
+    """Las fotos de una persona (normales + nsfw) para el selector del probador."""
+    library = get_library()
+    if not library:
+        return {"ok": False, "fotos": []}
+    fotos = []
+    for rel in person_photos(library, name) + person_photos(library, name, only_nsfw=True):
+        fotos.append({"rel": rel, "nsfw": NSFW_DIR_NAME in Path(rel).parts,
+                      # ya tiene etiquetas propias guardadas = "ya etiquetada" (✓)
+                      "tagged": bool(tags_mod.get_photo(name, rel)),
+                      "thumb": url_for("person_thumb", name=name, rel=rel),
+                      "url": url_for("person_photo", name=name, rel=rel)})
+    return {"ok": True, "fotos": fotos}
+
+
+def _es_menor(name):
+    """True si la persona está etiquetada como menor (salvaguarda)."""
+    if not name:
+        return False
+    try:
+        tags = tags_mod.get_person(name) + tags_mod.get_photo(name, "")
+        return posts_mod.identidad(tags)["menor"]
+    except Exception:
+        return False
+
+
+def _acto_pares(path, crudo, name, pares, evitar):
+    """Si crudo (NSFW) y la persona NO es menor, corre el detector de actos
+    (sexpos) y devuelve el acto anclado 🎯 como par para PONER PRIMERO, salvo que
+    ya esté entre las etiquetas del VLM o entre las evitadas. Lista vacía si no
+    aplica. El acto viene de un modelo dedicado, no del VLM: por eso va marcado."""
+    if not crudo or _es_menor(name) or not sexpos.disponible():
+        return []
+    try:
+        acto = sexpos.clasificar(path)         # (etiqueta_es, confianza) o None
+    except Exception:
+        acto = None
+    if not acto:
+        return []
+    palabra, conf = acto
+    k = vlm._dup_key(palabra.lower())
+    ya = {vlm._dup_key(p["final"].lower()) for p in pares}
+    ya |= {vlm._dup_key(str(e).strip().lower()) for e in evitar}
+    if k in ya:
+        return []
+    return [{"orig": "detector de actos 🎯 (" + str(round(conf * 100)) + "%)",
+             "final": palabra, "acto": True}]
+
+
+@app.route("/probador/etiquetar", methods=["POST"])
+def probador_etiquetar():
+    """Etiqueta una foto (de galería por name+rel, o subida) y devuelve la lista
+    final para que el usuario la corrija."""
+    model = request.form.get("model") or vlm.tag_model()
+    crudo = request.form.get("crudo") == "1"
+    name = request.form.get("name", "")
+    rel = request.form.get("rel", "")
+    try:
+        evitar = json.loads(request.form.get("evitar", "[]"))
+        evitar = [str(e) for e in evitar if str(e).strip()]
+    except Exception:
+        evitar = []
+    if name and rel:
+        library = get_library()
+        path = Path(library) / name / rel if library else None
+        if not path or not path.is_file():
+            return {"ok": False, "error": "Esa foto ya no está."}
+        try:
+            pares = vlm.suggest_tags_pairs(str(path), model=model, quien=name,
+                                           crudo=crudo, evitar=evitar)
+            pares = _acto_pares(str(path), crudo, name, pares, evitar) + pares
+            return {"ok": True, "pares": pares}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    f = request.files.get("foto")
+    if not f:
+        return {"ok": False, "error": "Falta la foto."}
+    import tempfile
+    suf = Path(f.filename or "x.jpg").suffix or ".jpg"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suf)
+    try:
+        f.save(tmp.name)
+        tmp.close()
+        pares = vlm.suggest_tags_pairs(tmp.name, model=model, crudo=crudo, evitar=evitar)
+        pares = _acto_pares(tmp.name, crudo, "", pares, evitar) + pares
+        return {"ok": True, "pares": pares}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+@app.route("/probador/guardar", methods=["POST"])
+def probador_guardar():
+    """Guarda las correcciones como conversiones (rusa->paja rusa, para TODA la
+    app) y aplica las etiquetas a la foto de galería (si vino name+rel)."""
+    try:
+        pares = json.loads(request.form.get("pares", "{}"))
+    except Exception:
+        pares = {}
+    cfg = load_config()
+    conv = dict(cfg.get("f_conversiones", {}) or {})
+    for k, v in pares.items():
+        k, v = str(k).strip(), str(v).strip()
+        if k and v and k.lower() != v.lower():
+            conv[k] = v
+    cfg["f_conversiones"] = conv
+    save_config(cfg)
+    aplicadas = 0
+    name = request.form.get("name", "")
+    rel = request.form.get("rel", "")
+    if name and rel:
+        try:
+            tags = [str(t).strip() for t in json.loads(request.form.get("tags", "[]"))
+                    if str(t).strip()]
+            propias = tags_mod.get_photo(name, rel)
+            tags_mod.set_photo(name, rel, propias + [t for t in tags if t not in propias])
+            aplicadas = len(tags)
+        except Exception:
+            pass
+    return {"ok": True, "conversiones": len(conv), "aplicadas": aplicadas}
 
 
 # La búsqueda por etiqueta ya no es una sección aparte: está integrada en la
@@ -3521,7 +5695,8 @@ NSFW_TEMPLATE = """
     <div class="row">
       <label>Sensibilidad:</label>
       <span class="meta">estricto</span>
-      <input type="range" name="sens" min="0" max="100" value="{{ sens }}">
+      <input type="range" class="sens" name="sens" min="0" max="100" value="{{ sens }}"
+             style="--pct:{{ sens }}%" oninput="this.style.setProperty('--pct', this.value + '%')">
       <span class="meta">sensible</span>
       <span class="meta">(subilo hacia "sensible" si te dejó afuera fotos que son NSFW; bajalo si te trae de más)</span>
     </div>
@@ -3547,28 +5722,31 @@ NSFW_TEMPLATE = """
 
 {% if state.status == 'done' %}
 <div class="panel">
-  <div class="counter">{{ state.results|length }} sospechosa(s) en {{ state.scanned }} foto(s) revisadas</div>
+  <div class="counter"><span id="nsel" style="color:#f0883e">0</span> seleccionada(s)
+    <span class="meta">· {{ state.results|length }} sospechosa(s) en {{ state.scanned }} foto(s) revisadas</span></div>
   {% if state.results %}
   <form method="post" action="{{ url_for('nsfw_move') }}"
         onsubmit="return confirm('Se moverán las fotos tildadas a {{ nsfw_dir }} dentro de la carpeta revisada. ¿Continuar?')">
     <div class="row">
-      <button class="organize">📦 Mover las tildadas a {{ nsfw_dir }}</button>
-      <button type="button" class="secondary" onclick="toggleAll(this)">Marcar / desmarcar todas</button>
-      <span class="meta">destildá los falsos positivos (playa, etc.) antes de mover — clic en la imagen abre el visor (zoom, arrastre, ← →)</span>
+      <button class="organize">📦 Mover las seleccionadas a {{ nsfw_dir }}</button>
+      <button type="button" class="secondary" onclick="toggleAll(this)">☑ Seleccionar / deseleccionar todas</button>
     </div>
-    <div class="grid">
+    <p class="meta">Destildá los falsos positivos (playa, etc.) antes de mover · clic en la imagen abre el visor (zoom, arrastre, ← →).</p>
+    <div class="nsfw-grid">
       {% for r in state.results %}
-      <label class="hit">
-        <input type="checkbox" name="rel" value="{{ r.rel }}" checked>
-        <span class="cf">{{ (r.score * 100)|int }}% · {{ r.labels|join(', ') }}</span><br>
-        {% if r.thumb %}
-        <img src="{{ url_for('nsfw_thumb', fn=r.thumb) }}" alt=""
-             onclick="event.preventDefault(); lbOpen({{ loop.index0 }})">
-        {% endif %}
-        <div class="fn" title="{{ r.rel }}">
-          <a href="{{ url_for('nsfw_file', rel=r.rel) }}" target="_blank">{{ r.rel.split('/')[-1] }}</a>
+      <div class="hit">
+        <div class="hit-thumb">
+          {% if r.thumb %}
+          <img src="{{ url_for('nsfw_thumb', fn=r.thumb) }}" alt="{{ r.rel }}"
+               onclick="lbOpen({{ loop.index0 }})">
+          {% endif %}
+          <label class="hit-pill" title="{{ r.rel.split('/')[-1] }}">
+            <input type="checkbox" name="rel" value="{{ r.rel }}" checked onchange="nselCount()">
+            {{ (r.score * 100)|int }}%
+          </label>
+          <span class="hit-tags" title="{{ r.rel }}">{{ r.labels|join(', ') }}</span>
         </div>
-      </label>
+      </div>
       {% endfor %}
     </div>
   </form>
@@ -3591,15 +5769,95 @@ function browse(field) {
     .then(d => { if (d.path) document.getElementsByName(field)[0].value = d.path; });
 }
 function toggleAll(btn) {
-  const boxes = [...btn.closest('form').querySelectorAll('.grid input[type=checkbox]')];
+  const boxes = [...btn.closest('form').querySelectorAll('.nsfw-grid input[type=checkbox]')];
   const all = boxes.every(b => b.checked);
   boxes.forEach(b => b.checked = !all);
+  nselCount();
 }
+function nselCount() {
+  const el = document.getElementById('nsel');
+  if (el) el.textContent = document.querySelectorAll('.nsfw-grid input:checked').length;
+}
+nselCount();
 </script>
 """
 
 # el visor compartido también en la revisión NSFW
 NSFW_TEMPLATE = NSFW_TEMPLATE.replace("__LIGHTBOX__", LIGHTBOX)
+
+
+# --- playlist de favoritos de una persona (mockup Favoritos) -----------------
+FAVS_TEMPLATE = """
+<a href="{{ url_for('person_page', name=name) }}">← Volver a {{ name }}</a>
+
+<div class="pcard" style="grid-template-columns:120px 1fr; margin-top:.8rem">
+  <div class="pcard-cover" style="padding:14px">
+    <div class="cover-box">
+      {% if has_thumb %}<img src="{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}" alt="{{ name }}">
+      {% else %}<div class="noimg">👤</div>{% endif %}
+    </div>
+  </div>
+  <div class="pcard-main" style="justify-content:center">
+    <div class="meta" style="text-transform:uppercase; letter-spacing:.06em; font-weight:600">⭐ Favoritas</div>
+    <h1 style="margin:0; font-size:24px">{{ name }}</h1>
+    <div class="meta"><b style="color:var(--tx)" id="favcount">{{ favs|length }}</b> fotos guardadas</div>
+  </div>
+</div>
+
+<div class="favs-grid">
+  {% for r in favs %}
+  <div class="favcell" data-rel="{{ r }}">
+    <img src="{{ url_for('person_thumb', name=name, rel=r) }}" loading="lazy" alt="{{ r }}"
+         title="{{ r }}" onclick="lbOpen({{ loop.index0 }})">
+    <button class="unfav" title="Quitar de favoritos" onclick="unFav(this, {{ r|tojson }})">★</button>
+  </div>
+  {% endfor %}
+  <a class="favadd" href="{{ url_for('person_page', name=name) }}" title="Las fotos se marcan con la ⭐ del visor">
+    <span style="font-size:24px">＋</span><span>Agregar</span>
+  </a>
+</div>
+
+<button id="fav-top" class="secondary iconbtn" onclick="scrollTo({top:0,behavior:'smooth'})"
+        title="Subir al top" style="position:fixed; right:22px; bottom:22px; z-index:15;
+        border-radius:50%; display:none; box-shadow:0 4px 14px rgba(0,0,0,.5)">↑</button>
+
+<script>
+window.LB_PHOTOS = [
+  {% for r in favs %}{url:"{{ url_for('person_photo', name=name, rel=r) }}",name:"{{ r|e }}"},{% endfor %}
+];
+addEventListener('scroll', () => {
+  document.getElementById('fav-top').style.display = scrollY > 400 ? 'flex' : 'none';
+});
+const FAV_URL = "{{ url_for('post_fav', name=name) }}";
+function unFav(btn, rel) {
+  fetch(FAV_URL, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({rel: rel, fav: ''})}).then(r => r.json()).then(d => {
+      if (!d.ok) return;
+      btn.closest('.favcell').remove();
+      document.getElementById('favcount').textContent =
+        document.querySelectorAll('.favcell').length;
+    });
+}
+</script>
+__LIGHTBOX__
+"""
+FAVS_TEMPLATE = FAVS_TEMPLATE.replace("__LIGHTBOX__", LIGHTBOX)
+
+
+@app.route("/person/<name>/favoritos")
+def person_favs(name):
+    """La página de favoritas de la persona: verlas todas, quitar, y el visor."""
+    library = get_library()
+    if not library or name not in load_known():
+        return redirect(url_for("known_page"))
+    rels = person_photos(library, name) + person_photos(library, name, only_nsfw=True)
+    posts = posts_mod.get_many(name, rels)
+    favs = [r for r in rels if posts[r]["fav"]]
+    thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+    return render_template_string(
+        shell("known", FAVS_TEMPLATE), name=name, favs=favs,
+        has_thumb=thumb.is_file(),
+        cache_bust=int(thumb.stat().st_mtime) if thumb.is_file() else 0)
 
 
 def _nsfw_worker(folder, score_min, covered):
@@ -4220,9 +6478,22 @@ def photo(path):
 
 
 def main():
-    print("[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).")
-    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    # El reloader corre DOS procesos (el vigía y el servidor de verdad), y los
+    # dos pasan por acá: sin esta guarda se abrían dos pestañas. El navegador
+    # lo abre solo el vigía (que arranca una única vez); el servidor, que se
+    # reinicia con cada cambio de código, no abre nada.
+    if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        print("[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).")
+        threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
+    # use_reloader: si el código cambia (porque lo editó Claude, por ejemplo),
+    # el servidor se reinicia SOLO. Sin esto había que cerrar la ventana y
+    # volver a abrirla para ver cualquier cambio, y nunca quedaba claro qué
+    # versión estaba corriendo. debug sigue en False: el reloader solo, sin
+    # el debugger (que deja ejecutar código desde el navegador).
+    # threaded=True: el sugeridor en streaming tiene una respuesta abierta hasta
+    # ~90s; sin hilos, el resto de la app (el sondeo del lote, las miniaturas)
+    # quedaría bloqueado todo ese rato esperando que termine.
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=True, threaded=True)
 
 
 if __name__ == "__main__":

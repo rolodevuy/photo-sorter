@@ -1,0 +1,81 @@
+"""Clasificador de ACTO/posición sexual en una foto (porntech/sex-position).
+
+Un resnet50 de timm que en UNA pasada (rápida, en CPU) dice qué acto hay en una
+imagen NSFW. Tapa el punto débil del VLM, que el acto lo adivina; acá es una
+respuesta anclada de un modelo dedicado.
+
+OJO — solo tiene sentido en fotos NSFW: con gente vestida o normal tira cualquier
+cosa (el propio autor lo avisa). El llamador lo corre SOLO en fotos marcadas NSFW
+y NUNCA en personas etiquetadas como menor.
+
+Todo local: baja los pesos de HuggingFace una vez (a la caché de HF_HOME, que
+apunta a E:) y después corre sin conexión. La foto no sale de la máquina.
+"""
+
+import threading
+
+from PIL import Image
+
+# Orden EXACTO de las clases del modelo (los índices de salida son estos):
+LABELS = ["blowjob", "hardcore", "titjob", "handjob",
+          "pussy-licking", "fingering", "other", "solo"]
+
+# A la jerga rioplatense. "other" se descarta (no es una etiqueta útil).
+# "hardcore" es penetración genérica (el modelo no separa misionero/doggy/etc.).
+_MAP = {
+    "blowjob": "chupando",
+    "hardcore": "penetración",
+    "titjob": "rusa",
+    "handjob": "paja",
+    "pussy-licking": "comiéndole la concha",
+    "fingering": "dedeando",
+    "solo": "sola",
+}
+
+UMBRAL = 0.45          # confianza mínima para sugerir el acto
+
+_MODEL = None
+_TRANSFORM = None
+_LOCK = threading.Lock()
+
+
+def disponible():
+    """True si timm está instalado (el modelo se baja solo la primera vez)."""
+    try:
+        import timm  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _cargar():
+    """Carga perezosa: la primera vez baja pesos y arma el modelo + transform."""
+    global _MODEL, _TRANSFORM
+    if _MODEL is not None:
+        return
+    import timm
+    from timm.data import create_transform, resolve_data_config
+    m = timm.create_model("hf_hub:porntech/sex-position", pretrained=True)
+    m.eval()
+    _TRANSFORM = create_transform(**resolve_data_config({}, model=m))
+    _MODEL = m
+
+
+def clasificar(image_path):
+    """El acto detectado en la foto, en jerga: ("chupando", 0.83), o None si el
+    modelo no está seguro (< UMBRAL) o dice 'other'. Un solo forward en CPU.
+
+    Lanza si timm/el modelo fallan; el llamador lo envuelve en try."""
+    import torch
+    with _LOCK:
+        _cargar()
+        img = Image.open(image_path).convert("RGB")
+        x = _TRANSFORM(img).unsqueeze(0)
+        with torch.no_grad():
+            probs = _MODEL(x).softmax(1)[0]
+        i = int(probs.argmax())
+        conf = float(probs[i])
+        etq = LABELS[i]
+    if etq == "other" or conf < UMBRAL:
+        return None
+    return (_MAP.get(etq, etq), conf)

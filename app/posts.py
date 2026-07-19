@@ -14,11 +14,16 @@ Todo local: no sale nada de la máquina.
 
 import hashlib
 import json
+import random
 import re
+import threading
+from pathlib import Path
 
-from app import POSTS_PATH
-from app import finder, person_meta, vlm
+from app import NSFW_DIR_NAME, POSTS_PATH
+from app import finder, person_meta, sexpos, vlm
 from app import tags as tags_mod
+from app.config import load_config
+from app.known import load_known
 
 # Tonos ofrecidos en Ajustes. La clave se guarda en la config; el texto es lo
 # que se le manda al modelo (en español: lo entiende igual y sale más natural).
@@ -69,6 +74,8 @@ _AGE_RULE = ("- UNO solo de los comentarios, no más, tiene que comentar la edad
 # personalidades se reparten igual.
 # El tercer campo dice si ese comentador DESEA a la persona. Los que sí quedan
 # afuera cuando la persona está etiquetada como menor (ver identidad()).
+
+
 COMMENTERS = [
     ("lulii", "la amiga del alma, te banca en todo y exagera de puro cariño", False),
     ("elpela", "el pesado que tira onda sin disimular, se le va la mano", True),
@@ -97,14 +104,47 @@ _MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiqui
           "hijo", "hija"}
 
 
+def _norm_tag(t):
+    return re.sub(r"[^\wáéíóúñü]", "", t.lower())
+
+
 def identidad(tags):
     """De las etiquetas de la persona: {"genero": "f"|"m"|None, "menor": bool}.
 
     Sirve para que los comentarios se refieran bien a la persona ("qué linda" vs
     "qué lindo") y, sobre todo, para NO tratar a un chico como a un adulto."""
-    t = {re.sub(r"[^\wáéíóúñü]", "", x.lower()) for x in tags}
+    t = {_norm_tag(x) for x in tags}
     genero = "f" if t & _GENERO_F else ("m" if t & _GENERO_M else None)
-    return {"genero": genero, "menor": bool(t & _MENOR)}
+    return {"genero": genero, "menor": bool(t & menor_set())}
+
+
+def _tags_para_pie(name, rel):
+    """Las etiquetas efectivas de la foto (propias + heredadas de la persona),
+    sin las de género/edad (esas ya van aparte, por quien_es_texto/quien_es_pie).
+
+    Es la intención confirmada: el pie y los comentarios se escriben A PARTIR de
+    esto, literal, en vez de que el modelo se floree con lo que cree ver."""
+    fuera = _GENERO_F | _GENERO_M | menor_set()
+    return [t for t in tags_mod.effective_photo(name, rel) if _norm_tag(t) not in fuera]
+
+
+def _intencion(name, rel, image_path, menor):
+    """El "intento confirmado" que alimenta el pie y los comentarios: las
+    etiquetas de la foto MÁS, si es NSFW y NO es menor, el acto que detecta el
+    clasificador dedicado (porntech/sex-position). Así el texto sabe qué está
+    pasando aunque no hayas aceptado el acto como etiqueta a mano.
+
+    Salvaguarda: nunca corre en menores, ni en fotos que no sean NSFW (ahí el
+    clasificador tira cualquier cosa)."""
+    tags = _tags_para_pie(name, rel)
+    if not menor and NSFW_DIR_NAME in Path(rel).parts:
+        try:
+            acto = sexpos.clasificar(image_path)
+            if acto and _norm_tag(acto[0]) not in {_norm_tag(t) for t in tags}:
+                tags.append(acto[0])
+        except Exception:
+            pass          # el clasificador no debe romper la generación del texto
+    return tags
 
 # Un 4b escribe en español neutro por más que le pidas "rioplatense": no sabe qué
 # es. Prohibirle las formas concretas SÍ funciona, y como es una regla de
@@ -117,7 +157,7 @@ _PROMPT = """Mirá esta foto. Estas {n} personas la están comentando en una red
 social. Escribí el comentario de cada una, en su voz:
 
 {quienes}
-
+{pie}{compania}{etiquetas}
 Reglas estrictas:
 - {quien_es}
 - {voseo}
@@ -127,13 +167,21 @@ Reglas estrictas:
   genérico que serviría para cualquier otra foto ("qué linda", "te queda
   increíble", "estás radiante"): eso no dice nada.
 - Si en la foto no pasa nada, comentan que no pasa nada. No inventen.
-- Que se note quién es cada uno: tienen que sonar DISTINTOS entre sí.
+- Que se note quién es cada uno: tienen que sonar DISTINTOS entre sí. Cada uno
+  habla de OTRA cosa (uno de la ropa, otro de la pose, otro del lugar, otro tira
+  un chiste). PROHIBIDO que dos digan lo mismo con otras palabras: si uno ya dijo
+  "qué linda", ningún otro vuelve a hablar de lo linda que está.
 - MÁXIMO 10 PALABRAS cada uno. Son comentarios, no párrafos.
 - El clima general es: {tono}
 - Qué tan subidos: {crudeza}
 {edad}- Un comentario por línea, en el mismo orden, y NADA más: sin numerar, sin
   poner quién lo dice, sin comillas, sin encabezado, sin explicar nada.
 """
+
+
+# Un solo escritor por vez sobre posts.json. Ver _put: el pie y los comentarios
+# se generan en paralelo y tardan minutos, así que sin esto se pisan.
+_LOCK = threading.RLock()
 
 
 def _load():
@@ -164,31 +212,62 @@ def _stable_hash(s):
     return int(hashlib.md5(s.encode("utf-8")).hexdigest()[:8], 16)
 
 
+def _post_de(got):
+    """Normaliza un post crudo del json. "people" = OTROS conocidos etiquetados
+    en la foto (el dueño de la carpeta va implícito). "fav" = favorito."""
+    got = got or {}
+    return {"caption": got.get("caption"), "comments": got.get("comments", []),
+            "people": got.get("people", []), "fav": bool(got.get("fav"))}
+
+
+def set_fav(name, rel, value):
+    """Marca/desmarca la foto como favorita."""
+    return bool(_put(name, rel, fav=bool(value))["fav"])
+
+
 def get(name, rel):
-    """El post de una foto: {"caption": str|None, "comments": [...]}.
+    """El post de una foto: {"caption": str|None, "comments": [...], "people": [...]}.
 
     Siempre devuelve el dict completo, aunque la foto no tenga nada todavía."""
-    got = _load().get(_key(name, rel)) or {}
-    return {"caption": got.get("caption"), "comments": got.get("comments", [])}
+    return _post_de(_load().get(_key(name, rel)))
 
 
 def get_many(name, rels):
     """Los posts de varias fotos de una, sin releer el archivo por cada una."""
     data = _load()
-    out = {}
-    for rel in rels:
-        got = data.get(_key(name, rel)) or {}
-        out[rel] = {"caption": got.get("caption"), "comments": got.get("comments", [])}
-    return out
+    return {rel: _post_de(data.get(_key(name, rel))) for rel in rels}
+
+
+def set_people(name, rel, people):
+    """Quiénes MÁS aparecen en la foto (etiquetado a mano con @ en el modal).
+
+    Se guardan solo los que existen en la base y no son el dueño (María no se
+    etiqueta a sí misma en su propia foto)."""
+    conocidos = set(load_known())
+    limpio, vistos = [], set()
+    for p in people:
+        p = (p or "").strip().lstrip("@")
+        if p and p != name and p in conocidos and p not in vistos:
+            vistos.add(p)
+            limpio.append(p)
+    return _put(name, rel, people=limpio)["people"]
 
 
 def _put(name, rel, **campos):
-    data = _load()
-    post = data.get(_key(name, rel)) or {}
-    post.update(campos)
-    data[_key(name, rel)] = post
-    _save(data)
-    return post
+    """Guarda campos del post SIN pisar lo que haya escrito otro mientras tanto.
+
+    El pie y los comentarios se generan al mismo tiempo si apretás los dos
+    botones, y cada uno tarda MINUTOS. Sin el lock (probado): los dos leen el
+    archivo al empezar, y el que termina último guarda su copia vieja y le borra
+    el trabajo al otro. Por eso se lee de nuevo ACÁ ADENTRO, después de esperar,
+    y no antes de llamar al modelo."""
+    with _LOCK:
+        data = _load()
+        post = data.get(_key(name, rel)) or {}
+        post.update(campos)
+        data[_key(name, rel)] = post
+        _save(data)
+        return post
 
 
 def set_caption(name, rel, text):
@@ -202,49 +281,60 @@ def set_comments(name, rel, comments):
 
 def clear(name, rel):
     """Borra el post entero (pie + comentarios) de una foto."""
-    data = _load()
-    if data.pop(_key(name, rel), None) is not None:
-        _save(data)
+    with _LOCK:
+        data = _load()
+        if data.pop(_key(name, rel), None) is not None:
+            _save(data)
 
 
 def clear_comments(name, rel):
     """Borra solo los comentarios, para regenerarlos sin perder el pie."""
-    data = _load()
-    post = data.get(_key(name, rel))
-    if post and post.pop("comments", None) is not None:
-        if post:
-            data[_key(name, rel)] = post
-        else:
-            data.pop(_key(name, rel))
-        _save(data)
+    with _LOCK:
+        data = _load()
+        post = data.get(_key(name, rel))
+        if post and post.pop("comments", None) is not None:
+            if post:
+                data[_key(name, rel)] = post
+            else:
+                data.pop(_key(name, rel))
+            _save(data)
 
 
 def move_photo(name, old_rel, new_rel):
     """Si la foto se mueve, su post la sigue."""
-    data = _load()
-    got = data.pop(_key(name, old_rel), None)
-    if got is not None:
-        data[_key(name, new_rel)] = got
-        _save(data)
+    with _LOCK:
+        data = _load()
+        got = data.pop(_key(name, old_rel), None)
+        if got is not None:
+            data[_key(name, new_rel)] = got
+            _save(data)
 
 
 def forget_person(name):
-    """Se borró la persona: sus posts se van con ella."""
-    data = _load()
-    fuera = [k for k in data if k.startswith(f"{name}/")]
-    if fuera:
-        for k in fuera:
-            data.pop(k)
-        _save(data)
+    """Se borró la persona: sus posts se van, y su nombre se saca de las fotos de
+    los demás donde estaba etiquetada (si no, queda un @ colgado de un fantasma)."""
+    with _LOCK:
+        data = _load()
+        cambio = False
+        for k in [k for k in data if k.startswith(f"{name}/")]:
+            data.pop(k); cambio = True
+        for post in data.values():
+            if name in post.get("people", []):
+                post["people"] = [p for p in post["people"] if p != name]
+                cambio = True
+        if cambio:
+            _save(data)
 
 
 def rename_person(old, new):
-    data = _load()
-    movidos = {k: v for k, v in data.items() if k.startswith(f"{old}/")}
-    if movidos:
-        for k, v in movidos.items():
-            data.pop(k)
-            data[f"{new}/{k.split('/', 1)[1]}"] = v
+    with _LOCK:
+        data = _load()
+        for k in [k for k in data if k.startswith(f"{old}/")]:
+            data[f"{new}/{k.split('/', 1)[1]}"] = data.pop(k)
+        # y donde estaba etiquetada en fotos de otros, cambiarle el nombre
+        for post in data.values():
+            if old in post.get("people", []):
+                post["people"] = [new if p == old else p for p in post["people"]]
         _save(data)
 
 
@@ -256,23 +346,30 @@ def crudeness_text(level):
         i = int(level)
     except (TypeError, ValueError):
         i = CRUDENESS_DEFAULT
-    return CRUDENESS[max(0, min(i, len(CRUDENESS) - 1))][1]
+    niveles = crudeness_list()      # fábrica + lo que reescribiste en Ajustes
+    return niveles[max(0, min(i, len(niveles) - 1))][1]
 
 
 def generate_caption(name, rel, image_path, model=None,
-                     crudeness=CRUDENESS_DEFAULT):
+                     crudeness=CRUDENESS_DEFAULT, diminutivos=False):
     """Escribe el pie de foto y lo guarda. ~1,5 minutos en CPU.
 
     Sabemos de quién es la foto (sale de la carpeta), así que el pie lo escribe
     ELLA, en primera persona y con SU voz (la que configuraste en su perfil).
 
-    Y como además reconocemos caras, miramos quién MÁS está en la foto: así el
-    pie dice "acá comiendo con Alberto" y no "con alguien". Cuesta décimas de
-    segundo al lado del minuto y medio del modelo, así que va siempre."""
-    try:
-        con = finder.who_is_in(image_path, exclude=[name])
-    except Exception:
-        con = []          # sin base de caras o foto ilegible: el pie igual sale
+    Quién MÁS está en la foto: si etiquetaste a mano (con @ en el modal) se usa
+    eso; si no, se cae al reconocimiento de caras. Así el pie dice "acá comiendo
+    con Alberto" y no "con alguien".
+
+    Las ETIQUETAS de la foto (propias + de la persona) son la intención real:
+    el pie se escribe A PARTIR de ellas, literal, no de lo que el modelo cree
+    ver — evita que se floree o invente un clima que no está."""
+    con = get(name, rel)["people"]      # etiquetados a mano, si hay
+    if not con:
+        try:
+            con = finder.who_is_in(image_path, exclude=[name])
+        except Exception:
+            con = []      # sin base de caras o foto ilegible: el pie igual sale
     # el pie va en primera persona, así que el género importa: "estoy cansada"
     # o "cansado" sale de las etiquetas de la persona
     ident = identidad(tags_mod.get_person(name))
@@ -280,19 +377,27 @@ def generate_caption(name, rel, image_path, model=None,
         crudeness = 0
     voz = person_meta.get_voice(name)
     crudeza, quien_es = crudeness_text(crudeness), quien_es_pie(ident)
+    prompt = vlm.caption_prompt(name, voz, con=con, crudeza=crudeza, quien_es=quien_es,
+                                etiquetas=_intencion(name, rel, image_path, ident["menor"]))
+    extra = (_cfg().get("post_extra_pie") or "").strip()   # tu caja de Ajustes
+    if extra:
+        prompt += "\n" + extra
+    # el arranque rota por foto (estable): así no salen todos con "Acá..."
+    ops = vlm.PREFILL_OPCIONES
+    arranque = ops[_stable_hash(_key(name, rel)) % len(ops)]
     raw = vlm.describe(image_path, model=model or vlm.DEFAULT_MODEL,
-                       prompt=vlm.caption_prompt(name, voz, con=con, crudeza=crudeza,
-                                                 quien_es=quien_es),
-                       prefill=vlm.PREFILL_PIE)
-    # El modelo repite lo que le pusiste en el prompt: real, con un pie "vulgar y
-    # directo" devolvió "Acá en la playa, ser directo, vulgar...". Sabemos qué le
-    # inyectamos, así que se puede sacar sin adivinar.
+                       prompt=prompt, prefill=arranque)
+    # El modelo repite lo que le pusiste en el prompt: real, devolvió "Acá en la
+    # playa, ser directo, vulgar..." y pies terminados en "Sos Alejandro". Se
+    # compara contra el prompt ENTERO, no contra los pedazos: cualquier línea que
+    # le mandemos puede volver copiada.
     text = _sin_autonombre(
-        _sin_instrucciones(vlm.clean_caption(raw),
-                           [voz, crudeza, quien_es, vlm.SYSTEM_PIE]),
+        _sin_instrucciones(vlm.clean_caption(raw), [prompt, vlm.SYSTEM_PIE]),
         name)
     if not text:
         raise RuntimeError("El modelo solo repitió las instrucciones. Probá de nuevo.")
+    if diminutivos:
+        text = con_diminutivos(text)
     _put(name, rel, caption=text)
     return text
 
@@ -348,11 +453,175 @@ _TUTEO = [
 
 def _rioplatense(text):
     """Le saca el tuteo que se le escapa al modelo. Conserva las mayúsculas."""
-    for patron, cambio in _TUTEO:
+    for patron, cambio in tuteo_pairs():   # fábrica + los pares de Ajustes
         def _rep(m, c=cambio):
             return c.capitalize() if m.group(0)[:1].isupper() else c
         text = re.sub(patron, _rep, text, flags=re.IGNORECASE)
     return text
+
+
+# Diminutivos, el habla de acá: "acá con friito", "comiendo una sopita".
+#
+# Es una LISTA y no un motor de reglas, a propósito. El diminutivo español es
+# irregular (frío->friito, despacio->despacito, cerveza->cervecita,
+# flaco->flaquito) y sin saber qué palabra es un verbo, una regla te deja
+# "tomandito". Con lista: poca cobertura, cero engendros. Agregá las que uses.
+#
+# Tampoco se lo pide al modelo: probado, lo ignora entero (cero diminutivos,
+# pidiéndoselo con ejemplos y todo).
+#
+# Dos formas, las dos válidas:
+#   "sopa": "sopita"                          -> siempre esa
+#   "tranquilo": ["tranquilito", "tranquilazo"]  -> una al azar cada vez
+DIMINUTIVOS = {
+    # temperatura y estados
+    "frío": "friito", "frio": "friito", "fría": "friita", "fria": "friita",
+    "calor": "calorcito", "caliente": "calentito", "solo": "solito",
+    "sola": "solita", "cansado": "cansadito", "cansada": "cansadita",
+    "borracho": "borrachito", "borracha": "borrachita",
+    # cuerpo y ropa
+    "desnudo": "desnudito", "desnuda": "desnudita", "gordo": "gordito",
+    "gorda": "gordita", "flaco": "flaquito", "flaca": "flaquita",
+    "ropa": "ropita", "vestido": "vestidito", "bikini": "bikinito",
+    "pollera": "pollerita", "remera": "remerita", "short": "shorcito",
+    "tanga": "tanguita", "corpiño": "corpiñito", "zapatos": "zapatitos",
+    # comida y bebida
+    "sopa": "sopita", "torta": "tortita", "helado": "heladito",
+    "cerveza": "cervecita", "vino": "vinito", "mate": "matecito",
+    "café": "cafecito", "cafe": "cafecito", "agua": "agüita", "pan": "pancito",
+    "asado": "asadito", "picada": "picadita",
+    # lugares y cosas
+    "casa": "casita", "cama": "camita", "playa": "playita", "sol": "solcito",
+    "auto": "autito", "perro": "perrito", "gato": "gatito", "foto": "fotito",
+    "fiesta": "fiestita", "baño": "bañito", "cocina": "cocinita",
+    "jardín": "jardincito", "patio": "patiecito", "pieza": "piecita",
+    # modos
+    "despacio": "despacito", "callado": "calladito", "callada": "calladita",
+    "quieto": "quietito", "quieta": "quietita", "juntos": "juntitos",
+    "juntas": "juntitas", "cerca": "cerquita", "poco": "poquito",
+    "chico": "chiquito", "chica": "chiquita", "grande": "grandote",
+    "lindo": "lindito", "linda": "lindita", "feo": "feíto", "fea": "feíta",
+    "nuevo": "nuevito", "nueva": "nuevita", "viejo": "viejito",
+    "vieja": "viejita", "rápido": "rapidito",
+    # ejemplo de la forma con varias: sale una al azar
+    "tranquilo": ["tranquilito", "tranquilazo"],
+    "tranquila": ["tranquilita", "tranquilaza"],
+}
+# Piropos: van SOLO en los comentarios, no en el pie. Un piropo se le dice A
+# alguien, y el pie lo escribe la persona sobre sí misma ("acá con friito"): ahí
+# un "mamita" no tiene sentido.
+#
+# Y van SOLO en fotos de adultos: para un chico se saltean enteros (ver
+# con_diminutivos). Los diminutivos comunes sí valen para todos — a un chico le
+# quedan mejor que a nadie.
+PIROPOS = {
+    "mamá": ["mamita", "mami"], "mama": ["mamita", "mami"],
+    "papá": ["papito", "papi"], "papa": ["papito", "papi"],
+    "reina": ["reinita", "reinaza"], "diosa": ["diosita", "diosaza"],
+    "muñeca": ["muñequita"], "princesa": ["princesita"],
+    "bombón": ["bomboncito"], "bombon": ["bomboncito"],
+    "hermosa": ["hermosita"], "hermoso": ["hermosito"],
+    "potra": ["potrita"], "yegua": ["yeguita"], "mina": ["minita"],
+    "tesoro": ["tesorito"], "amor": ["amorcito"], "cielo": ["cielito"],
+    "corazón": ["corazoncito"], "corazon": ["corazoncito"],
+    "negro": ["negrito"], "negra": ["negrita"],
+    "rubio": ["rubito"], "rubia": ["rubita"],
+    "morocho": ["morochito"], "morocha": ["morochita"],
+}
+
+
+def _armar_re(tabla):
+    return re.compile(r"\b(%s)\b" % "|".join(sorted(tabla, key=len, reverse=True)), re.I)
+
+
+# --- overrides de Configuración -------------------------------------------
+# Todo lo de acá se puede tocar desde Ajustes. La idea: lo del código es la BASE
+# y lo de Ajustes se SUMA (no reemplaza), así nadie desactiva sin querer una
+# palabra que protege (menores, sexuales). Vacío en Ajustes = solo la base.
+
+
+def _cfg():
+    try:
+        return load_config()
+    except Exception:
+        return {}
+
+
+def _nw(w):
+    return re.sub(r"[^\wáéíóúñü]", "", (w or "").strip().lower())
+
+
+def menor_set():
+    """Etiquetas que marcan menor: las de fábrica + las que sumaste en Ajustes."""
+    return _MENOR | {_nw(w) for w in _cfg().get("f_menor_extra", []) if w.strip()}
+
+
+def vacias_set():
+    return _VACIAS | {_nw(w) for w in _cfg().get("f_vacias_extra", []) if w.strip()}
+
+
+def tuteo_pairs():
+    """Correcciones tú->vos: las de fábrica + las tuyas ("tienes=tenés")."""
+    pares = list(_TUTEO)
+    for linea in _cfg().get("f_tuteo_extra", []):
+        if "=" in linea:
+            a, b = linea.split("=", 1)
+            a, b = a.strip(), b.strip()
+            if a and b:
+                pares.append((rf"\b{re.escape(a)}\b", b))
+    return pares
+
+
+def crudeness_list():
+    """Los 5 niveles. Un texto vacío en Ajustes = se usa el de fábrica."""
+    ov = _cfg().get("f_crudeness") or []
+    out = []
+    for i, (clave, txt) in enumerate(CRUDENESS):
+        propio = ov[i].strip() if i < len(ov) and isinstance(ov[i], str) and ov[i].strip() else ""
+        out.append((clave, propio or txt))
+    return out
+
+
+def _tabla_dim(base, clave):
+    """La tabla de diminutivos/piropos: la de fábrica + lo que sumaste en Ajustes.
+    El override es {palabra: [forma, ...]} y pisa esa palabra o agrega nuevas."""
+    tabla = dict(base)
+    extra = _cfg().get(clave) or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if k and v:
+                tabla[_nw(k)] = v
+    return tabla
+
+
+def diminutivos_map():
+    return _tabla_dim(DIMINUTIVOS, "f_diminutivos_extra")
+
+
+def piropos_map():
+    return _tabla_dim(PIROPOS, "f_piropos_extra")
+
+
+def con_diminutivos(texto, piropos=False):
+    """Pasa a diminutivo las palabras conocidas. Respeta las mayúsculas.
+
+    Si una palabra tiene varias formas (una lista), se elige una al azar: así no
+    sale siempre la misma en todas las fotos.
+
+    piropos=True suma la tabla PIROPOS (mamá->mamita). Va solo en los comentarios
+    y solo si la persona NO está etiquetada como menor.
+
+    Las tablas salen de Configuración (fábrica + lo tuyo), por eso el regex se
+    arma acá y no una vez al importar."""
+    tabla = {**diminutivos_map(), **piropos_map()} if piropos else diminutivos_map()
+    if not tabla:
+        return texto
+    def cambio(m):
+        d = tabla[m.group(0).lower()]
+        if not isinstance(d, str):        # una lista: elegimos una
+            d = random.choice(list(d))
+        return d.capitalize() if m.group(0)[:1].isupper() else d
+    return _armar_re(tabla).sub(cambio, texto)
 
 
 def _sin_autonombre(texto, name):
@@ -385,13 +654,21 @@ def eco_de(texto, fragmentos, n=4):
     """True si `texto` repite algo que le metimos nosotros en el prompt.
 
     Compara tiradas de n palabras seguidas: un eco tiene tramos largos idénticos,
-    una coincidencia real no. Textos muy cortos no se juzgan (no tienen tirada)."""
+    una coincidencia real no.
+
+    Las frases más cortas que n no tienen tirada que comparar (así se colaba "Sos
+    Alejandro." al final del pie), así que esas se buscan enteras dentro del
+    prompt. Con 2 palabras o más: una sola no dice nada."""
+    p = _palabras(texto)
+    if len(p) < 2:
+        return False
+    if len(p) < n:
+        corto = " ".join(p)
+        return any(corto in " ".join(_palabras(f)) for f in fragmentos)
     mios = set()
     for f in fragmentos:
         mios |= _ngramas(f, n)
-    if not mios:
-        return False
-    return bool(_ngramas(texto, n) & mios)
+    return bool(mios and _ngramas(texto, n) & mios)
 
 
 def _sin_instrucciones(texto, fragmentos):
@@ -454,6 +731,7 @@ def quien_es_texto(ident):
                 "lo grande que está\". Usá diminutivos (lindito, chiquito, "
                 "grandote). NADA sexual, NADA subido de tono, NADA sobre su "
                 "cuerpo: eso está terminantemente prohibido acá.")
+                      
         if ident["genero"]:
             base += (" Es una nena: hablá en femenino." if ident["genero"] == "f"
                      else " Es un nene: hablá en masculino.")
@@ -474,8 +752,9 @@ def quien_es_pie(ident):
     Sin esto sale "estoy cansado" cuando es una mujer."""
     if ident["menor"]:
         base = ("Sos un chico. El pie es inocente y tierno, de lo que estás "
-                "haciendo y nada más. NADA sexual ni subido de tono, y nada "
+               "haciendo y nada más. NADA sexual ni subido de tono, y nada "
                 "sobre tu cuerpo: está terminantemente prohibido acá.")
+                
         if ident["genero"] == "f":
             return base + " Sos nena: escribí en femenino (\"estoy cansada\")."
         if ident["genero"] == "m":
@@ -488,27 +767,128 @@ def quien_es_pie(ident):
     return ""
 
 
-def _pick(name, rel, n, users=None, solo_sanos=False):
+def _sin_copia_del_pie(textos, pie):
+    """Tira los comentarios que son el pie copiado y pegado.
+
+    Como el pie viaja en el prompt, el modelo lo devuelve tal cual haciéndolo
+    pasar por comentario. Pero CITARLO está bien —es el punto de que lo vea—, así
+    que solo se tira lo que es copia casi entera, no lo que comparte unas
+    palabras."""
+    if not pie:
+        return textos
+    p = " ".join(_palabras(pie))
+    return [t for t in textos if " ".join(_palabras(t)) not in p]
+
+
+# Palabras tan comunes que dos comentarios distintos las comparten igual. No
+# cuentan para decidir si dos se parecen, si no "sos linda vos" y "sos genia vos"
+# darían casi iguales por el "sos" y el "vos".
+_VACIAS = {"que", "qué", "de", "la", "el", "los", "las", "un", "una", "vos",
+           "sos", "te", "me", "se", "y", "en", "con", "por", "para", "es",
+           "esa", "ese", "esta", "este", "tan", "muy", "más", "mas", "lo",
+           "tu", "tus", "ese", "así", "asi", "a", "no", "si", "sí", "mi"}
+
+
+def _sin_repetidos(textos, previos=()):
+    """Tira los comentarios que dicen casi lo mismo que otro.
+
+    El modelo escribe seis y le salen tres calcados ("qué linda estás", "estás
+    hermosa hoy", "qué hermosa sos"). Se comparan las palabras con contenido
+    (sin las vacías tipo "que", "sos", "vos"): si dos comparten demasiadas, se
+    tira el segundo. `previos` son los que ya estaban en la foto, para que "más
+    comentarios" traiga cosas nuevas y no repita lo de antes."""
+    vac = vacias_set()                 # fábrica + las que sumaste en Ajustes
+    def contenido(t):
+        return {w for w in _palabras(t) if w not in vac and len(w) > 2}
+
+    vistos = [contenido(p) for p in previos]
+    quedan = []
+    for t in textos:
+        c = contenido(t)
+        if not c:                       # todo palabras vacías: no aporta
+            continue
+        # coeficiente de solapamiento contra cada uno de los ya aceptados
+        repetido = any(v and len(c & v) / min(len(c), len(v)) >= 0.55
+                       for v in vistos)
+        if repetido:
+            continue
+        vistos.append(c)
+        quedan.append(t)
+    return quedan
+
+
+def _regla_compania(people):
+    """Le dice al modelo quién MÁS está en la foto, para que alguno lo nombre.
+
+    Son los conocidos que etiquetaste con @ en el modal. Sin nadie, no dice nada.
+    """
+    if not people:
+        return ""
+    quienes = " y ".join(people) if len(people) < 3 else \
+        ", ".join(people[:-1]) + f" y {people[-1]}"
+    return (f"\nEn la foto también está {quienes}. Alguno de los comentarios "
+            f"(no todos) puede nombrarlo, como si lo conociera.\n")
+
+
+def _regla_etiquetas(tags):
+    """Lo que hay confirmado en la foto, para que los comentarios sean sobre eso
+    y no sobre lo que el modelo cree ver ("campera" en vez de "blusa")."""
+    if not tags:
+        return ""
+    return (f"\nConfirmado que en la foto hay: {', '.join(tags)}. Los comentarios "
+            "hablan de ESO, no de otra cosa que se les ocurra.\n")
+
+
+def _regla_pie(pie, n):
+    """Le cuenta al modelo qué dice el pie y quiénes le responden.
+
+    A quiénes les toca se sortea: si siempre respondieran los mismos —o si todos
+    arrancaran por el pie— se nota el molde. Entre uno y la mitad, al azar.
+
+    Sin pie no hay sorteo ni línea: comentan la foto y listo."""
+    if not pie or n < 1:
+        return ""
+    cuantos = random.randint(1, max(1, n // 2))
+    quienes = sorted(random.sample(range(1, n + 1), cuantos))
+    lista = " y ".join(str(i) for i in quienes) if len(quienes) < 3 else \
+        ", ".join(str(i) for i in quienes[:-1]) + f" y {quienes[-1]}"
+    return (f'\nEl pie que escribió es: "{pie}"\n'
+            f"El comentario {lista} le contesta a lo que dice el pie. Los demás "
+            f"ni lo miran: comentan lo que se ve en la foto.\n")
+
+
+def _pick(name, rel, n, users=None, solo_sanos=False, evitar=()):
     """Qué comentadores comentan ESTA foto: n de los COMMENTERS.
 
     Estable por foto (ver _stable_hash) pero distinto entre fotos, así no
     comentan siempre los mismos seis. Si en Ajustes cambiaste los nombres, se
     usan los tuyos y las personalidades se reparten entre ellos.
 
-    solo_sanos saca a los que desean: es para las fotos de chicos."""
+    solo_sanos saca a los que desean: es para las fotos de chicos.
+
+    evitar son los que YA comentaron esta foto: al pedir más comentarios entran
+    los que faltan, no los mismos otra vez. Si ya comentaron todos, se repiten
+    (mejor repetir que no traer nada)."""
     pool = [(u, p) for u, p, desea in COMMENTERS if not (solo_sanos and desea)]
     if users:
         pool = [(users[i % len(users)], p) for i, (_, p) in enumerate(pool)]
-    arranque = _stable_hash(_key(name, rel)) % len(pool)
-    return [pool[(arranque + i) % len(pool)] for i in range(min(n, len(pool)))]
+    if not pool:
+        return []
+    libres = [c for c in pool if c[0] not in set(evitar)] or pool
+    arranque = _stable_hash(_key(name, rel)) % len(libres)
+    return [libres[(arranque + i) % len(libres)] for i in range(min(n, len(libres)))]
 
 
 def generate_comments(name, rel, image_path, tone=DEFAULT_TONE, model=None,
-                      n=N_COMMENTS, users=None, crudeness=CRUDENESS_DEFAULT):
+                      n=N_COMMENTS, users=None, crudeness=CRUDENESS_DEFAULT,
+                      sumar=False, diminutivos=False):
     """Escribe los comentarios y los guarda. ~1 minuto en CPU.
 
     Comenta un puñado de los COMMENTERS, elegidos según la foto: cada uno tiene
     su personalidad y su @usuario, así los seis suenan distinto entre sí.
+
+    sumar=True agrega a los que ya están, como una publicación de verdad: entran
+    los comentadores que todavía no habían comentado esta foto.
 
     Lanza RuntimeError con mensaje legible si Ollama no está, el modelo no existe
     o lo que devolvió no sirve."""
@@ -518,28 +898,53 @@ def generate_comments(name, rel, image_path, tone=DEFAULT_TONE, model=None,
     ident = identidad(tags_mod.get_person(name))
     if ident["menor"]:
         crudeness = 0
-    elegidos = _pick(name, rel, n, users, solo_sanos=ident["menor"])
+    post = get(name, rel)
+    pie = post["caption"]          # los comentarios lo ven: unos le contestan
+    ya_estan = post["comments"] if sumar else []
+    elegidos = _pick(name, rel, n, users, solo_sanos=ident["menor"],
+                     evitar=[c["user"] for c in ya_estan])
+    if not elegidos:
+        raise RuntimeError("No hay comentadores disponibles (ver COMMENTERS).")
     quienes = "\n".join(f"{i + 1}. {p}" for i, (_, p) in enumerate(elegidos))
     # el de la edad, 1 de cada AGE_EVERY fotos: estable por foto, así regenerar
     # no lo hace aparecer y desaparecer
     edad = _AGE_RULE + "\n" if _stable_hash(_key(name, rel)) % AGE_EVERY == 0 else ""
     prompt = _PROMPT.format(n=len(elegidos), quienes=quienes, voseo=_VOSEO,
+                            pie=_regla_pie(pie, len(elegidos)),
+                            compania=_regla_compania(post["people"]),
+                            etiquetas=_regla_etiquetas(_intencion(name, rel, image_path, ident["menor"])),
                             quien_es=quien_es_texto(ident),
                             tono=TONES.get(tone, TONES[DEFAULT_TONE]),
                             crudeza=crudeness_text(crudeness), edad=edad)
+    extra = (_cfg().get("post_extra_com") or "").strip()   # tu caja de Ajustes
+    if extra:
+        prompt += "\n- " + extra
     # system="": el de vlm.py es para el pie de foto (situacional, primera
     # persona) y acá lo pelearía. Los comentarios se guían solos con el prompt.
     raw = vlm.describe(image_path, model=model or vlm.DEFAULT_MODEL,
                        prompt=prompt, num_predict=45 * n, temperature=0.95,
                        system="")
-    # además de las personalidades, se le escapan las reglas del prompt
+    # además de las personalidades, se le escapan las reglas del prompt.
+    # El PIE no va acá: los comentarios tienen que poder citarlo, es el punto.
+    # Que no lo copien enteros lo cuida _sin_copia_del_pie.
     ecos = [p for _, p in elegidos] + [_VOSEO, quien_es_texto(ident),
                                        crudeness_text(crudeness),
                                        TONES.get(tone, TONES[DEFAULT_TONE])]
-    got = _sin_eco(_parse(raw), ecos)
+    got = _sin_copia_del_pie(_sin_eco(_parse(raw), ecos), pie)
+    # y por fin, sacar los que dicen casi lo mismo entre sí (y los que repiten
+    # lo que ya estaba, si es "más comentarios")
+    got = _sin_repetidos(got, previos=[c["text"] for c in ya_estan])
     if not got:
         raise RuntimeError(f"El modelo no devolvió comentarios usables: {raw[:120]}")
     # el i-ésimo comentario es del i-ésimo comentador (se lo pedimos en orden)
-    con_firma = [{"user": u, "text": _rioplatense(t)} for (u, _), t in zip(elegidos, got)]
-    _put(name, rel, comments=con_firma)
-    return con_firma
+    def pulir(t):
+        t = _rioplatense(t)
+        if diminutivos:
+            # los piropos (mamita, reinita) SOLO a adultos; los diminutivos
+            # comunes valen para todos
+            t = con_diminutivos(t, piropos=not ident["menor"])
+        return t
+    con_firma = [{"user": u, "text": pulir(t)} for (u, _), t in zip(elegidos, got)]
+    todos = ya_estan + con_firma
+    _put(name, rel, comments=todos)
+    return todos

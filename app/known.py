@@ -30,6 +30,12 @@ MATCH_EPS = 0.50
 
 _INVALID = '<>:"/\\|?*'
 
+# El importador por carpeta SOLO copia (no detecta caras) y las fotos se ven en
+# el navegador, así que acepta un poco más que el analizador: .jfif (es JPEG) y
+# .avif (los muestran los navegadores modernos). HEIC/TIFF quedan afuera porque
+# el navegador no los dibuja (se copiarían pero se verían rotos).
+IMPORT_EXTENSIONS = IMAGE_EXTENSIONS | {".jfif", ".avif"}
+
 
 def safe_name(name):
     """Nombre válido como archivo (para la miniatura de la persona)."""
@@ -52,18 +58,100 @@ def save_person_thumb(name, image_rgb, box, size=220, margin=0.2):
     im.save(KNOWN_THUMBS / f"{safe_name(name)}.jpg", quality=85)
 
 
-def known_summary():
-    """Lista de personas conocidas: [{name, count, thumb}] ordenada por nombre."""
+def known_summary(known_dir=None):
+    """Lista de personas conocidas: [{name, count, faces, thumb}] ordenada por
+    nombre. Si se pasa known_dir, incluye TAMBIÉN a las personas que solo existen
+    como carpeta en la Biblioteca (importadas sin analizar caras): esas van con
+    faces=False y count=0."""
     db = load_known()
+    names = set(db)
+    if known_dir:
+        names |= set(library_people(known_dir))
     out = []
-    for name in sorted(db, key=str.lower):
+    for name in sorted(names, key=str.lower):
         thumb = f"{safe_name(name)}.jpg"
         out.append({
             "name": name,
-            "count": int(len(db[name])),
+            "count": int(len(db[name])) if name in db else 0,
+            "faces": name in db,          # True = tiene cara aprendida (se reconoce sola)
             "thumb": thumb if (KNOWN_THUMBS / thumb).is_file() else None,
         })
     return out
+
+
+def library_people(known_dir):
+    """Nombres de las subcarpetas de la Biblioteca que tienen al menos una imagen.
+    Sirve para que la galería muestre también a las personas importadas por
+    carpeta (sin cara aprendida, por eso no están en la base de vectores)."""
+    root = Path(known_dir) if known_dir else None
+    if not root or not root.is_dir():
+        return []
+    out = []
+    for sub in root.iterdir():
+        if not sub.is_dir() or sub.name.startswith("_"):
+            continue
+        if any(p.suffix.lower() in IMAGE_EXTENSIONS for p in sub.rglob("*")):
+            out.append(sub.name)
+    return out
+
+
+def import_folder_as_person(known_dir, src, name, recursive=True):
+    """Copia TODAS las imágenes de `src` a <Biblioteca>/<name>/ y le pone una
+    portada (miniatura de la primera foto, SIN detectar caras). No analiza nada:
+    asume que todas las fotos son de esa persona. Devuelve cuántas copió.
+
+    Saltea archivos que ya estén en el destino con el mismo nombre y tamaño (así
+    re-importar la misma carpeta no duplica). Lanza ValueError si falta la
+    Biblioteca, la carpeta origen no existe, o no hay nombre."""
+    if not known_dir:
+        raise ValueError("Falta configurar la Biblioteca (Ajustes).")
+    src = Path(src)
+    if not src.is_dir():
+        raise ValueError("Esa carpeta de origen no existe.")
+    name = (name or src.name).strip()
+    if not name:
+        raise ValueError("Falta el nombre de la persona.")
+    # las carpetas de persona usan el nombre CRUDO (igual que el organizador y
+    # person_photos); safe_name es solo para el archivo de la miniatura.
+    dest_dir = Path(known_dir) / name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ya = {(q.name, q.stat().st_size) for q in dest_dir.iterdir() if q.is_file()}
+    it = src.rglob("*") if recursive else src.iterdir()
+    copiadas, dup, vistos, primera = 0, 0, 0, None
+    otras = {}                                   # extensiones NO soportadas -> cuántas
+    for p in sorted(it):
+        if not p.is_file():
+            continue
+        vistos += 1
+        ext = p.suffix.lower()
+        if ext not in IMPORT_EXTENSIONS:
+            otras[ext or "(sin extensión)"] = otras.get(ext or "(sin extensión)", 0) + 1
+            continue
+        if (p.name, p.stat().st_size) in ya:      # ya importada antes: saltear
+            dup += 1
+            continue
+        dest = dest_dir / p.name
+        n = 2
+        while dest.exists():
+            dest = dest_dir / f"{p.stem}_{n}{p.suffix}"
+            n += 1
+        shutil.copy2(str(p), str(dest))
+        ya.add((dest.name, dest.stat().st_size))
+        copiadas += 1
+        if primera is None:
+            primera = dest
+    # portada de cortesía (miniatura de la 1ra foto), solo si no tenía ya una
+    thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+    if primera is not None and not thumb.is_file():
+        try:
+            KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+            im = ImageOps.exif_transpose(Image.open(primera)).convert("RGB")
+            im.thumbnail((220, 220))
+            im.save(thumb, quality=85)
+        except Exception:
+            pass
+    return {"copiadas": copiadas, "dup": dup, "vistos": vistos,
+            "otras": sorted(otras.items(), key=lambda x: -x[1])}
 
 
 def forget_person(name):

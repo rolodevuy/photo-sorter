@@ -166,8 +166,27 @@ def score_tags(image, vocab, top_n=12, min_prob=0.55):
     return keep[:top_n] if keep else [(t, float(p)) for t, p in ranked[:3]]
 
 
+def embed_image(image):
+    """El vector CLIP de la imagen (normalizado). Fotos parecidas dan vectores
+    parecidos: es la base para aprender a reconocer una escena a partir de tus
+    etiquetas, igual que las caras aprenden de ejemplos reales."""
+    import torch
+    _, _, clip, proc = _load()
+    inputs = proc(images=image, return_tensors="pt")
+    with torch.no_grad():
+        v = clip.get_image_features(**inputs)[0]
+    v = v / v.norm()                      # normalizado: comparar por coseno
+    return v.cpu().numpy()
+
+
+def embed_path(image_path):
+    """Igual que embed_image pero desde una ruta (abre y corrige rotación)."""
+    with _lock:
+        return embed_image(_open(image_path))
+
+
 def interrogate(image_path, vocab, with_details=True, engine="blip",
-                vlm_model=None, person=None):
+                vlm_model=None, person=None, crudo=True, evitar=()):
     """Frase + tags + detalles de la persona, en una pasada. Serializado (los
     modelos no son thread-safe).
 
@@ -180,7 +199,12 @@ def interrogate(image_path, vocab, with_details=True, engine="blip",
     `person` es de quién es la foto (sale de la carpeta): el VLM la nombra en vez
     de adivinar.
 
-    Los tags siempre los pone CLIP: son de TU vocabulario, no dependen del motor.
+    Los TAGS dependen del motor:
+    - "blip": CLIP puntúa contra TU vocabulario (etiquetas ya usadas). Nunca
+      inventa una palabra nueva, así que si la foto tiene algo que nunca
+      etiquetaste, no lo va a sugerir — siempre las mismas.
+    - "vlm": el modelo de visión MIRA la foto y dice qué ve, sin vocabulario
+      fijo. Más lento, pero saca lo que realmente hay, no lo que ya usaste antes.
 
     Devuelve {"caption": frase en español, "caption_en": original en inglés (o
     None si ya vino en español), "tags": [(tag, score), ...],
@@ -189,15 +213,17 @@ def interrogate(image_path, vocab, with_details=True, engine="blip",
         img = _open(image_path)
         if engine == "vlm":
             from app import vlm
+            m = vlm_model or vlm.DEFAULT_MODEL
             cap_es = vlm.clean_caption(
-                vlm.describe(image_path, model=vlm_model or vlm.DEFAULT_MODEL,
-                             prompt=vlm.caption_prompt(person)))
+                vlm.describe(image_path, model=m, prompt=vlm.caption_prompt(person)))
             cap_en = None         # nunca hubo inglés: nació en español
             details = []          # el pie ya cuenta ropa, cuerpo y acciones
+            # sin score real (no es un ranking, es lo que vio): 1.0 fijo
+            tags = [(t, 1.0) for t in vlm.suggest_tags(image_path, model=m, quien=person, crudo=crudo, evitar=evitar)]
         else:
             cap_en = caption(img)
             cap_es = translate_es(cap_en)
             details = person_details(img) if with_details else []
-        return {"caption": cap_es, "caption_en": cap_en,
-                "tags": score_tags(img, vocab),
+            tags = score_tags(img, vocab)
+        return {"caption": cap_es, "caption_en": cap_en, "tags": tags,
                 "details": details}
