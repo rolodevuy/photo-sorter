@@ -47,7 +47,6 @@ from app.known import (add_faces, enroll_from_folder, forget_person,
                        import_folder_as_person, known_summary, library_people,
                        load_known, move_photo, person_photos, save_face_crops,
                        save_known, safe_name, save_uploaded_photos, set_cover)
-from app.linkgrab import grab_links
 from app.notfaces import add_not_faces, clear_not_faces, count_not_faces
 from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
                       SCORE_MIN_LO, move_to_nsfw, scan_nsfw)
@@ -686,7 +685,6 @@ NAV_ITEMS = [
     ("▦", "Rostros", "home", "home"),
     ("⧉", "Duplicados", "dupes_page", "dupes"),
     ("✎", "Carpeta", "rename_page", "rename"),
-    ("⛓", "Enlaces", "links_page", "links"),
     ("☻", "Galería", "known_page", "known"),
     ("⌕", "Persona", "finder_page", "finder"),
     ("⚠", "NSFW", "nsfw_page", "nsfw"),
@@ -2400,56 +2398,6 @@ def notfaces_clear():
     return redirect(url_for("known_page", msg="Lista negra vaciada."))
 
 
-LINKS_TEMPLATE = """
-<h1>Extraer enlaces</h1>
-<p class="hint">Pegá la dirección de una página y el texto a buscar: la página se abre en un navegador invisible (funciona también con páginas que cargan por JavaScript) y se listan todos los enlaces de su código que contengan ese texto. Como cada página es distinta, el texto lo elegís vos en cada búsqueda.</p>
-
-{% if error %}<div class="err">{{ error }}</div>{% endif %}
-
-<div class="panel">
-  <form method="post" onsubmit="const b=document.getElementById('go'); b.disabled=true; b.textContent='Cargando la página…'">
-    <div class="row">
-      <label>Página:</label>
-      <input class="path" type="text" name="page_url" value="{{ page_url }}" placeholder="https://ejemplo.com/galeria">
-    </div>
-    <div class="row">
-      <label>Buscar:</label>
-      <input type="text" name="term" value="{{ term }}" placeholder="ej: mp4, /video/, download">
-      <button class="primary" id="go">🔗 Buscar enlaces</button>
-    </div>
-    <span class="meta">La página tarda unos segundos en cargarse (se hace scroll para destrabar galerías con carga diferida).</span>
-  </form>
-</div>
-
-{% if links is not none %}
-<div class="panel">
-  <div class="counter">{{ links|length }} enlace(s) con "{{ term }}"</div>
-  {% if links %}
-  <div class="row">
-    <button class="primary" onclick="copyAll()">📋 Copiar todos (separados por coma)</button>
-    <span class="saved-tick" id="copied">✓ copiados</span>
-  </div>
-  <ol>
-    {% for u in links %}<li><a href="{{ u }}" target="_blank" rel="noreferrer">{{ u }}</a></li>{% endfor %}
-  </ol>
-  {% else %}
-  <p class="meta">No apareció ese texto en ningún enlace. Puede que la página pida iniciar sesión,
-     que el contenido tarde más en cargar, o que el texto esté escrito distinto (probá con un pedazo más corto).</p>
-  {% endif %}
-</div>
-<script>
-const LINKS = {{ links|tojson }};
-function copyAll() {
-  navigator.clipboard.writeText(LINKS.join(', ')).then(() => {
-    const t = document.getElementById('copied');
-    t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 1500);
-  });
-}
-</script>
-{% endif %}
-"""
-
 
 FINDER_TEMPLATE = """
 <h1>Buscar persona</h1>
@@ -2764,27 +2712,6 @@ def finder_move():
     if errors:
         msg += f" {len(errors)} no se pudieron mover (ej: {errors[0][0]})."
     return redirect(url_for("finder_page", msg=msg))
-
-
-@app.route("/links", methods=["GET", "POST"])
-def links_page():
-    """Extractor de enlaces: URL + texto a buscar -> lista de enlaces."""
-    page_url = request.form.get("page_url", "").strip()
-    term = request.form.get("term", "").strip()
-    links = None
-    error = ""
-    if request.method == "POST":
-        if not page_url or not term:
-            error = "Completá la dirección de la página y el texto a buscar."
-        else:
-            if not page_url.lower().startswith(("http://", "https://")):
-                page_url = "https://" + page_url
-            try:
-                links = grab_links(page_url, term)
-            except RuntimeError as e:
-                error = str(e)
-    return render_template_string(
-        shell("links", LINKS_TEMPLATE), page_url=page_url, term=term, links=links, error=error)
 
 
 @app.route("/known_thumb/<name>")
