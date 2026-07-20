@@ -6713,7 +6713,20 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
 </details>
 
 <div class="panel">
-  <div class="row" style="margin-bottom:.5rem">
+  <div class="row">
+    <button class="primary" onclick="cmbAbrir()" title="Elegís etiquetas y sacás/editás el JSON de esa combinación">🔍 Armar / editar una combinación</button>
+    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y FUSIONA con lo que tenés">⬆ Importar archivo</button>
+    <input type="file" id="mo-file" accept=".json,application/json" style="display:none" onchange="moImportar(this)">
+    <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="imp-reemp"> reemplazar todo</label>
+    <a class="meta" href="{{ url_for('moldes_export') }}" style="text-decoration:underline">backup completo</a>
+  </div>
+</div>
+
+{# la lista completa de moldes va COLAPSADA: molestaba tenerla siempre a la vista.
+   El trabajo normal es por el modal de arriba; esto es para revisar/editar en bloque. #}
+<details class="mo-sec" style="border:1px solid var(--bd); border-radius:10px; padding:.6rem .9rem">
+  <summary>📋 Ver / editar todos los moldes ({{ cuerpos|length }})</summary>
+  <div class="row" style="margin:.5rem 0">
     <input id="mo-filtro" class="path" placeholder="🔍 filtrar por texto o etiqueta…" oninput="moFiltrar()">
     <span class="meta"><b id="mo-count">{{ cuerpos|length }}</b> molde(s)</span>
   </div>
@@ -6736,14 +6749,7 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
     <button class="secondary" onclick="moFabrica()" title="Vuelve a los moldes que trae el programa">↺ restaurar los de fábrica</button>
     <span class="meta" id="mo-st"></span>
   </div>
-  <div class="row" style="margin-top:.6rem; border-top:1px solid var(--line); padding-top:.6rem">
-    <button class="primary" onclick="cmbAbrir()" title="Elegís etiquetas y sacás el JSON de esa combinación para copiar/editar">🔍 Armar / editar una combinación</button>
-    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y FUSIONA con lo que tenés">⬆ Importar archivo</button>
-    <input type="file" id="mo-file" accept=".json,application/json" style="display:none" onchange="moImportar(this)">
-    <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="imp-reemp"> reemplazar todo</label>
-    <a class="meta" href="{{ url_for('moldes_export') }}" style="text-decoration:underline">backup completo</a>
-  </div>
-</div>
+</details>
 
 <div id="cmb-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cmbCerrar()">
   <div class="modal-box" style="width:600px">
