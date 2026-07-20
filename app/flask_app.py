@@ -6736,26 +6736,38 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
     <button class="secondary" onclick="moFabrica()" title="Vuelve a los moldes que trae el programa">↺ restaurar los de fábrica</button>
     <span class="meta" id="mo-st"></span>
   </div>
-  <div style="margin-top:.6rem; border-top:1px solid var(--line); padding-top:.6rem">
-    <b>⬇ Exportar en bloques</b>
-    <p class="meta" style="margin:.2rem 0 .5rem">Para trabajar de a poco (ej. pasárselo a una IA sin
-      que sea un archivo gigante). Filtrá por etiqueta y/o por cantidad de etiquetas, y bajás solo eso.
-      Vacío = todo.</p>
-    <div class="row" style="margin:.3rem 0">
-      <input id="exp-tags" class="path" placeholder="solo las que tengan… (ej: playa, cama)"
-             oninput="expContar()" style="max-width:22rem">
-      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="1" checked onchange="expContar()"> 1</label>
-      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="2" checked onchange="expContar()"> 2</label>
-      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="3" checked onchange="expContar()"> 3+ etiquetas</label>
-      <button class="primary" onclick="expBajar()">⬇ Bajar bloque (<b id="exp-n">0</b>)</button>
-    </div>
-    <a class="meta" href="{{ url_for('moldes_export') }}" style="text-decoration:underline">o bajá el backup completo (todo, con cierres y alias)</a>
-  </div>
-  <div class="row" style="margin-top:.5rem; border-top:1px solid var(--line); padding-top:.6rem">
-    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y FUSIONA con lo que tenés">⬆ Importar bloque</button>
+  <div class="row" style="margin-top:.6rem; border-top:1px solid var(--line); padding-top:.6rem">
+    <button class="primary" onclick="cmbAbrir()" title="Elegís etiquetas y sacás el JSON de esa combinación para copiar/editar">🔍 Armar / editar una combinación</button>
+    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y FUSIONA con lo que tenés">⬆ Importar archivo</button>
     <input type="file" id="mo-file" accept=".json,application/json" style="display:none" onchange="moImportar(this)">
-    <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="imp-reemp"> reemplazar todo en vez de fusionar</label>
-    <span class="meta">Importar <b>fusiona</b> por defecto (trae el bloque sin borrar el resto).</span>
+    <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="imp-reemp"> reemplazar todo</label>
+    <a class="meta" href="{{ url_for('moldes_export') }}" style="text-decoration:underline">backup completo</a>
+  </div>
+</div>
+
+<div id="cmb-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cmbCerrar()">
+  <div class="modal-box" style="width:600px">
+    <div class="row" style="justify-content:space-between;margin:0 0 .5rem">
+      <b style="font-size:1.05rem">🔍 Combinación de etiquetas</b>
+      <button class="secondary sm" onclick="cmbCerrar()" title="Cerrar">✕</button>
+    </div>
+    <p class="meta" style="margin:0 0 .5rem">Buscá etiquetas que estén en tus fotos y agregá hasta 3.
+      "Armar" te da el JSON de esa combinación para copiar, editar y guardar.</p>
+    <input id="cmb-buscar" class="path" placeholder="🔍 buscar etiqueta viva…" autocomplete="off"
+           oninput="cmbSug()" onkeydown="cmbKey(event)" style="width:100%">
+    <div id="cmb-sug" style="max-height:9rem;overflow-y:auto;margin:.3rem 0"></div>
+    <div id="cmb-chips" style="margin:.3rem 0;min-height:1.6rem"></div>
+    <div class="row" style="margin:.3rem 0">
+      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="cmb-nsfw"> 🔞 versión cruda</label>
+      <button class="primary" onclick="cmbArmar()">Armar JSON ▾</button>
+    </div>
+    <textarea id="cmb-json" class="textos" spellcheck="false" rows="8"
+              placeholder="Acá aparece el JSON de la combinación al Armar. Editalo y Guardá." style="width:100%"></textarea>
+    <div class="row" style="margin-top:.4rem">
+      <button class="secondary" onclick="cmbCopiar()">📋 Copiar</button>
+      <button class="primary" onclick="cmbGuardar()">💾 Guardar (fusiona)</button>
+      <span class="meta" id="cmb-st"></span>
+    </div>
   </div>
 </div>
 
@@ -6885,41 +6897,100 @@ function moFabrica() {
     body: new URLSearchParams({fabrica: '1'})})
     .then(r => r.json()).then(() => location.reload());
 }
-// --- exportar en bloques: filtra las filas del editor y baja solo esas ---
+// --- modal de combinación: elegís etiquetas vivas y sacás/editás su JSON ---
 function norm(s) {   // minúsculas y sin tildes, para comparar sin exactitud
   return (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
 }
-function expFilas() {   // [{tags:[], textos:[], nsfw}] segun los filtros
-  const q = norm(mog('exp-tags').value).split(',').map(s => s.trim()).filter(Boolean);
-  const sizes = [...document.querySelectorAll('.exp-sz:checked')].map(c => c.value);
-  const out = [];
+const CMB_VIVAS = {{ vivas|tojson }};   // [[etiqueta, en cuantas fotos], ...]
+let cmbSel = [];                        // etiquetas elegidas (máx 3)
+function cmbAbrir() {
+  cmbSel = []; cmbRender(); mog('cmb-json').value = ''; mog('cmb-st').textContent = '';
+  mog('cmb-buscar').value = ''; mog('cmb-sug').innerHTML = '';
+  mog('cmb-modal').style.display = 'flex'; mog('cmb-buscar').focus();
+}
+function cmbCerrar() { mog('cmb-modal').style.display = 'none'; }
+function cmbSug() {
+  const q = norm(mog('cmb-buscar').value.trim());
+  const box = mog('cmb-sug'); box.innerHTML = '';
+  if (!q) return;
+  const hits = CMB_VIVAS.filter(([t]) => norm(t).includes(q) && !cmbSel.includes(t)).slice(0, 12);
+  if (!hits.length) {
+    const d = document.createElement('div'); d.className = 'meta'; d.style.padding = '.3rem';
+    d.textContent = 'sin etiquetas vivas que coincidan'; box.appendChild(d); return;
+  }
+  hits.forEach(([t, n]) => {
+    const d = document.createElement('div'); d.className = 'pmodal-item';
+    d.textContent = t + ' · ' + n + ' fotos';
+    d.onclick = () => cmbAdd(t);            // listener, no string: la etiqueta va literal
+    box.appendChild(d);
+  });
+}
+function cmbAdd(t) {
+  if (cmbSel.length >= 3) { alert('Máximo 3 etiquetas por combinación.'); return; }
+  if (!cmbSel.includes(t)) cmbSel.push(t);
+  mog('cmb-buscar').value = ''; mog('cmb-sug').innerHTML = ''; cmbRender();
+  mog('cmb-buscar').focus();
+}
+function cmbDel(t) { cmbSel = cmbSel.filter(x => x !== t); cmbRender(); }
+function cmbRender() {
+  const box = mog('cmb-chips'); box.innerHTML = '';
+  if (!cmbSel.length) {
+    const s = document.createElement('span'); s.className = 'meta';
+    s.textContent = 'todavía no agregaste ninguna'; box.appendChild(s); return;
+  }
+  cmbSel.forEach(t => {
+    const chip = document.createElement('span'); chip.className = 'chip';
+    chip.textContent = t + ' ';
+    const x = document.createElement('b'); x.textContent = '✕'; x.style.cursor = 'pointer';
+    x.onclick = () => cmbDel(t);
+    chip.appendChild(x); box.appendChild(chip);
+  });
+}
+function cmbKey(e) {   // Enter agrega la primera sugerencia
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const q = norm(mog('cmb-buscar').value.trim());
+  const hit = CMB_VIVAS.find(([t]) => norm(t).includes(q) && !cmbSel.includes(t));
+  if (hit) cmbAdd(hit[0]);
+}
+function cmbArmar() {
+  if (!cmbSel.length) { alert('Agregá al menos una etiqueta.'); return; }
+  const nsfw = mog('cmb-nsfw').checked;
+  const claveSel = cmbSel.map(norm).sort().join('|');
+  // buscar en el editor un molde con EXACTAMENTE estas etiquetas y este registro
+  let encontrado = null;
   document.querySelectorAll('#mo-lista .mo-cuerpo').forEach(row => {
     const tags = row.querySelector('.tags').value.split(',').map(s => s.trim()).filter(Boolean);
-    const textos = row.querySelector('.textos').value.split('\\n').map(s => s.trim()).filter(Boolean);
-    if (!tags.length || !textos.length) return;
-    // tamaño: 1, 2, o 3+ (el checkbox "3" cubre 3 o más)
-    const sz = tags.length >= 3 ? '3' : String(tags.length);
-    if (!sizes.includes(sz)) return;
-    // etiqueta: la fila tiene que contener AL MENOS una de las pedidas (vacío = todas)
-    if (q.length) {
-      const hay = tags.map(norm);
-      if (!q.some(t => hay.some(h => h.includes(t)))) return;
+    const clave = tags.map(norm).sort().join('|');
+    if (clave === claveSel && row.querySelector('.nsfw').checked === nsfw) {
+      encontrado = row.querySelector('.textos').value.split('\\n').map(s => s.trim()).filter(Boolean);
     }
-    out.push({tags: tags, textos: textos, nsfw: row.querySelector('.nsfw').checked});
   });
-  return out;
+  const cuerpo = {tags: cmbSel.slice(), textos: encontrado || ['', '', ''], nsfw: nsfw};
+  mog('cmb-json').value = JSON.stringify({cuerpos: [cuerpo]}, null, 2);
+  mog('cmb-st').textContent = encontrado ? ' (ya existía, lo traje)' : ' (nuevo: escribí los pies)';
 }
-function expContar() { mog('exp-n').textContent = expFilas().length; }
-function expBajar() {
-  const cuerpos = expFilas();
-  if (!cuerpos.length) { alert('No hay moldes que cumplan el filtro.'); return; }
-  const blob = new Blob([JSON.stringify({cuerpos: cuerpos}, null, 2)], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const tg = norm(mog('exp-tags').value).split(',')[0].trim() || 'bloque';
-  a.href = url; a.download = 'pies-' + tg.replace(/[^a-z0-9]/g, '') + '.json';
-  a.click(); URL.revokeObjectURL(url);
+function cmbCopiar() {
+  const t = mog('cmb-json'); t.select();
+  navigator.clipboard.writeText(t.value).then(
+    () => mog('cmb-st').textContent = ' ✓ copiado',
+    () => { document.execCommand('copy'); mog('cmb-st').textContent = ' ✓ copiado'; });
 }
+function cmbGuardar() {
+  let data;
+  try { data = mog('cmb-json').value; JSON.parse(data); }
+  catch (e) { mog('cmb-st').textContent = ' ✗ JSON inválido'; return; }
+  const fd = new FormData(); fd.append('texto', data);   // fusiona por defecto
+  mog('cmb-st').textContent = ' guardando…';
+  fetch("{{ url_for('moldes_import') }}", {method: 'POST', body: fd})
+    .then(r => r.json()).then(d => {
+      if (d.ok) { mog('cmb-st').textContent = ' ✓ guardado, recargando…'; setTimeout(() => location.reload(), 900); }
+      else mog('cmb-st').textContent = ' ✗ ' + d.error;
+    }).catch(e => mog('cmb-st').textContent = ' ' + e);
+}
+document.addEventListener('keydown', e => {   // Escape cierra el modal
+  if (e.key === 'Escape' && mog('cmb-modal').style.display !== 'none') cmbCerrar();
+});
 
 let genTimer = null;
 function genGo() {
@@ -6970,7 +7041,6 @@ function moImportar(input) {
       input.value = '';
     }).catch(e => { mog('mo-st').textContent = ' ' + e; input.value = ''; });
 }
-expContar();   // conteo inicial del bloque al cargar la página
 </script>
 """
 
@@ -6979,10 +7049,14 @@ expContar();   // conteo inicial del bloque al cargar la página
 def moldes_page():
     """Editor de moldes de pie: cuerpos, cierres, alias, y los huecos de cobertura."""
     conteo = tags_mod.all_photo_tag_counts()
+    # etiquetas "vivas": las que de verdad están en fotos, con en cuántas. Para el
+    # buscador del modal de combinaciones (así se ve qué se usa y qué no).
+    vivas = sorted(conteo.items(), key=lambda kv: (-kv[1], kv[0]))
     return render_template_string(
         shell("moldes", MOLDES_TEMPLATE),
         cuerpos=moldes_mod.combinaciones(), cierres=moldes_mod.cierres(),
         alias=sorted(moldes_mod.alias().items(), key=lambda kv: kv[0]),
+        vivas=vivas,
         huecos=moldes_mod.huecos(conteo)[:40],
         message=request.args.get("msg", ""))
 
