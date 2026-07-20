@@ -8377,12 +8377,11 @@ def main():
         # puerto. Así se mantiene el auto-reinicio del reloader y el puerto siempre
         # queda libre para esta ventana.
         _matar_fantasma_en_puerto(PORT)
-        # La biblioteca manda: lo que ya no está en el disco tampoco tiene que
-        # seguir en data/. Va en un hilo aparte porque recorre la biblioteca
-        # entera y no tiene por qué demorar la ventana. Es seguro correrlo
-        # mientras la app ya atiende: solo saca metadata de carpetas que no
-        # existen, así que nada de lo que puedas estar mirando depende de eso.
-        threading.Thread(target=_limpiar_huerfanos, daemon=True).start()
+        # NO se purga huérfanos al arrancar. Se probó y fue un error grave: una
+        # carpeta vacía un momento (o el disco sin montar del todo) hacía que se
+        # borraran etiquetas reales sin que el usuario tocara nada. "Que vacíe si
+        # vacío" era la acción MANUAL de vaciar, no un barrido automático. La
+        # limpieza queda solo a pedido (botón).
         print(f"[web] Abrí http://127.0.0.1:{PORT} en el navegador (solo accesible desde esta máquina).")
         threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
     # use_reloader=True: si se edita el código, el servidor se reinicia SOLO (cómodo
