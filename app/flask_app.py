@@ -3869,6 +3869,7 @@ POST_LIGHTBOX = """
             </div>
             <button class="primary capfab" id="lb-cap-btn" onclick="genCaption()" title="Escribir el pie con IA">✨</button>
             <button class="secondary capfab" id="lb-cap-edit" onclick="editCap()" title="Reescribirlo a tu manera">✏️</button>
+            <button class="secondary capfab" id="lb-cap-molde" onclick="abrirMoldeFoto()" title="Armar un molde de pie con las etiquetas de esta foto">✍</button>
           </div>
           <textarea id="lb-cap-in" class="capin" style="display:none"
                     placeholder="escribilo a tu manera… (Ctrl+Enter para guardar)"></textarea>
@@ -3934,6 +3935,25 @@ POST_LIGHTBOX = """
       <input class="path" id="pmodal-search" placeholder="🔍 Buscar por nombre…" autocomplete="off"
              oninput="pmodalFilter()" style="width:100%;margin:.5rem 0">
       <div id="pmodal-list" class="pmodal-list"></div>
+    </div>
+  </div>
+
+  <!-- modal: armar molde de pie con las etiquetas de ESTA foto -->
+  <div id="lb-molde-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cerrarMoldeFoto()">
+    <div class="modal-box" style="width:600px">
+      <div class="row" style="justify-content:space-between;margin:0 0 .4rem">
+        <b style="font-size:1.05rem">✍ Molde de pie de esta foto</b>
+        <button class="secondary sm" onclick="cerrarMoldeFoto()" title="Cerrar">✕</button>
+      </div>
+      <p class="meta" style="margin:0 0 .4rem">El JSON con las etiquetas de esta foto. Escribí los pies
+        (uno por línea del array), copialo/editalo, y Guardá: queda como molde y se aplica a esta foto
+        (y a cualquiera con las mismas etiquetas).</p>
+      <textarea id="lb-molde-json" class="textos" spellcheck="false" rows="12" style="width:100%"></textarea>
+      <div class="row" style="margin-top:.4rem">
+        <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar</button>
+        <button class="primary" onclick="guardarMoldeFoto()">💾 Guardar y traer el pie</button>
+        <span class="meta" id="lb-molde-st"></span>
+      </div>
     </div>
   </div>
 
@@ -4007,6 +4027,8 @@ POST_LIGHTBOX = """
   const SUG_URL = "{{ url_for('tags_suggest', name=name) }}";
   const SUG_STREAM_URL = "{{ url_for('tags_suggest_stream', name=name) }}";
   const PEOPLE_URL = "{{ url_for('post_people', name=name) }}";
+  const COMBO_URL = "{{ url_for('moldes_combo') }}";
+  const IMPORT_URL = "{{ url_for('moldes_import') }}";
 
   const rel = () => P[idx].rel;
   const post_ = (url, body) => fetch(url, {method:'POST',
@@ -4281,6 +4303,39 @@ POST_LIGHTBOX = """
       slot(r).caption = d.caption;
       if (r === rel()) render();     // ya pasaste de foto: guardalo igual
     }).catch(e => { trabajando('cap', false); $('lb-cap-st').textContent = ' ' + e; });
+  }
+
+  // --- armar un molde de pie con las etiquetas de ESTA foto ---
+  function abrirMoldeFoto() {
+    const r = rel();
+    const tags = PHOTO_TAGS[r] || [];             // solo las propias de la foto
+    if (!tags.length) {
+      alert('Esta foto todavía no tiene etiquetas propias. Etiquetala primero (🏷).'); return;
+    }
+    const nsfw = ('/' + r).split('/').includes('_nsfw');   // el registro sale de la carpeta
+    $('lb-molde-modal').style.display = 'flex';
+    $('lb-molde-json').value = ''; $('lb-molde-st').textContent = ' cargando…';
+    post_(COMBO_URL, {tags: tags.join(','), nsfw: nsfw ? '1' : '0'}).then(d => {
+      $('lb-molde-json').value = d.json || '';
+      $('lb-molde-st').textContent = '';
+    }).catch(e => $('lb-molde-st').textContent = ' ' + e);
+  }
+  function cerrarMoldeFoto() { $('lb-molde-modal').style.display = 'none'; }
+  function copiarMoldeFoto() {
+    const t = $('lb-molde-json'); t.select();
+    navigator.clipboard.writeText(t.value).then(
+      () => $('lb-molde-st').textContent = ' ✓ copiado',
+      () => { document.execCommand('copy'); $('lb-molde-st').textContent = ' ✓ copiado'; });
+  }
+  function guardarMoldeFoto() {
+    const val = $('lb-molde-json').value;
+    try { JSON.parse(val); } catch (e) { $('lb-molde-st').textContent = ' ✗ JSON inválido'; return; }
+    $('lb-molde-st').textContent = ' guardando…';
+    post_(IMPORT_URL, {texto: val}).then(d => {     // import fusiona por defecto
+      if (!d.ok) { $('lb-molde-st').textContent = ' ✗ ' + d.error; return; }
+      cerrarMoldeFoto();
+      genCaption();     // regenera el pie de esta foto: ahora lo trae del molde
+    }).catch(e => $('lb-molde-st').textContent = ' ' + e);
   }
   function editCap() {
     const t = $('lb-cap-in');
@@ -4604,7 +4659,8 @@ POST_LIGHTBOX = """
   }
 
   Object.assign(window, {genCaption, editCap, genComments, clearComments,
-                         openTagModal, closeTagModal, suggestTags});
+                         openTagModal, closeTagModal, suggestTags,
+                         abrirMoldeFoto, cerrarMoldeFoto, copiarMoldeFoto, guardarMoldeFoto});
 
   lb.addEventListener('wheel', e => {
     if (!e.target.closest('.stage')) return;    // la columna del post scrollea normal
@@ -4637,6 +4693,9 @@ POST_LIGHTBOX = """
     }
     if (e.key === 'Escape' && $('lb-tag-modal').style.display !== 'none') {
       closeTagModal(); return;
+    }
+    if (e.key === 'Escape' && $('lb-molde-modal').style.display !== 'none') {
+      cerrarMoldeFoto(); return;
     }
     // escribiendo una etiqueta o el pie: las flechas son para el texto
     const t = e.target.tagName;
@@ -6760,9 +6819,10 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
       <b style="font-size:1.05rem">🔍 Combinación de etiquetas</b>
       <button class="secondary sm" onclick="cmbCerrar()" title="Cerrar">✕</button>
     </div>
-    <p class="meta" style="margin:0 0 .5rem">Buscá etiquetas que estén en tus fotos y agregá hasta 3.
-      "Armar" te da el JSON de esa combinación para copiar, editar y guardar.</p>
-    <input id="cmb-buscar" class="path" placeholder="🔍 buscar etiqueta viva…" autocomplete="off"
+    <p class="meta" style="margin:0 0 .5rem">Buscá etiquetas que estén en tus fotos y agregá las que
+      quieras (para un pie específico de una foto, metelas todas). Podés <b>pegar varias con coma</b> y
+      Enter. "Armar" te da el JSON de esa combinación para copiar, editar y guardar.</p>
+    <input id="cmb-buscar" class="path" placeholder="🔍 buscar o pegar etiquetas (coma) y Enter…" autocomplete="off"
            oninput="cmbSug()" onfocus="cmbSug()" onkeydown="cmbKey(event)" style="width:100%">
     <div id="cmb-sug" style="max-height:9rem;overflow-y:auto;margin:.3rem 0"></div>
     <div id="cmb-chips" style="margin:.3rem 0;min-height:1.6rem"></div>
@@ -6946,8 +7006,8 @@ function cmbSug() {
   });
 }
 function cmbAdd(t) {
-  if (cmbSel.length >= 3) { alert('Máximo 3 etiquetas por combinación.'); return; }
-  if (!cmbSel.includes(t)) cmbSel.push(t);
+  t = (t || '').trim();
+  if (t && !cmbSel.includes(t)) cmbSel.push(t);   // sin tope: una foto puede tener muchas
   mog('cmb-buscar').value = ''; mog('cmb-sug').innerHTML = ''; cmbRender();
   mog('cmb-buscar').focus();
 }
@@ -6966,12 +7026,18 @@ function cmbRender() {
     chip.appendChild(x); box.appendChild(chip);
   });
 }
-function cmbKey(e) {   // Enter agrega la primera sugerencia
+function cmbKey(e) {   // Enter: agrega (soporta pegar varias con coma)
   if (e.key !== 'Enter') return;
   e.preventDefault();
-  const q = norm(mog('cmb-buscar').value.trim());
+  const raw = mog('cmb-buscar').value.trim();
+  if (!raw) return;
+  const partes = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (partes.length > 1) { partes.forEach(cmbAdd); return; }   // lista pegada
+  // una sola: si coincide con una viva, esa; si no, lo tipeado tal cual (para
+  // etiquetas que quizás no estén en el buscador pero sí en la foto)
+  const q = norm(raw);
   const hit = CMB_VIVAS.find(([t]) => norm(t).includes(q) && !cmbSel.includes(t));
-  if (hit) cmbAdd(hit[0]);
+  cmbAdd(hit ? hit[0] : raw);
 }
 function cmbArmar() {
   if (!cmbSel.length) { alert('Agregá al menos una etiqueta.'); return; }
@@ -7188,6 +7254,16 @@ def moldes_import():
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "cuerpos": n}
+
+
+@app.route("/moldes/combo", methods=["POST"])
+def moldes_combo():
+    """El JSON de UNA combinación (para el botón "armar pie" del visor): el molde
+    que exista para esas etiquetas, o un esqueleto vacío."""
+    tags = [t.strip() for t in request.form.get("tags", "").split(",") if t.strip()]
+    nsfw = request.form.get("nsfw") == "1"
+    data = moldes_mod.json_combo(tags, nsfw)
+    return {"ok": True, "json": json.dumps(data, ensure_ascii=False, indent=2)}
 
 
 @app.route("/conversiones")

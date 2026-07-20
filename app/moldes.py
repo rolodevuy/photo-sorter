@@ -296,6 +296,18 @@ def guardar(cuerpos_=None, cierres_=None, alias_=None):
     return d
 
 
+def json_combo(tags, nsfw):
+    """El dict importable para UNA combinación exacta: el molde que ya exista para
+    esas etiquetas+registro, o un esqueleto con pies vacíos si es nueva. Lo usa el
+    botón "armar pie" del visor: se abre con las etiquetas de la foto ya puestas."""
+    tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
+    clave = tuple(sorted(_norm(t) for t in tags))
+    for t, textos, n, _ in combinaciones():
+        if bool(n) == bool(nsfw) and tuple(sorted(_norm(x) for x in t)) == clave:
+            return {"cuerpos": [{"tags": t, "textos": textos, "nsfw": bool(n)}]}
+    return {"cuerpos": [{"tags": tags, "textos": ["", "", ""], "nsfw": bool(nsfw)}]}
+
+
 def exportar():
     """Los moldes ACTUALES como dict, agrupados por combinación (una fila con su
     array de variantes). Exporta lo efectivo (los de fábrica si nunca guardaste),
