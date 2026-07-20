@@ -77,6 +77,22 @@ def set_voice(name, text):
     return text
 
 
+def set_cover_src(name, rel, left, top, side):
+    """Recuerda de qué foto y con qué recorte salió la portada, para que el editor
+    abra directo en esa foto (y en ese recorte) en vez de pedir elegir de nuevo."""
+    data = _load()
+    data.setdefault(name, {})["cover"] = {"rel": rel, "left": int(left),
+                                          "top": int(top), "side": int(side)}
+    _save(data)
+
+
+def get_cover_src(name):
+    """{"rel","left","top","side"} de la portada, o None si no se sabe (portadas
+    viejas, o puestas antes de que se guardara el origen)."""
+    c = (_load().get(name, {}) or {}).get("cover")
+    return c if isinstance(c, dict) and c.get("rel") else None
+
+
 def rename(old, new):
     """La persona cambió de nombre: su meta (y su voz) la siguen."""
     data = _load()

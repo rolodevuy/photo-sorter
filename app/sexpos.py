@@ -10,11 +10,28 @@ y NUNCA en personas etiquetadas como menor.
 
 Todo local: baja los pesos de HuggingFace una vez (a la caché de HF_HOME, que
 apunta a E:) y después corre sin conexión. La foto no sale de la máquina.
+
+Ojo con "después corre sin conexión": no era gratis. timm con pretrained=True
+consulta el Hub CADA vez que carga el modelo en frío, aunque los pesos ya estén
+en la caché — solo para ver si hay versión nueva. De ahí salía el aviso de
+"unauthenticated requests to the HF Hub". No mandaba ninguna foto, pero era
+tráfico a internet que no hacía falta. Abajo se apaga cuando ya está cacheado.
 """
 
+import os
 import threading
+from pathlib import Path
 
 from PIL import Image
+
+# Si los pesos YA están en la caché, modo offline: timm los usa del disco y no
+# toca la red. Si no están (primera vez), se deja online para poder bajarlos.
+# Va acá arriba y no dentro de _cargar() a propósito: huggingface_hub lee esta
+# variable UNA vez, cuando se importa, así que cambiarla más tarde no sirve de
+# nada. timm se importa perezosamente más abajo, así que todavía llegamos.
+_CACHE_HF = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface"))
+if (_CACHE_HF / "hub" / "models--porntech--sex-position").is_dir():
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 # Orden EXACTO de las clases del modelo (los índices de salida son estos):
 LABELS = ["blowjob", "hardcore", "titjob", "handjob",

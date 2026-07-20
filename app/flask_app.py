@@ -27,18 +27,20 @@ import io
 import zipfile
 
 from flask import (Flask, Response, abort, redirect, render_template_string,
-                   request, send_from_directory, stream_with_context, url_for)
+                   request, send_file, send_from_directory, stream_with_context,
+                   url_for)
 
 import numpy as np
 from PIL import Image, ImageOps
 
-from app import (CLUSTERS_PATH, CORRECT_THUMBS, DUPES_PATH, DUPES_THUMBS,
+from app import (CLUSTERS_PATH, CORRECT_THUMBS, DATA_DIR, DUPES_PATH, DUPES_THUMBS,
                  ENCODINGS_NPY, FACES_DIR, FIND_THUMBS, GALLERY_THUMBS, GROUP_DIR_NAME,
-                 KNOWN_PATH, KNOWN_THUMBS, LABELS_PATH, PICK_THUMBS)
+                 KNOWN_PATH, KNOWN_THUMBS, LABELS_PATH, PICK_THUMBS, VIDEO_EXTENSIONS)
 from app.analyze import MIN_FACE_PX, run_analysis
 from app.config import get_library, load_config, save_config, set_library
 from app.corrector import apply_correction, scan_person_folder
-from app.duplicates import DEFAULT_THRESHOLD, find_duplicates, resolve_duplicates
+from app.duplicates import (DEFAULT_THRESHOLD, DEFAULT_VIDEO_MAX_MB,
+                            find_duplicates, resolve_duplicates)
 from app.finder import (EPS_DEFAULT, EPS_MAX, EPS_MIN, find_known, find_person,
                         move_to_person)
 from app.known import (add_faces, enroll_from_folder, forget_person,
@@ -53,6 +55,7 @@ from app import person_meta
 from app import tags as tags_mod
 from app import interrogator, vlm
 from app import sexpos
+from app import moldes as moldes_mod
 from app import posts as posts_mod
 from app import phrases as phrases_mod
 from app.organizer import organize
@@ -111,6 +114,10 @@ POSTS_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error":
 TAGS_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": "",
               "name": "", "hechas": 0, "salteadas": 0, "fallaron": 0,
               "empezo": 0.0, "stop": False, "ultimos": []}
+# Generador de borradores de moldes (otro hilo): recolecta combos de la
+# biblioteca con umbral de frecuencia y le pide frases al modelo, de a una.
+GEN_STATE = {"status": "idle", "current": 0, "total": 0, "combo": "", "error": "",
+             "combos_nuevos": 0, "frases": 0, "empezo": 0.0, "stop": False, "ultimos": []}
 # Estado del buscador de persona (otro hilo); los resultados viven acá hasta
 # la próxima búsqueda (no se guardan en disco, salvo las miniaturas)
 FIND_STATE = {"status": "idle", "current": 0, "total": 0, "photo": "", "error": "",
@@ -350,12 +357,12 @@ BASE_CSS = """
   .favnav { padding:.6rem .4rem; flex:none; }
   .favrow { flex:1; display:flex; gap:6px; overflow-x:auto; scroll-behavior:smooth;
     scrollbar-width:none; }
-  .favrow img { width:84px; height:84px; flex:none; object-fit:cover; border-radius:8px;
+  .favrow img { width:150px; height:150px; flex:none; object-fit:cover; border-radius:10px;
     border:1px solid var(--line); cursor:pointer; }
   .favrow img:hover { border-color:var(--acc2); }
-  .favplay { width:84px; height:84px; flex:none; border-radius:8px; border:1px dashed var(--bd);
+  .favplay { width:150px; height:150px; flex:none; border-radius:10px; border:1px dashed var(--bd);
     background:var(--bg); display:flex; flex-direction:column; align-items:center;
-    justify-content:center; gap:2px; color:var(--mut); font-size:10px; line-height:1.1;
+    justify-content:center; gap:3px; color:var(--mut); font-size:12px; line-height:1.2;
     text-align:center; }
   .favplay:hover { border-color:#484f58; color:var(--tx); text-decoration:none; }
   /* página playlist de favoritos */
@@ -375,6 +382,10 @@ BASE_CSS = """
     gap:4px; color:var(--mut); min-height:150px; font-size:12px; }
   .favadd:hover { border-color:#484f58; color:var(--tx); text-decoration:none; }
   /* insignia NSFW en la grilla limpia */
+  .vid-badge { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    z-index:2; width:44px; height:44px; border-radius:50%; background:rgba(0,0,0,.55);
+    color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px;
+    padding-left:3px; pointer-events:none; backdrop-filter:blur(2px); }
   .nsfw-badge { position:absolute; bottom:6px; left:6px; z-index:2; font-size:.85rem;
     background:var(--ov); border:1px solid var(--red); border-radius:6px; padding:1px 5px;
     backdrop-filter:blur(4px); }
@@ -524,6 +535,9 @@ BASE_CSS = """
   .stage-fab { position:absolute; top:14px; z-index:4; box-shadow:0 2px 10px rgba(0,0,0,.5); }
   .stage-fab-l { left:14px; }
   .stage-fab-r { right:14px; }
+  .stage-fab-bl { left:14px; top:auto; bottom:14px; }   /* "No es X" abajo-izquierda */
+  .lb-tagprev { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; margin-bottom:.35rem; }
+  .chip.mini { font-size:.72rem; padding:.12rem .45rem; }
   /* modal de "etiquetar persona" */
   .modal-ov { position:fixed; inset:0; z-index:60; background:var(--ov);
     display:flex; align-items:center; justify-content:center; }
@@ -610,6 +624,21 @@ BASE_CSS = """
   /* acto detectado por el clasificador dedicado: verde, va primero, más confiable */
   .suglist .sugchip.sug-acto { border-color:var(--grn); background:rgba(63,185,80,.1); }
   .suglist .sugchip.sug-acto .sugadd { color:var(--grn); font-weight:600; }
+  /* sugerencia EDITABLE: marcador + input (para sacar "tipo de pelo:" y dejar "lacio") */
+  .suglist .sugmark { align-self:center; padding:0 .3rem 0 .7rem; }
+  .suglist .suginput { flex:1; background:none; border:0; color:var(--tx); font-size:1rem;
+    padding:.55rem .4rem; min-width:0; }
+  .suglist .suginput:focus { outline:none; background:#262d3a; }
+  .suglist .sugchip.sug-acto .suginput { color:var(--grn); font-weight:600; }
+  .suglist .sugchip.sug-nueva .suginput { color:var(--amb); }
+  .suglist .sugadd2 { background:none; border:0; border-left:1px solid var(--bd);
+    color:var(--acc2); cursor:pointer; font-size:1.05rem; padding:0 .8rem; }
+  .suglist .sugadd2:hover { background:#262d3a; }
+  /* preview de etiquetas editable (abajo de comentarios) */
+  #lb.lb-post .tagmini { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
+    color:var(--tx); font-size:.78rem; padding:.12rem .4rem; width:6.5rem; }
+  #lb.lb-post .chip .chiptxt { cursor:text; }
+  #lb.lb-post .lb-tagprev .chip.inherited { opacity:.6; }
   /* "mostrar todas / menos" para las etiquetas propias cuando son muchas */
   #lb.lb-post .ownmore { background:none; border:0; color:var(--acc2); cursor:pointer;
     font-size:.75rem; padding:.15rem .45rem; align-self:center; }
@@ -664,6 +693,8 @@ NAV_ITEMS = [
     ("⚇", "Separar caras", "split_page", "split"),
     ("✎", "Frases", "phrases_page", "phrases"),
     ("🧪", "Probador", "probador", "probador"),
+    ("✍", "Pies", "moldes_page", "moldes"),
+    ("🔁", "Conversiones", "conversiones_page", "conversiones"),
     ("⚙", "Ajustes", "settings_page", "settings"),
 ]
 
@@ -807,7 +838,37 @@ def shell(active, inner, head_extra=""):
         "<style>" + BASE_CSS + "</style></head><body>"
         '<div class="app">' + _nav_html(active) + '<main class="main">'
         + inner +
-        "</main></div></body></html>")
+        "</main></div>" + UNDO_FAB + "</body></html>")
+
+
+# Botón flotante "↩ Deshacer": aparece si el servidor tiene algo para revertir.
+# Va en TODAS las páginas (dentro del shell). Chequea al cargar y expone
+# window.refrescarUndo() para que las acciones AJAX lo muestren en el momento.
+UNDO_FAB = """
+<div id="undo-fab" style="display:none; position:fixed; left:1rem; bottom:1rem; z-index:500">
+  <button onclick="hacerUndo()" title="Deshacer la última acción"
+    style="background:var(--pan); color:var(--tx); border:1px solid var(--bd);
+    border-radius:999px; padding:.55rem 1rem; cursor:pointer; font-size:.9rem;
+    box-shadow:0 6px 20px rgba(0,0,0,.5)">↩ Deshacer <span id="undo-desc" style="color:var(--mut)"></span></button>
+</div>
+<script>
+(function() {
+  function refrescar() {
+    fetch('/undo/estado').then(r => r.json()).then(d => {
+      const fab = document.getElementById('undo-fab');
+      if (d && d.puede) { document.getElementById('undo-desc').textContent = d.desc || ''; fab.style.display = ''; }
+      else fab.style.display = 'none';
+    }).catch(() => {});
+  }
+  window.refrescarUndo = refrescar;
+  window.hacerUndo = function() {
+    document.getElementById('undo-fab').style.display = 'none';
+    fetch('/undo', {method: 'POST'}).then(r => r.json()).then(() => location.reload())
+      .catch(() => location.reload());
+  };
+  window.addEventListener('DOMContentLoaded', refrescar);
+})();
+</script>"""
 
 
 # Metas de auto-refresco (van al <head> vía head_extra) según el estado en curso
@@ -1306,7 +1367,8 @@ DUPES_TEMPLATE = """
         <div class="thumb {% if f.keeper %}keeper{% endif %}">
           <img src="{{ url_for('dupe_thumb', idx=f.idx) }}" alt="foto" style="cursor:zoom-in"
                onclick="lbOpen({{ ns.i }})" title="{{ f.rel }}">
-          <div>{{ f.w }}×{{ f.h }} · {{ (f.size/1024)|round|int }} KB</div>
+          <div>{% if f.media == 'video' %}🎬 {% endif %}{{ f.w }}×{{ f.h }} ·
+            {% if f.size >= 1048576 %}{{ (f.size/1048576)|round(1) }} MB{% else %}{{ (f.size/1024)|round|int }} KB{% endif %}</div>
           {% if f.keeper %}
             <span class="badge b-keep">conservar</span>
           {% else %}
@@ -1654,8 +1716,12 @@ def known_clear():
 
 
 KNOWN_TEMPLATE = """
-<h1>Galería</h1>
-<p class="hint">Estas son las personas que el programa ya reconoce solo. Tocá una persona para ver sus fotos y elegir cuál se muestra como portada.</p>
+<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.2rem">
+  <h1 style="margin:0">Galería</h1>
+  {% if known_dir %}
+  <button class="secondary" onclick="cfgAbrir()" title="Configuración de la galería">⚙ Configuración</button>
+  {% endif %}
+</div>
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 
 {% if not known_dir %}
@@ -1663,44 +1729,57 @@ KNOWN_TEMPLATE = """
   <a href="{{ url_for('settings_page') }}">⚙ Ajustes</a> y elegí la carpeta donde viven tus
   personas (una subcarpeta por cada una).</div>
 {% else %}
-<div class="panel">
-  <div class="row">
-    <span class="meta">📚 Biblioteca: <code>{{ known_dir }}</code></span>
-    <a href="{{ url_for('settings_page') }}" class="meta">cambiar en Ajustes →</a>
-  </div>
-  <form method="post" action="{{ url_for('known_import') }}">
-    <div class="row">
-      <button class="primary" {% if imp.status == 'running' %}disabled{% endif %}>
-        📥 Aprender las caras de la Biblioteca
-      </button>
-      {% if people %}
-      <button formaction="{{ url_for('known_clear') }}"
-              onclick="return confirm('¿Vaciar la base de personas conocidas? (no toca las fotos)')">Vaciar base</button>
-      {% endif %}
+{# lo de configurar la galería vive acá adentro: se usa de vez en cuando y antes
+   empujaba las personas para abajo en cada visita #}
+<div id="gal-cfg-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cfgCerrar()">
+  <div class="modal-box" style="width:620px">
+    <div class="row" style="justify-content:space-between;margin:0 0 .6rem">
+      <b style="font-size:1.05rem">⚙ Configuración de la galería</b>
+      <button class="secondary sm" onclick="cfgCerrar()" title="Cerrar">✕</button>
     </div>
-    <span class="meta">Aprende de cada subcarpeta y suma personas nuevas sin reetiquetar. Se puede
-      repetir: a los ya conocidos solo les suma ejemplos. Saltea <code>_grupo</code> y <code>_revisar</code>,
-      así solo aprende de fotos donde la persona está sola.</span>
-  </form>
-</div>
+    <div style="overflow-y:auto">
+      <div class="row" style="margin-top:0">
+        <span class="meta">📚 Biblioteca: <code>{{ known_dir }}</code></span>
+        <a href="{{ url_for('settings_page') }}" class="meta">cambiar en Ajustes →</a>
+      </div>
 
-<div class="panel">
-  <b>➕ Agregar una carpeta como persona</b>
-  <p class="meta">Elegís una carpeta y un nombre y <b>todas</b> las fotos de adentro se copian como
-    esa persona, <b>sin analizar caras</b>. Para cuando ya sabés de quién son (ej: una carpeta
-    «Alfredo» → todas son de Alfredo). Las originales no se tocan (se copian).</p>
-  <form method="post" action="{{ url_for('known_import_folder') }}">
-    <div class="row">
-      <input class="path" type="text" name="folder" id="imp-folder" placeholder="Carpeta con las fotos…">
-      <button type="button" onclick="browseImport()">📂 Elegir carpeta…</button>
+      <form method="post" action="{{ url_for('known_import') }}" style="margin-top:.9rem">
+        <b>📥 Aprender caras</b>
+        <p class="meta" style="margin:.25rem 0 .5rem">Aprende de cada subcarpeta y suma personas nuevas
+          sin reetiquetar. Se puede repetir: a los ya conocidos solo les suma ejemplos. Saltea
+          <code>_grupo</code> y <code>_revisar</code>, así solo aprende de fotos donde la persona está sola.</p>
+        <div class="row" style="margin:0">
+          <button class="primary" {% if imp.status == 'running' %}disabled{% endif %}>
+            📥 Aprender las caras de la Biblioteca
+          </button>
+          {% if people %}
+          <button formaction="{{ url_for('known_clear') }}"
+                  onclick="return confirm('¿Vaciar la base de personas conocidas? (no toca las fotos)')">Vaciar base</button>
+          {% endif %}
+        </div>
+      </form>
+
+      <hr style="border:0;border-top:1px solid var(--line);margin:1rem 0">
+
+      <form method="post" action="{{ url_for('known_import_folder') }}">
+        <b>➕ Agregar una carpeta como persona</b>
+        <p class="meta" style="margin:.25rem 0 .5rem">Elegís una carpeta y un nombre y <b>todas</b> las
+          fotos de adentro se copian como esa persona, <b>sin analizar caras</b>. Para cuando ya sabés
+          de quién son (ej: una carpeta «Alfredo» → todas son de Alfredo). Las originales no se tocan
+          (se copian).</p>
+        <div class="row" style="margin:0">
+          <input class="path" type="text" name="folder" id="imp-folder" placeholder="Carpeta con las fotos…">
+          <button type="button" onclick="browseImport()">📂 Elegir carpeta…</button>
+        </div>
+        <div class="row" style="margin-top:.45rem">
+          <label>Nombre:</label>
+          <input class="path" type="text" name="name" id="imp-name"
+                 placeholder="ej: Alfredo (si lo dejás vacío, usa el nombre de la carpeta)">
+          <button class="primary">➕ Agregar como persona</button>
+        </div>
+      </form>
     </div>
-    <div class="row" style="margin-top:.45rem">
-      <label>Nombre:</label>
-      <input class="path" type="text" name="name" id="imp-name"
-             placeholder="ej: Alfredo (si lo dejás vacío, usa el nombre de la carpeta)">
-      <button class="primary">➕ Agregar como persona</button>
-    </div>
-  </form>
+  </div>
 </div>
 {% endif %}
 
@@ -1728,6 +1807,20 @@ function browse(field) {
     .then(r => r.json())
     .then(d => { if (d.path) document.getElementsByName(field)[0].value = d.path; });
 }
+
+function cfgAbrir() {      // ⚙ al lado del título: aprender caras + agregar carpeta
+  const m = document.getElementById('gal-cfg-modal');
+  if (m) m.style.display = 'flex';   // flex, no block: .modal-ov centra con flexbox
+}
+function cfgCerrar() {
+  const m = document.getElementById('gal-cfg-modal');
+  if (m) m.style.display = 'none';
+}
+document.addEventListener('keydown', e => {   // Escape cierra, como los otros modales
+  if (e.key !== 'Escape') return;
+  const m = document.getElementById('gal-cfg-modal');
+  if (m && m.style.display !== 'none') cfgCerrar();
+});
 
 function browseImport() {   // carpeta a importar; autocompleta el nombre si está vacío
   fetch('{{ url_for('browse') }}').then(r => r.json()).then(d => {
@@ -1973,11 +2066,56 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="panel">
+  <div class="counter">💾 Backup</div>
+  <p class="meta">Baja un ZIP con <b>todo tu trabajo</b>: etiquetas, pies y comentarios,
+    conversiones, la base de caras y los ajustes. NO incluye las fotos (esas ya las
+    tenés). Guardalo cada tanto por las dudas: si algo se corrompe, restaurás pegando
+    los <code>.json</code> de vuelta en <code>data/</code>.</p>
+  <a class="primary" style="display:inline-block; text-decoration:none"
+     href="{{ url_for('backup') }}">💾 Descargar backup (ZIP)</a>
+</div>
+
+<div class="panel">
+  <div class="counter">🎬 Duplicados — videos</div>
+  <p class="meta">El buscador de duplicados también revisa <b>videos</b>, pero solo como
+    duplicado <b>exacto</b> (el mismo archivo, ej: un clip de WhatsApp re-descargado) y
+    hasta cierto tamaño. Uno gigante tarda una eternidad leyéndolo y casi nunca está
+    repetido, así que se saltea.</p>
+  <form method="post" action="{{ url_for('settings_save') }}">
+    <input type="hidden" name="library" value="{{ library }}">
+    <div class="row">
+      <label>Revisar videos de hasta:</label>
+      <input type="number" name="dup_video_max_mb" min="1" max="100000"
+             value="{{ dup_video_max_mb }}" style="width:6rem">
+      <span class="meta">MB — los más grandes se saltean</span>
+    </div>
+    <button class="primary">💾 Guardar</button>
+  </form>
+</div>
+
+<div class="panel">
   <div class="counter">💬 Comentarios y pie de foto</div>
   <p class="meta">Cuando abrís una foto de la galería, la IA le escribe un pie y unos
      comentarios como si fueran de seguidores. Acá elegís con qué onda.</p>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
+
+    {# el pie y los comentarios corrían clavados al 4B: la config ya se leía
+       (post_model) pero no había con qué elegirla. Acá está el enchufe. #}
+    <div class="row">
+      <label>Modelo del pie y comentarios:</label>
+      <select name="post_model">
+        <option value="">(el de fábrica: {{ default_model }})</option>
+        {% for m in vlm_models %}
+        <option value="{{ m }}" {% if m == post_model %}selected{% endif %}>{% if m in vlm_crudos %}🔞 {% else %}👁 {% endif %}{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <p class="meta" style="margin:.15rem 0 .6rem">Los de <b>7B</b> escriben bastante mejor que
+      el 4B de fábrica, pero en CPU tardan como el doble por foto. Si el pie te sale sin
+      sentido, probá con
+      <code>Qwen2.5-VL-7B-NSFW-Caption</code>: además de ser más grande, está tuneado
+      justo para esto. Los 🔞 son sin censura (no te lavan las frases).</p>
 
     <div style="margin:.6rem 0">
       <label>Qué tan subido: <b id="crud-lbl">{{ crudeness_labels[crudeness] }}</b></label>
@@ -2130,6 +2268,12 @@ def settings_page():
         crudeness_labels=[k for k, _ in posts_mod.CRUDENESS],
         crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
         diminutivos=bool(cfg.get("diminutivos")),
+        # con qué modelo se escriben el pie y los comentarios (vacío = el de fábrica)
+        post_model=cfg.get("post_model", ""),
+        default_model=vlm.DEFAULT_MODEL,
+        vlm_models=vlm.list_models(),
+        vlm_crudos=vlm.modelos_descensurados(),
+        dup_video_max_mb=cfg.get("dup_video_max_mb", DEFAULT_VIDEO_MAX_MB),
         # textos y filtros
         extra_pie=cfg.get("post_extra_pie", ""),
         extra_com=cfg.get("post_extra_com", ""),
@@ -2141,6 +2285,23 @@ def settings_page():
         def_menor=", ".join(sorted(posts_mod._MENOR)),
         crudeness_rows=crudeness_rows,
         message=request.args.get("msg", ""))
+
+
+@app.route("/backup")
+def backup():
+    """Respalda TODO tu trabajo (los .json de data/: etiquetas, pies, conversiones,
+    base de caras, etc.) en un ZIP descargable. No incluye las fotos (esas son
+    tuyas y viven en la Biblioteca); sí lo irremplazable que genera el programa."""
+    import datetime
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(DATA_DIR.glob("*.json")):
+            z.write(p, p.name)
+    buf.seek(0)
+    fn = "photo-sorter-backup-" + datetime.datetime.now().strftime("%Y%m%d-%H%M") + ".zip"
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=fn)
 
 
 @app.route("/settings/save", methods=["POST"])
@@ -2166,10 +2327,20 @@ def settings_save():
         cfg["comment_users"] = users        # vacío = los de fábrica
     if "guardar_post" in request.form:      # el form de los comentarios
         cfg["diminutivos"] = request.form.get("diminutivos") == "1"
+    if "post_model" in request.form:        # con qué modelo se escribe el pie
+        # vacío = el de fábrica. Solo se acepta un modelo que EXISTA: si no, un
+        # nombre mal tipeado deja el pie roto y el error recién aparece al generar.
+        elegido = request.form["post_model"].strip()
+        cfg["post_model"] = elegido if elegido in set(vlm.list_models()) else ""
     if "crudeness" in request.form:
         try:
             cfg["crudeness"] = max(0, min(int(request.form["crudeness"]),
                                           len(posts_mod.CRUDENESS) - 1))
+        except ValueError:
+            pass
+    if "dup_video_max_mb" in request.form:      # límite de tamaño de video del duplicador
+        try:
+            cfg["dup_video_max_mb"] = max(1, min(int(request.form["dup_video_max_mb"]), 100000))
         except ValueError:
             pass
 
@@ -2684,17 +2855,450 @@ PERSON_TEMPLATE = """
 <div class="pcard">
   <!-- Columna izquierda: portada + fechas -->
   <div class="pcard-cover">
-    <div class="cover-box" title="Portada — abrí una foto de abajo y usá 🖼 Portada">
+    <div class="cover-box" title="Portada — tocá ✏️ para elegir y recortar">
       {% if has_thumb %}
         <img src="{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}" alt="portada de {{ name }}">
       {% else %}
         <div class="noimg">👤</div>
       {% endif %}
       {% if display %}
-      <button class="secondary iconbtn cover-edit" onclick="document.getElementById('fotos').scrollIntoView({behavior:'smooth'})"
-              title="Cambiar portada: abrí una foto y usá 🖼 Portada">✏️</button>
+      <button class="secondary iconbtn cover-edit" onclick="coverAbrir()"
+              title="Editar portada: elegí una foto y recortala">✏️</button>
       {% endif %}
     </div>
+
+    <!-- Editor de portada: elegir foto + recortar -->
+    <style>
+      .ce-overlay { position:fixed; inset:0; z-index:800; background:rgba(0,0,0,.85);
+        display:flex; align-items:center; justify-content:center; }
+      .ce-box { background:var(--pan); border:1px solid var(--bd); border-radius:12px;
+        padding:1rem; max-width:min(680px,92vw); max-height:90vh; overflow:auto; }
+      .ce-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:.6rem; }
+      .ce-close { background:none; border:0; color:var(--mut); font-size:1.3rem; cursor:pointer; }
+      .ce-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(92px,1fr)); gap:.4rem; }
+      .ce-grid img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; cursor:pointer;
+        border:2px solid transparent; }
+      .ce-grid img:hover { border-color:var(--acc); }
+      .ce-stage { position:relative; display:inline-block; max-width:100%; user-select:none; line-height:0; }
+      .ce-stage img { display:block; max-width:100%; max-height:60vh; }
+      .ce-crop { position:absolute; box-sizing:border-box; border:2px solid #fff;
+        box-shadow:0 0 0 9999px rgba(0,0,0,.55); cursor:move; }
+      .ce-handle { position:absolute; right:-8px; bottom:-8px; width:16px; height:16px;
+        background:#fff; border-radius:50%; cursor:nwse-resize; }
+      .ce-actions { display:flex; gap:.5rem; align-items:center; margin-top:.7rem; }
+    </style>
+    <div id="cover-modal" class="ce-overlay" style="display:none"
+         onclick="if(event.target===this)coverCerrar()">
+      <div class="ce-box">
+        <div class="ce-top">
+          <b id="ce-title">Elegí una foto para la portada</b>
+          <button class="ce-close" onclick="coverCerrar()">✕</button>
+        </div>
+        <div id="ce-grid" class="ce-grid"></div>
+        <div id="ce-crop-wrap" style="display:none">
+          <div class="ce-stage" id="ce-stage">
+            <img id="ce-img" alt="">
+            <div class="ce-crop" id="ce-crop"><div class="ce-handle" id="ce-handle"></div></div>
+          </div>
+          <div class="ce-actions">
+            <button class="secondary" onclick="coverVolver()">‹ Elegir otra</button>
+            <button class="primary" onclick="coverGuardar()">💾 Guardar portada</button>
+            <span class="meta" id="ce-st"></span>
+          </div>
+          <p class="meta" style="margin-top:.4rem">Arrastrá el cuadro para mover · tirá de la
+            esquina (○) para agrandar o achicar.</p>
+        </div>
+      </div>
+    </div>
+    <script>
+    (function() {
+      const PERSONA = {{ name|tojson }};
+      const ceg = id => document.getElementById(id);
+      let ceRel = null, ceCrop = {x:0, y:0, s:0}, ceDrag = null;
+
+      const COVER_SRC = {{ cover_src|tojson }};   // {rel,left,top,side} o null
+      function urlFoto(rel) {
+        return '/person_photo/' + encodeURIComponent(PERSONA) + '/' +
+               String(rel).split('/').map(encodeURIComponent).join('/');
+      }
+      // Abrir el editor: si ya sabemos de qué foto salió la portada, vamos DIRECTO
+      // a recortar esa (con su recorte anterior). Si no, mostramos el elegidor.
+      window.coverAbrir = function() {
+        if (COVER_SRC && COVER_SRC.rel) {
+          coverEditar(COVER_SRC.rel, urlFoto(COVER_SRC.rel), COVER_SRC);
+          return;
+        }
+        coverPicker();
+      };
+      window.coverPicker = function() {
+        ceg('cover-modal').style.display = 'flex';
+        ceg('ce-crop-wrap').style.display = 'none';
+        ceg('ce-grid').style.display = '';
+        ceg('ce-title').textContent = 'Elegí una foto para la portada';
+        const grid = ceg('ce-grid'); grid.innerHTML = '<span class="meta">cargando…</span>';
+        fetch('/probador/fotos/' + encodeURIComponent(PERSONA)).then(r => r.json()).then(d => {
+          grid.innerHTML = '';
+          (d.fotos || []).forEach(f => {
+            const im = document.createElement('img'); im.src = f.thumb; im.title = f.rel;
+            im.onclick = () => coverEditar(f.rel, f.url);
+            grid.appendChild(im);
+          });
+          if (!(d.fotos || []).length) grid.innerHTML = '<span class="meta">esta persona no tiene fotos.</span>';
+        }).catch(e => grid.innerHTML = '<span class="meta">' + e + '</span>');
+      };
+      window.coverCerrar = function() { ceg('cover-modal').style.display = 'none'; };
+      window.coverVolver = function() { coverPicker(); };
+
+      // Abre el recortador en UNA foto concreta. `box` (opcional) es el recorte
+      // guardado, en píxeles reales: se reescala a lo que se muestra en pantalla.
+      window.coverEditar = function(rel, url, box) {
+        ceRel = rel;
+        ceg('cover-modal').style.display = 'flex';
+        ceg('ce-grid').style.display = 'none';
+        ceg('ce-crop-wrap').style.display = '';
+        ceg('ce-title').textContent = 'Recortá la portada';
+        const img = ceg('ce-img');
+        img.onload = () => {
+          const w = img.clientWidth, h = img.clientHeight;
+          if (box && box.side) {                      // restaurar el recorte previo
+            const esc = w / (img.naturalWidth || w);
+            ceCrop = {x: Math.round(box.left * esc), y: Math.round(box.top * esc),
+                      s: Math.round(box.side * esc)};
+          } else {                                     // por defecto: cuadrado centrado
+            const s = Math.round(Math.min(w, h) * 0.85);
+            ceCrop = {x: Math.round((w - s) / 2), y: Math.round((h - s) / 2), s: s};
+          }
+          ceClamp(); cePintar();
+        };
+        img.src = url;
+      };
+      function cePintar() {
+        const c = ceg('ce-crop');
+        c.style.left = ceCrop.x + 'px'; c.style.top = ceCrop.y + 'px';
+        c.style.width = ceCrop.s + 'px'; c.style.height = ceCrop.s + 'px';
+      }
+      function ceClamp() {
+        const img = ceg('ce-img'), w = img.clientWidth, h = img.clientHeight;
+        ceCrop.s = Math.max(32, Math.min(ceCrop.s, Math.min(w, h)));
+        ceCrop.x = Math.max(0, Math.min(ceCrop.x, w - ceCrop.s));
+        ceCrop.y = Math.max(0, Math.min(ceCrop.y, h - ceCrop.s));
+      }
+      ceg('ce-crop').addEventListener('mousedown', e => {
+        if (e.target === ceg('ce-handle')) ceDrag = {modo:'resize', sx:e.clientX, sy:e.clientY, s0:ceCrop.s};
+        else ceDrag = {modo:'move', sx:e.clientX, sy:e.clientY, x0:ceCrop.x, y0:ceCrop.y};
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', e => {
+        if (!ceDrag) return;
+        if (ceDrag.modo === 'move') { ceCrop.x = ceDrag.x0 + (e.clientX - ceDrag.sx); ceCrop.y = ceDrag.y0 + (e.clientY - ceDrag.sy); }
+        else ceCrop.s = ceDrag.s0 + Math.max(e.clientX - ceDrag.sx, e.clientY - ceDrag.sy);
+        ceClamp(); cePintar();
+      });
+      window.addEventListener('mouseup', () => { ceDrag = null; });
+
+      window.coverGuardar = function() {
+        if (!ceRel) return;
+        const img = ceg('ce-img');
+        const scale = img.naturalWidth / img.clientWidth;    // pantalla -> pixeles reales
+        const body = new URLSearchParams({rel: ceRel,
+          left: Math.round(ceCrop.x * scale), top: Math.round(ceCrop.y * scale),
+          side: Math.round(ceCrop.s * scale)});
+        ceg('ce-st').textContent = ' guardando…';
+        fetch('/person/' + encodeURIComponent(PERSONA) + '/cover_crop', {method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body})
+          .then(r => r.json()).then(d => {
+            if (!d.ok) { ceg('ce-st').textContent = ' ' + (d.error || 'error'); return; }
+            const box = document.querySelector('.cover-box');
+            let cov = box.querySelector('img');
+            if (!cov) { const ni = box.querySelector('.noimg'); if (ni) ni.remove();
+                        cov = document.createElement('img'); box.insertBefore(cov, box.firstChild); }
+            cov.src = d.url + '?v=' + Date.now();
+            coverCerrar();
+          }).catch(e => ceg('ce-st').textContent = ' ' + e);
+      };
+    })();
+    </script>
+
+    <!-- Gestor de etiquetas: las del perfil + todas las de las fotos con recuento -->
+    <style>
+      .tm-overlay { position:fixed; inset:0; z-index:820; background:rgba(0,0,0,.85);
+        display:flex; align-items:center; justify-content:center; }
+      .tm-box { background:var(--pan); border:1px solid var(--bd); border-radius:12px;
+        padding:1rem; width:min(620px,94vw); max-height:88vh; overflow:auto; }
+      .tm-top { display:flex; justify-content:space-between; align-items:center; }
+      .tm-sec { margin-top:1rem; }
+      .tm-chips { display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; margin-top:.45rem; }
+      .tm-row { display:flex; justify-content:space-between; align-items:center; gap:.5rem;
+        padding:.32rem .15rem; border-bottom:1px solid var(--line); }
+      .tm-n { color:var(--mut); font-size:.78rem; }
+      .tm-del { background:none; border:0; color:var(--mut); cursor:pointer; font-size:1rem; }
+      .tm-del:hover { color:var(--red); }
+      .tm-fav { background:none; border:0; cursor:pointer; font-size:.95rem; padding:0 .1rem;
+        line-height:1; }
+      .tm-fav:hover { transform:scale(1.2); }
+      .tm-in { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
+        color:var(--tx); font-size:.85rem; padding:.28rem .55rem; }
+    </style>
+    <div id="tagmgr" class="tm-overlay" style="display:none"
+         onclick="if(event.target===this)cerrarTagMgr()">
+      <div class="tm-box">
+        <div class="tm-top">
+          <b>🗂 Etiquetas de {{ name }}</b>
+          <button class="secondary sm" onclick="cerrarTagMgr()">✕</button>
+        </div>
+
+        <div class="tm-sec">
+          <b style="font-size:.92rem">👤 Del perfil — valen para TODAS sus fotos</b>
+          <p class="meta" style="margin:.2rem 0 0">Cada foto las hereda. Si la sacás de acá,
+            se va de todas.</p>
+          <div class="tm-chips" id="tm-persona"></div>
+        </div>
+
+        <div class="tm-sec">
+          <b style="font-size:.92rem">🖼 De las fotos — y en cuántas está cada una</b>
+          <p class="meta" style="margin:.2rem 0 .45rem">La ✕ la borra de <b>todas</b> las fotos
+            que la tengan. Sirve para limpiar rápido después de etiquetar en lote con IA.</p>
+          <input class="tm-in" id="tm-filtro" placeholder="🔍 filtrar…"
+                 oninput="tmPintarFotos()" style="width:100%">
+          <div id="tm-fotos" style="margin-top:.45rem"></div>
+        </div>
+        <span class="meta" id="tm-st"></span>
+      </div>
+    </div>
+    <script>
+    (function() {
+      const tmg = id => document.getElementById(id);
+      const TM_DATA = "{{ url_for('person_tags_data', name=name) }}";
+      const TM_DEL  = "{{ url_for('person_tags_remove_all', name=name) }}";
+      const TM_REN  = "{{ url_for('person_tags_rename_all', name=name) }}";
+      const TM_SET  = "{{ url_for('person_tags_person_set', name=name) }}";
+      const TM_FAV  = "{{ url_for('person_tags_fav', name=name) }}";
+      const TM_GEN  = "{{ url_for('person_tags_promote', name=name) }}";
+      let tmPersona = [], tmFotos = [], tmFavPers = [], tmFavGlob = [];
+
+      window.abrirTagMgr = function() {
+        tmg('tagmgr').style.display = 'flex';
+        tmg('tm-st').textContent = '';
+        tmg('tm-persona').innerHTML = '<span class="meta">cargando…</span>';
+        tmg('tm-fotos').innerHTML = '';
+        fetch(TM_DATA).then(r => r.json()).then(d => {
+          tmPersona = d.persona || []; tmFotos = d.fotos || [];
+          tmFavPers = d.fav_persona || []; tmFavGlob = d.fav_global || [];
+          tmPintarPersona(); tmPintarFotos();
+        }).catch(e => { tmg('tm-persona').textContent = '' + e; });
+      };
+      window.cerrarTagMgr = function() { tmg('tagmgr').style.display = 'none'; };
+
+      function tmGuardarPersona() {
+        fetch(TM_SET, {method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({tags: JSON.stringify(tmPersona)})})
+          .then(r => r.json()).then(d => {
+            if (!d.ok) { tmg('tm-st').textContent = ' error'; return; }
+            tmPersona = d.tags || [];
+            // que el visor abierto lo refleje sin recargar
+            try { PERSON_TAGS = tmPersona.slice(); } catch (e) {}
+            tmPintarPersona();
+            tmg('tm-st').textContent = ' ✓ guardado';
+            setTimeout(() => tmg('tm-st').textContent = '', 2000);
+          }).catch(e => tmg('tm-st').textContent = ' ' + e);
+      }
+      function tmPintarPersona() {
+        const box = tmg('tm-persona'); box.innerHTML = '';
+        if (!tmPersona.length) {
+          const s = document.createElement('span'); s.className = 'meta';
+          s.textContent = 'ninguna todavía'; box.appendChild(s);
+        }
+        tmPersona.forEach(t => {
+          const c = document.createElement('span'); c.className = 'chip';
+          const txt = document.createElement('span'); txt.className = 'chiptxt';
+          txt.textContent = t; txt.title = 'clic para editar';
+          txt.onclick = () => tmEditarPersona(t, c);
+          const x = document.createElement('span'); x.className = 'x'; x.textContent = '×';
+          x.title = 'Quitar del perfil (se va de todas sus fotos)';
+          x.onclick = () => { tmPersona = tmPersona.filter(v => v !== t); tmGuardarPersona(); };
+          c.appendChild(txt); c.appendChild(document.createTextNode(' ')); c.appendChild(x);
+          box.appendChild(c);
+        });
+        const inp = document.createElement('input');
+        inp.className = 'tm-in'; inp.placeholder = '+ etiqueta del perfil'; inp.spellcheck = false;
+        inp.onkeydown = (e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          const v = inp.value.trim();
+          if (v && !tmPersona.includes(v)) { tmPersona.push(v); tmGuardarPersona(); }
+          inp.value = '';
+        };
+        box.appendChild(inp);
+      }
+
+      function tmPintarFotos() {
+        const box = tmg('tm-fotos'); box.innerHTML = '';
+        const q = (tmg('tm-filtro').value || '').trim().toLowerCase();
+        const vis = tmFotos.filter(f => !q || f.tag.toLowerCase().includes(q));
+        if (!vis.length) {
+          box.innerHTML = '<span class="meta">' +
+            (tmFotos.length ? 'ninguna coincide con el filtro.' : 'sus fotos no tienen etiquetas propias.') +
+            '</span>';
+          return;
+        }
+        vis.forEach(f => {
+          const row = document.createElement('div'); row.className = 'tm-row';
+          const izq = document.createElement('span');
+          izq.textContent = f.tag;
+          izq.style.cursor = 'text';
+          izq.title = 'clic para renombrarla en TODAS esas fotos';
+          izq.onclick = () => tmEditarFoto(f, izq);
+          const der = document.createElement('span');
+          der.style.display = 'flex'; der.style.alignItems = 'center'; der.style.gap = '.5rem';
+          const n = document.createElement('span'); n.className = 'tm-n';
+          n.textContent = 'en ' + f.n + ' foto' + (f.n === 1 ? '' : 's');
+          // ⭐ favorita de esta galería · 🌐 favorita global · ⬆ hacerla general
+          const est = document.createElement('button'); est.className = 'tm-fav';
+          const esPers = tmFavPers.includes(f.tag);
+          est.textContent = '⭐'; est.style.opacity = esPers ? '1' : '.32';
+          est.title = esPers ? 'Favorita de esta galería (clic para sacarla)'
+                             : 'Marcar favorita de esta galería';
+          est.onclick = () => tmFav(f.tag, 'persona');
+          const glo = document.createElement('button'); glo.className = 'tm-fav';
+          const esGlo = tmFavGlob.includes(f.tag);
+          glo.textContent = '🌐'; glo.style.opacity = esGlo ? '1' : '.32';
+          glo.title = esGlo ? 'Favorita global (clic para sacarla)' : 'Marcar favorita global';
+          glo.onclick = () => tmFav(f.tag, 'global');
+          const gen = document.createElement('button'); gen.className = 'tm-fav';
+          gen.textContent = '⬆'; gen.title = 'Hacerla general del perfil (y sacarla de las fotos)';
+          gen.onclick = () => tmHacerGeneral(f.tag);
+          const x = document.createElement('button'); x.className = 'tm-del'; x.textContent = '✕';
+          x.title = 'Borrarla de todas esas fotos';
+          x.onclick = () => tmBorrarDeTodas(f.tag, f.n);
+          der.appendChild(n); der.appendChild(est); der.appendChild(glo);
+          der.appendChild(gen); der.appendChild(x);
+          row.appendChild(izq); row.appendChild(der);
+          box.appendChild(row);
+        });
+      }
+      function tmBorrarDeTodas(tag, n) {
+        // sin confirmación a propósito: es un clic y listo. Si te equivocaste,
+        // está el botón flotante "↩ Deshacer" (restaura la etiqueta en esas fotos).
+        tmg('tm-st').textContent = ' borrando…';
+        fetch(TM_DEL, {method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({tag: tag})})
+          .then(r => r.json()).then(d => {
+            if (!d.ok) { tmg('tm-st').textContent = ' ' + (d.error || 'error'); return; }
+            tmFotos = tmFotos.filter(f => f.tag !== tag);
+            // sacarla también de la memoria del visor, para no recargar
+            try {
+              Object.keys(PHOTO_TAGS).forEach(k => {
+                PHOTO_TAGS[k] = (PHOTO_TAGS[k] || []).filter(t => t !== tag);
+              });
+            } catch (e) {}
+            tmPintarFotos();
+            tmg('tm-st').textContent = ' ✓ quitada de ' + d.quitadas + ' foto(s) · ↩ deshacible';
+            if (window.refrescarUndo) window.refrescarUndo();   // que aparezca el botón ya
+            setTimeout(() => tmg('tm-st').textContent = '', 3000);
+          }).catch(e => tmg('tm-st').textContent = ' ' + e);
+      }
+      function tmFav(tag, ambito) {   // ⭐ de esta galería o 🌐 global
+        fetch(TM_FAV, {method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({tag: tag, ambito: ambito})})
+          .then(r => r.json()).then(d => {
+            if (!d.ok) { tmg('tm-st').textContent = ' error'; return; }
+            tmFavPers = d.fav_persona || []; tmFavGlob = d.fav_global || [];
+            // que el visor use las favoritas nuevas sin recargar
+            try { FAVS = tmFavPers.concat(tmFavGlob.filter(t => !tmFavPers.includes(t))); } catch (e) {}
+            tmPintarFotos();
+          }).catch(e => tmg('tm-st').textContent = ' ' + e);
+      }
+      function tmHacerGeneral(tag) {  // ⬆ pasa la etiqueta al perfil y la saca de las fotos
+        tmg('tm-st').textContent = ' haciéndola general…';
+        fetch(TM_GEN, {method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({tag: tag})})
+          .then(r => r.json()).then(d => {
+            if (!d.ok) { tmg('tm-st').textContent = ' ' + (d.error || 'error'); return; }
+            tmPersona = d.persona || tmPersona;
+            try {
+              PERSON_TAGS = tmPersona.slice();
+              Object.keys(PHOTO_TAGS).forEach(k => {
+                PHOTO_TAGS[k] = (PHOTO_TAGS[k] || []).filter(t => t !== tag);
+              });
+            } catch (e) {}
+            tmg('tm-st').textContent = ' ✓ general · quitada de ' + d.quitadas + ' foto(s) · ↩ deshacible';
+            if (window.refrescarUndo) window.refrescarUndo();
+            setTimeout(() => tmg('tm-st').textContent = '', 3500);
+            tmRecargar();
+          }).catch(e => tmg('tm-st').textContent = ' ' + e);
+      }
+      function tmRecargar() {         // recuentos frescos (tras renombrar pueden fusionarse)
+        return fetch(TM_DATA).then(r => r.json()).then(d => {
+          tmPersona = d.persona || []; tmFotos = d.fotos || [];
+          tmFavPers = d.fav_persona || []; tmFavGlob = d.fav_global || [];
+          tmPintarPersona(); tmPintarFotos();
+        });
+      }
+      // Renombrar una etiqueta de foto en TODAS las fotos que la tengan
+      function tmEditarFoto(f, spanEl) {
+        const inp = document.createElement('input');
+        inp.className = 'tm-in'; inp.value = f.tag; inp.spellcheck = false;
+        spanEl.replaceWith(inp); inp.focus(); inp.select();
+        let cerrado = false;
+        const cancelar = () => { if (!cerrado) { cerrado = true; tmPintarFotos(); } };
+        const commit = () => {
+          if (cerrado) return;
+          const v = inp.value.trim();
+          if (!v || v === f.tag) { cancelar(); return; }
+          cerrado = true;
+          tmg('tm-st').textContent = ' renombrando…';
+          fetch(TM_REN, {method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({old: f.tag, new: v})})
+            .then(r => r.json()).then(d => {
+              if (!d.ok) { tmg('tm-st').textContent = ' ' + (d.error || 'error'); tmPintarFotos(); return; }
+              // que el visor abierto lo refleje sin recargar
+              try {
+                Object.keys(PHOTO_TAGS).forEach(k => {
+                  const ts = (PHOTO_TAGS[k] || []).map(t => t === f.tag ? v : t);
+                  PHOTO_TAGS[k] = ts.filter((t, i) => ts.indexOf(t) === i);
+                });
+              } catch (e) {}
+              tmg('tm-st').textContent = ' ✓ renombrada en ' + d.cambiadas + ' foto(s)';
+              setTimeout(() => tmg('tm-st').textContent = '', 3000);
+              tmRecargar();
+            }).catch(e => { tmg('tm-st').textContent = ' ' + e; tmPintarFotos(); });
+        };
+        inp.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          else if (e.key === 'Escape') cancelar();
+        };
+        inp.onblur = commit;
+      }
+      // Renombrar una etiqueta DEL PERFIL (la heredan todas sus fotos)
+      function tmEditarPersona(viejo, chipEl) {
+        const inp = document.createElement('input');
+        inp.className = 'tm-in'; inp.value = viejo; inp.spellcheck = false;
+        chipEl.replaceWith(inp); inp.focus(); inp.select();
+        let cerrado = false;
+        const commit = () => {
+          if (cerrado) return;
+          cerrado = true;
+          const v = inp.value.trim();
+          if (!v || v === viejo) { tmPintarPersona(); return; }
+          const ts = tmPersona.map(t => t === viejo ? v : t);
+          tmPersona = ts.filter((t, i) => ts.indexOf(t) === i);
+          tmGuardarPersona();
+        };
+        inp.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          else if (e.key === 'Escape') { cerrado = true; tmPintarPersona(); }
+        };
+        inp.onblur = commit;
+      }
+      window.tmPintarFotos = tmPintarFotos;
+    })();
+    </script>
+
     <div class="meta" style="line-height:1.7">
       <div>🧹 Últ. corrección: <b style="color:var(--tx)">{{ corrected_ago or 'nunca' }}</b></div>
       <div>🔍 Últ. búsqueda: <b style="color:var(--tx)">{{ searched_ago or 'nunca' }}</b></div>
@@ -2723,6 +3327,7 @@ PERSON_TEMPLATE = """
       {% if display %}
       <button class="pcfg-item" onclick="cfgTagSel()">🏷 Etiquetar con IA…</button>
       {% endif %}
+      <button class="pcfg-item" onclick="abrirTagMgr()">🗂 Gestor de etiquetas…</button>
       <a class="pcfg-item" href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta</a>
       <a class="pcfg-item" href="{{ url_for('person_export', name=name) }}">📦 Exportar perfil (.zip)</a>
       {% if photos %}
@@ -2750,13 +3355,8 @@ PERSON_TEMPLATE = """
       {% endif %}
     </div>
 
-    <!-- Etiquetas -->
-    <div>
-      <span class="meta">🏷 Etiquetas de {{ name }} <span style="opacity:.6">· valen para todas sus fotos</span></span>
-      <div class="chips" id="ptags" style="margin-top:.4rem">
-        <input class="taginput" id="ptag-input" placeholder="escribí y Enter…">
-      </div>
-    </div>
+    {# Las etiquetas de la persona salieron del hero: se manejan en ⚙ → Gestor de
+       etiquetas (ahí se editan, renombran y borran, y además están las de fotos). #}
 
     {% if favs %}
     <!-- Favoritos: carrusel -->
@@ -2894,9 +3494,12 @@ PERSON_TEMPLATE = """
   <div class="shot{% if f.fav %} is-fav{% endif %}" data-tags="{{ f.tags|join(' ') }}" data-rel="{{ f.rel }}">
     <span class="favstar" title="Favorito">⭐</span>
     {% if f.nsfw %}<span class="nsfw-badge" title="{{ f.rel }}">🔞</span>{% endif %}
+    {% if f.video %}<span class="vid-badge" title="Video">▶</span>{% endif %}
+    {% if not f.video %}
     <label class="shot-selbox" title="Seleccionar para etiquetar con IA">
       <input type="checkbox" class="tagselchk" value="{{ f.rel }}" onchange="tagSelCount()">
     </label>
+    {% endif %}
     <div class="shot-thumb" onclick="lbOpen({{ loop.index0 }})" title="{{ f.rel }}">
       <img src="{{ url_for('person_thumb', name=name, rel=f.rel) }}" loading="lazy" alt="{{ f.rel }}">
     </div>
@@ -2912,7 +3515,7 @@ PERSON_TEMPLATE = """
 <script>
 window.KNOWN = {{ people|tojson }};            // todas las personas de la base
 window.LB_PHOTOS = [
-  {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}",rel:{{ f.rel|tojson }}},{% endfor %}
+  {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}",rel:{{ f.rel|tojson }},video:{{ f.video|tojson }}},{% endfor %}
 ];
 window.POSTS = {{ posts|tojson }};             // {rel: {caption, comments, people}}
 window.VLM_MODELS = {{ vlm_models|tojson }};
@@ -2920,6 +3523,7 @@ window.HAS_COVER = {{ has_thumb|tojson }};
 window.COVER_URL_THUMB = "{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}";
 const PERSON = {{ name|tojson }};
 let PERSON_TAGS = {{ person_tags|tojson }};
+let FAVS = {{ favs_tags|tojson }};             // tus favoritas (persona + globales)
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
@@ -2938,9 +3542,12 @@ function post(url, body) {
 }
 
 // --- etiquetas de la persona ---
+// El bloque del hero se sacó (ahora se editan en ⚙ → Gestor de etiquetas), así que
+// estas funciones no encuentran los elementos: salen sin hacer nada en vez de romper.
 function renderPersonTags() {
   const box = document.getElementById('ptags');
   const input = document.getElementById('ptag-input');
+  if (!box || !input) return;
   [...box.querySelectorAll('.chip')].forEach(c => c.remove());
   PERSON_TAGS.forEach(t => box.insertBefore(
     chip(t, () => removePersonTag(t), false), input));
@@ -2951,7 +3558,9 @@ function addPersonTag(v) {
   PERSON_TAGS.push(v); renderPersonTags();
   post(PTAGS_URL, {tags: PERSON_TAGS.join(',')}).then(refreshAllPhotoTags);
 }
-tagAC(document.getElementById('ptag-input'), {commit: addPersonTag});
+if (document.getElementById('ptag-input')) {
+  tagAC(document.getElementById('ptag-input'), {commit: addPersonTag});
+}
 function removePersonTag(t) {
   PERSON_TAGS = PERSON_TAGS.filter(x => x !== t); renderPersonTags();
   post(PTAGS_URL, {tags: PERSON_TAGS.join(',')}).then(refreshAllPhotoTags);
@@ -3207,17 +3816,35 @@ __LIGHTBOX__
 # etiquetas que se despliega con "🏷 Etiquetar". Todo sin salir del modal: la
 # idea es taguear salteado mientras mirás, sin recorrer 1500 fotos.
 POST_LIGHTBOX = """
+<style>
+  /* video en el visor: panel completo igual que en las fotos. Los botones de IA
+     (pie/comentarios/sugerir) no funcionan sobre video, pero el resto (favorito,
+     mover, NSFW, navegación, etiquetas a mano) sí. */
+  #lb-vid { background:#000; }
+</style>
 <div id="lb" class="lb-post">
-  <span id="lb-x" onclick="lbClose()" title="Cerrar">✕</span>
   <button class="lb-btn" id="lb-prev" onclick="lbStep(-1)" title="Anterior">‹</button>
   <button class="lb-btn" id="lb-next" onclick="lbStep(1)" title="Siguiente">›</button>
   <div class="post">
     <div class="stage">
       <img id="lb-img" src="" alt="">
+      <video id="lb-vid" controls playsinline preload="metadata"
+             style="display:none; max-width:100%; max-height:100%; outline:none"></video>
       <button class="secondary sm stage-fab stage-fab-l" onclick="lbCover(this)"
               title="Usar esta foto como portada de la galería">🖼 Portada</button>
       <button class="secondary sm stage-fab stage-fab-r" onclick="openPeopleModal()"
               title="Etiquetar quién más está en la foto">👥 Personas ▾</button>
+      <!-- "No es X": mover la foto a otra persona o sacarla; sobre la foto, abajo -->
+      <form method="post" action="{{ url_for('person_move_photo', name=name) }}"
+            id="lb-move-form" class="stage-fab stage-fab-bl" style="margin:0">
+        <input type="hidden" name="rel" id="lb-move-rel" value="">
+        <select name="to" class="secondary sm" style="font-size:.78rem; max-width:210px"
+                onchange="if (this.value) this.form.submit()">
+          <option value="">🚚 No es {{ name }}… mover a</option>
+          <option value="__review__">🗂 Sacar a _revisar</option>
+          {% for p in people %}{% if p != name %}<option value="{{ p }}">👤 {{ p }}</option>{% endif %}{% endfor %}
+        </select>
+      </form>
     </div>
     <aside class="side">
       <header class="phead">
@@ -3277,27 +3904,18 @@ POST_LIGHTBOX = """
           <span class="meta" id="lb-com-st"></span>
         </div>
 
-        <!-- etiquetas: al fondo y discreto, para no ensuciar el pie/comentarios -->
+        <!-- etiquetas: al fondo y discreto. Muestra las primeras 3 + "ver más". -->
         <div class="ptags-min">
-          <button class="linklike" id="lb-tag-toggle" onclick="openTagModal()">🏷 Etiquetas / Sugerir con IA</button>
-          <span class="meta" id="lb-tag-summary"></span>
+          <div id="lb-tag-preview" class="lb-tagprev"></div>
+          <button class="linklike" id="lb-tag-toggle" onclick="openTagModal()">🏷 Editar / Sugerir con IA</button>
         </div>
       </div>
 
-      <!-- acciones de ESTA foto (antes estaban en cada tarjeta de la grilla) -->
+      <!-- acciones de ESTA foto (antes estaban en cada tarjeta de la grilla).
+           El "No es X… mover" se movió arriba, sobre la foto. -->
       <div class="pact">
         <button type="button" class="secondary sm" id="lb-nsfw-btn" onclick="marcarNsfw()"
                 title="Marcar como NSFW: la mueve a _nsfw y corre el detector de acto 🎯">🔞 NSFW</button>
-        <form method="post" action="{{ url_for('person_move_photo', name=name) }}"
-              id="lb-move-form" style="flex:1; margin:0">
-          <input type="hidden" name="rel" id="lb-move-rel" value="">
-          <select name="to" style="width:100%; font-size:.78rem"
-                  onchange="if (this.value) this.form.submit()">
-            <option value="">🚚 No es {{ name }}… mover a</option>
-            <option value="__review__">🗂 Sacar a _revisar</option>
-            {% for p in people %}{% if p != name %}<option value="{{ p }}">👤 {{ p }}</option>{% endif %}{% endfor %}
-          </select>
-        </form>
       </div>
 
       <div class="pfoot">
@@ -3337,6 +3955,11 @@ POST_LIGHTBOX = """
           <div class="chips" id="lb-own">
             <input class="taginput" id="lb-tin" placeholder="escribí una y Enter…">
           </div>
+
+          <!-- tus favoritas: un clic y se agregan (para no tipear siempre lo mismo) -->
+          <span class="meta" style="display:block;margin-top:.7rem">⭐ Tus favoritas
+            <span style="opacity:.6">· clic para agregarla</span></span>
+          <div class="chips" id="lb-favs"></div>
 
           <div class="row" style="margin-top:.9rem; align-items:center; gap:.5rem">
             <span class="meta">Modelo:</span>
@@ -3424,6 +4047,7 @@ POST_LIGHTBOX = """
     if ($('lb-sug-count')) $('lb-sug-count').textContent = '';
     sugeridas = new Set();                       // arranca de cero en cada foto
     ownExpanded = false;                         // etiquetas propias colapsadas
+    _tagPrevExp = false;                          // preview de etiquetas colapsado
     sugStop = true;                              // corta cualquier auto-continuo en curso
     if ($('lb-sug')) {
       $('lb-sug').textContent = '🔮 Sugerir con IA';
@@ -3437,8 +4061,12 @@ POST_LIGHTBOX = """
     $('lb-nsfw-btn').style.display = rel().split('/').includes('_nsfw') ? 'none' : '';
   }
 
-  // portada desde el visor (reusa setCover, que ya actualiza la card de arriba)
-  window.lbCover = function(btn) { setCover(btn, rel()); };
+  // portada desde el visor: abre el EDITOR con esta foto (recorte a mano) en vez
+  // de ponerla directo. Si el editor no está (otra página), cae al modo viejo.
+  window.lbCover = function(btn) {
+    if (window.coverEditar) coverEditar(rel(), P[idx].url);
+    else setCover(btn, rel());
+  };
   // marcar ESTA foto como NSFW: la mueve a _nsfw y ahí corre el detector de acto.
   // ASÍNCRONO: actualiza en el lugar, NO recarga (no te cierra el visor).
   window.marcarNsfw = function() {
@@ -3476,7 +4104,9 @@ POST_LIGHTBOX = """
   function renderFav() {
     const on = !!slot(rel()).fav;
     const b = $('lb-fav');
-    b.textContent = on ? '⭐' : '☆';
+    // ★ y no el emoji ⭐: el emoji es más ancho que el botón de 34px y se
+    // desbordaba (se veía reventado). El color ámbar ya marca que está activa.
+    b.textContent = on ? '★' : '☆';
     b.classList.toggle('on', on);
   }
   function toggleFav() {
@@ -3574,11 +4204,22 @@ POST_LIGHTBOX = """
   window.closePeopleModal = closePeopleModal;
   window.pmodalFilter = pmodalFilter;
 
+  const vid = $('lb-vid');
   function show(i) {
     idx = (i + P.length) % P.length;
     reset();
-    img.src = P[idx].url;
-    $('lb-fn').textContent = P[idx].name;
+    const it = P[idx];
+    // video vs imagen: se muestra <video> y se esconde la columna de acciones
+    // (pie/comentarios/etiquetas son sobre imágenes, no aplican al video)
+    lb.classList.toggle('is-video', !!it.video);
+    if (it.video) {
+      img.style.display = 'none'; img.src = '';
+      vid.src = it.url; vid.style.display = '';
+    } else {
+      vid.pause(); vid.removeAttribute('src'); vid.load(); vid.style.display = 'none';
+      img.style.display = ''; img.src = it.url;
+    }
+    $('lb-fn').textContent = it.name;
     $('lb-pos').textContent = (idx + 1) + ' / ' + P.length;
     render();
   }
@@ -3590,7 +4231,10 @@ POST_LIGHTBOX = """
     else { av.style.display = 'none'; }
     show(i);
   };
-  window.lbClose = function() { lb.style.display = 'none'; img.src = ''; };
+  window.lbClose = function() {
+    lb.style.display = 'none'; img.src = '';
+    vid.pause(); vid.removeAttribute('src'); vid.load();
+  };
   window.lbStep = function(d) { show(idx + d); };
 
   // --- estado "la IA está trabajando" ---
@@ -3716,13 +4360,81 @@ POST_LIGHTBOX = """
       b.onclick = () => { ownExpanded = !ownExpanded; renderTags(); };
       box.insertBefore(b, input);
     }
-    // resumen chico en el panel lateral (así ves cuántas hay sin abrir el modal)
-    const sum = $('lb-tag-summary');
-    if (sum) {
-      const heredadas = PERSON_TAGS.length, propias = own.length;
-      sum.textContent = (propias || heredadas)
-        ? `${propias} propia(s) · ${heredadas} heredada(s)` : 'sin etiquetas todavía';
+    renderTagPreview();     // primeras 3 etiquetas + "ver más" en el panel lateral
+    renderFavs();           // tus favoritas, a un clic
+  }
+  // Tus favoritas (de esta galería + globales) que la foto todavía NO tiene:
+  // un clic y se agregan, para no tipear siempre lo mismo.
+  function renderFavs() {
+    const box = $('lb-favs'); if (!box) return;
+    box.innerHTML = '';
+    const own = ownTags();
+    const libres = (FAVS || []).filter(t => !own.includes(t) && !PERSON_TAGS.includes(t));
+    if (!libres.length) {
+      box.innerHTML = '<span class="meta empty">' +
+        ((FAVS || []).length ? 'ya están todas puestas'
+                             : 'marcalas con ⭐ en ⚙ → Gestor de etiquetas') + '</span>';
+      return;
     }
+    libres.forEach(t => {
+      const c = document.createElement('span'); c.className = 'chip';
+      c.style.cursor = 'pointer'; c.textContent = t; c.title = 'Agregar a esta foto';
+      c.onclick = () => saveOwn(ownTags().concat([t]));
+      box.appendChild(c);
+    });
+  }
+  // Panel lateral: muestra las primeras 3 etiquetas (propias + heredadas) como
+  // chips, y un "ver más (N)" que despliega el resto inline.
+  let _tagPrevExp = false;                 // "ver más" del preview (se resetea por foto)
+  // Preview editable: chips PROPIAS con × (borrar) y clic para editar, un input
+  // para agregar rápido, y las HEREDADAS de la persona apagadas (solo lectura).
+  function renderTagPreview() {
+    const box = $('lb-tag-preview'); if (!box) return;
+    box.innerHTML = '';
+    const own = ownTags();
+    (_tagPrevExp ? own : own.slice(0, 3)).forEach(t => {
+      const c = document.createElement('span'); c.className = 'chip';
+      const txt = document.createElement('span'); txt.className = 'chiptxt'; txt.textContent = t;
+      txt.title = 'clic para editar';
+      txt.onclick = () => cpEditar(t, c);
+      const x = document.createElement('span'); x.className = 'x'; x.textContent = '×';
+      x.title = 'Quitar'; x.onclick = () => saveOwn(ownTags().filter(v => v !== t));
+      c.appendChild(txt); c.appendChild(document.createTextNode(' ')); c.appendChild(x);
+      box.appendChild(c);
+    });
+    if (own.length > 3) {
+      const b = document.createElement('button'); b.className = 'linklike'; b.style.marginLeft = '.3rem';
+      b.textContent = _tagPrevExp ? 'ver menos' : ('ver más (' + (own.length - 3) + ')');
+      b.onclick = () => { _tagPrevExp = !_tagPrevExp; renderTagPreview(); };
+      box.appendChild(b);
+    }
+    const inp = document.createElement('input');
+    inp.className = 'tagmini'; inp.placeholder = '+ etiqueta'; inp.spellcheck = false;
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); const v = inp.value.trim();
+        if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v])); inp.value = ''; }
+    };
+    box.appendChild(inp);
+    PERSON_TAGS.forEach(t => {
+      const c = document.createElement('span'); c.className = 'chip inherited';
+      c.textContent = t; c.title = 'heredada de la persona (se edita en el perfil)';
+      box.appendChild(c);
+    });
+  }
+  function cpEditar(viejo, chip) {         // editar una etiqueta propia en el lugar
+    const inp = document.createElement('input');
+    inp.className = 'tagmini'; inp.value = viejo; inp.spellcheck = false;
+    chip.replaceWith(inp); inp.focus(); inp.select();
+    const commit = () => {
+      const v = inp.value.trim();
+      if (v && v !== viejo) saveOwn(ownTags().map(x => x === viejo ? v : x));
+      else renderTagPreview();
+    };
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') renderTagPreview();
+    };
+    inp.onblur = commit;
   }
   // Enter/Escape los maneja tagAC entero (ver BASE_JS): un solo lugar, así no
   // se duplica la etiqueta cuando hay una sugerencia resaltada.
@@ -3737,26 +4449,35 @@ POST_LIGHTBOX = """
   // (clic = descartar). Descartada o agregada, la etiqueta queda en `sugeridas`,
   // así el próximo "Sugerir" NO la vuelve a traer. nueva=true la marca en ámbar.
   function addSugBtn(tag, nueva, acto) {
+    // si tenés una favorita que dice lo mismo, se usa TU palabra (no la de la IA)
+    const dijoIA = tag;
+    const mia = favParecida(tag);
+    if (mia) { tag = mia; nueva = false; }
     const chip = document.createElement('span');
     chip.className = 'sugchip' + (nueva ? ' sug-nueva' : '') + (acto ? ' sug-acto' : '');
-    const add = document.createElement('button');
-    add.className = 'sugadd';
-    // acto=true: viene del clasificador dedicado de posiciones (anclado, más
-    // confiable que el VLM) -> 🎯. nueva=true: palabra rara del VLM -> ⚠.
-    add.textContent = (acto ? '🎯 ' : (nueva ? '⚠ ' : '+ ')) + tag;
-    add.title = acto ? 'Detectado por el clasificador de actos (más confiable que el VLM)'
-              : (nueva ? 'Palabra rara: fijate que no sea invento del modelo' : 'Agregar');
-    add.onclick = () => {
-      if (!ownTags().includes(tag)) saveOwn(ownTags().concat([tag]));
-      chip.remove();
-      actualizarSugCount();
+    // marcador ⭐/🎯/⚠/+ · input EDITABLE (podés retocarla antes de agregarla)
+    const mark = document.createElement('span');
+    mark.className = 'sugmark';
+    mark.textContent = mia ? '⭐' : (acto ? '🎯' : (nueva ? '⚠' : '+'));
+    mark.title = mia ? ('Tu favorita (la IA había dicho «' + dijoIA + '»)')
+              : (acto ? 'Detectado por el clasificador de actos (más confiable que el VLM)'
+              : (nueva ? 'Palabra rara: fijate que no sea invento del modelo' : 'Sugerencia'));
+    const inp = document.createElement('input');
+    inp.className = 'suginput'; inp.value = tag; inp.spellcheck = false;
+    const agregar = () => {
+      const v = inp.value.trim();
+      if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v]));
+      chip.remove(); actualizarSugCount();
     };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); agregar(); } };
+    const add = document.createElement('button');
+    add.className = 'sugadd2'; add.textContent = '＋'; add.title = 'Agregar';
+    add.onclick = agregar;
     const x = document.createElement('button');
-    x.className = 'sugx';
-    x.textContent = '✕';
+    x.className = 'sugx'; x.textContent = '✕';
     x.title = 'Descartar (no volver a sugerirla)';
     x.onclick = () => { chip.remove(); actualizarSugCount(); };  // queda en sugeridas
-    chip.appendChild(add); chip.appendChild(x);
+    chip.appendChild(mark); chip.appendChild(inp); chip.appendChild(add); chip.appendChild(x);
     $('lb-sugtags').appendChild(chip);
   }
   function actualizarSugCount() {
@@ -3771,12 +4492,29 @@ POST_LIGHTBOX = """
     'con','y','a','al','del','su','sus','se','lo','le','dos','tres','muy','esta','este']);
   function _palabras(t) {
     return t.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+      .replace(/[^a-z0-9\\s]/g, ' ')          // "pelo:" cuenta como "pelo"
       .split(/\\s+/).map(w => w.replace(/s$/, '')).filter(w => w && !_STOP.has(w));
+  }
+  // ¿alguna favorita TUYA dice lo mismo que esta sugerencia? Ej: la IA dice
+  // "tipo de pelo: lacio" y vos tenés "pelo lacio" -> gana la tuya.
+  function favParecida(tag) {
+    const a = new Set(_palabras(tag));
+    if (!a.size) return null;
+    for (const f of (FAVS || [])) {
+      if (f.toLowerCase() === tag.toLowerCase()) return null;   // ya es idéntica
+      const b = new Set(_palabras(f));
+      if (!b.size) continue;
+      const [chico, grande] = b.size <= a.size ? [b, a] : [a, b];
+      let dentro = true;
+      for (const w of chico) if (!grande.has(w)) { dentro = false; break; }
+      if (dentro) return f;
+    }
+    return null;
   }
   function parecida(tag) {
     const a = new Set(_palabras(tag));
     if (!a.size) return false;
-    for (const s of [...sugeridas, ...ownTags()]) {
+    for (const s of [...sugeridas, ...ownTags(), ...PERSON_TAGS]) {
       const b = new Set(_palabras(s));
       if (!b.size) continue;
       const [chico, grande] = a.size <= b.size ? [a, b] : [b, a];
@@ -3791,7 +4529,9 @@ POST_LIGHTBOX = """
   // le pide "escarbar" cuando `evitar` no viene vacío.
   async function _unaPasada() {
     const r = rel();
-    const evitar = [...new Set([...sugeridas, ...ownTags()])];
+    // se le pide que NO repita lo que ya tiene la foto NI lo que ya es general
+    // del perfil (si "ojos azules" es general, no tiene sentido sugerirla de nuevo)
+    const evitar = [...new Set([...sugeridas, ...ownTags(), ...PERSON_TAGS])];
     let nuevas = 0;
     try {
       // mando el modelo elegido en el modal (el server cae a tag_model() si no)
@@ -3815,7 +4555,8 @@ POST_LIGHTBOX = """
           if (d.error) { $('lb-sug-st').textContent = ' ' + d.error; continue; }
           const tag = d.tag;
           // el acto (🎯) nunca se filtra por parecido: es anclado y va sí o sí
-          if (!tag || sugeridas.has(tag) || ownTags().includes(tag)) continue;
+          if (!tag || sugeridas.has(tag) || ownTags().includes(tag)
+              || PERSON_TAGS.includes(tag)) continue;
           if (!d.acto && parecida(tag)) { sugeridas.add(tag); continue; }  // parecida: la recuerdo pero no la muestro
           $('lb-sug-sk').style.display = 'none';
           sugeridas.add(tag);
@@ -3993,6 +4734,11 @@ def person_page(name):
     known_dir = get_library(cfg)
     normal = person_photos(known_dir, name) if known_dir else []
     nsfw_list = person_photos(known_dir, name, only_nsfw=True) if known_dir else []
+    # Videos: SOLO para ver/reproducir en la galería. No entran al pipeline de
+    # etiquetas/pie/comentarios (eso es sobre imágenes), por eso van aparte y no
+    # se suman a normal/nsfw_list. Siguen el mismo toggle NSFW.
+    vids = person_photos(known_dir, name, media="videos") if known_dir else []
+    vids_nsfw = person_photos(known_dir, name, only_nsfw=True, media="videos") if known_dir else []
     show_nsfw = request.args.get("nsfw") == "1"
     # El toggle es EXCLUYENTE: normal = solo las normales; "Solo NSFW" = solo las
     # NSFW (no las mezcla). Cada foto lleva sus etiquetas efectivas para filtrar.
@@ -4000,11 +4746,15 @@ def person_page(name):
     def _fav(r):
         return todos_posts.get(r, {}).get("fav", False)
     if show_nsfw:
-        display = [{"rel": r, "nsfw": True, "tags": tags_mod.effective_photo(name, r),
-                    "fav": _fav(r)} for r in nsfw_list]
+        display = [{"rel": r, "nsfw": True, "video": False,
+                    "tags": tags_mod.effective_photo(name, r), "fav": _fav(r)} for r in nsfw_list]
+        display += [{"rel": r, "nsfw": True, "video": True, "tags": [], "fav": False}
+                    for r in vids_nsfw]
     else:
-        display = [{"rel": r, "nsfw": False, "tags": tags_mod.effective_photo(name, r),
-                    "fav": _fav(r)} for r in normal]
+        display = [{"rel": r, "nsfw": False, "video": False,
+                    "tags": tags_mod.effective_photo(name, r), "fav": _fav(r)} for r in normal]
+        display += [{"rel": r, "nsfw": False, "video": True, "tags": [], "fav": False}
+                    for r in vids]
     photos = normal   # para los avisos "no hay imágenes / configurá carpeta"
 
     # El filtro por etiquetas es del SERVIDOR, no del navegador: si filtrara la
@@ -4083,6 +4833,9 @@ def person_page(name):
         vlm_crudos=vlm.modelos_descensurados(),  # los sin censura (se marcan 🔞)
         people=people,       # para el desplegable "mover a otra persona"
         person_tags=tags_mod.get_person(name),
+        # tus favoritas para esta persona (las suyas + las globales): para
+        # etiquetar rápido a mano y para pisar la redacción de la IA
+        favs_tags=tags_mod.favs_efectivas(name),
         photo_tags=photo_tags,
         all_tags=tags_mod.all_tags(),
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
@@ -4093,12 +4846,14 @@ def person_page(name):
         # paginado
         page=page, n_pages=n_pages, per=per, per_options=PER_OPTIONS,
         n_filtradas=n_filtradas,
-        n_todas=len(nsfw_list) if show_nsfw else len(normal),
+        n_todas=(len(nsfw_list) + len(vids_nsfw)) if show_nsfw else (len(normal) + len(vids)),
         desde=(page - 1) * per + 1 if display else 0,
         hasta=(page - 1) * per + len(display),
         nsfw_count=len(nsfw_list),
         show_nsfw=show_nsfw,
         folder=str(Path(known_dir) / name) if known_dir else "",
+        # de qué foto salió la portada (para que el editor abra ahí directo)
+        cover_src=person_meta.get_cover_src(name),
         has_thumb=thumb.is_file(),
         cache_bust=int(thumb.stat().st_mtime) if thumb.is_file() else 0,
         prev_name=prev_name,
@@ -4116,11 +4871,46 @@ def person_page(name):
     )
 
 
+def _sniff_mime(path):
+    """Tipo de imagen por su CONTENIDO (magic bytes), no por la extensión. Un
+    archivo con extensión mentida (un JPEG llamado .webp) servido con el tipo
+    equivocado se ve roto en el navegador; con el tipo real, anda. None si no lo
+    reconoce (ahí se cae a la extensión, como antes)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:2] == b"BM":
+        return "image/bmp"
+    if head[4:8] == b"ftyp":                      # contenedor ISO-BMFF: avif/heic
+        brand = head[8:12]
+        if brand == b"avif":
+            return "image/avif"
+        if brand in (b"heic", b"heix", b"mif1", b"msf1", b"heif"):
+            return "image/heic"
+    return None
+
+
 @app.route("/person_photo/<name>/<path:rel>")
 def person_photo(name, rel):
-    """Sirve la foto ORIGINAL (para el visor con zoom)."""
+    """Sirve la foto ORIGINAL (para el visor con zoom). El tipo MIME se detecta
+    por el contenido: así una foto con extensión mentida (ej: un JPEG guardado
+    como .webp) igual se muestra bien en el visor en vez de romperse."""
     cfg = load_config()
-    return send_from_directory(Path(get_library(cfg)) / name, rel)
+    directory = Path(get_library(cfg)) / name
+    mt = _sniff_mime(directory / rel)
+    if mt:
+        return send_from_directory(directory, rel, mimetype=mt)
+    return send_from_directory(directory, rel)
 
 
 @app.route("/person_thumb/<name>/<path:rel>")
@@ -4137,12 +4927,30 @@ def person_thumb(name, rel):
     if not cache.is_file() or cache.stat().st_mtime < src.stat().st_mtime:
         GALLERY_THUMBS.mkdir(parents=True, exist_ok=True)
         try:
-            im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+            if src.suffix.lower() in VIDEO_EXTENSIONS:
+                im = _video_frame_pil(src)            # miniatura = 1er fotograma
+                if im is None:
+                    abort(404)
+            else:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
             im.thumbnail((360, 360))
             im.save(cache, quality=82)
         except Exception:
             return send_from_directory(Path(library) / name, rel)  # ilegible: el original
     return send_from_directory(GALLERY_THUMBS, key)
+
+
+def _video_frame_pil(path):
+    """Primer fotograma legible de un video como imagen PIL RGB, o None."""
+    import cv2
+    cap = cv2.VideoCapture(str(path))
+    try:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    finally:
+        cap.release()
 
 
 @app.route("/person/<name>/cover", methods=["POST"])
@@ -4238,9 +5046,214 @@ def post_mark_nsfw(name):
         posts_mod.move_photo(name, rel, new_rel)
     except Exception:
         pass
+    _undo_push({"tipo": "nsfw", "desc": f"marcar NSFW «{Path(rel).name}»",
+                "name": name, "new_rel": new_rel, "orig_rel": rel})
     # el front actualiza en el lugar (sin recargar): necesita la ruta y url nuevas
     return {"ok": True, "new_rel": new_rel,
             "new_url": url_for("person_photo", name=name, rel=new_rel)}
+
+
+# --- Deshacer: pila global de acciones reversibles (en memoria, se pierde al
+# reiniciar). Guarda las últimas; "↩ Deshacer" (botón flotante) revierte la última.
+UNDO_STACK = []
+UNDO_MAX = 30
+
+
+def _undo_push(entry):
+    UNDO_STACK.append(entry)
+    del UNDO_STACK[:-UNDO_MAX]        # no dejar crecer sin límite
+
+
+def _undo_nsfw(e):
+    """Revierte un 'marcar NSFW': la foto vuelve de _nsfw a su ruta original,
+    con sus etiquetas y su pie."""
+    import shutil
+    library = get_library()
+    if not library:
+        return False, "No hay Biblioteca."
+    src = Path(library) / e["name"] / e["new_rel"]
+    dest = Path(library) / e["name"] / e["orig_rel"]
+    if not src.is_file():
+        return False, "Esa foto ya no está en _nsfw."
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        return False, "Ya hay una foto en la ruta original."
+    shutil.move(str(src), str(dest))
+    try:
+        tags_mod.move_photo_tags(e["name"], e["new_rel"], e["name"], e["orig_rel"])
+        posts_mod.move_photo(e["name"], e["new_rel"], e["orig_rel"])
+    except Exception:
+        pass
+    return True, f"«{Path(e['orig_rel']).name}» volvió a la galería normal."
+
+
+def _undo_tags(e):
+    """Revierte un guardado de etiquetas: restaura las que tenía la foto antes."""
+    try:
+        tags_mod.set_photo(e["name"], e["rel"], e["prev"])
+        return True, f"Etiquetas de «{Path(e['rel']).name}» restauradas."
+    except Exception as ex:
+        return False, str(ex)
+
+
+def _undo_tag_masiva(e):
+    """Revierte un borrado masivo del gestor: vuelve a poner la etiqueta en las
+    fotos que la tenían."""
+    try:
+        n = tags_mod.add_photo_tag_many(e["name"], e["rels"], e["tag"])
+        return True, f"«{e['tag']}» restaurada en {n} foto(s)."
+    except Exception as ex:
+        return False, str(ex)
+
+
+def _undo_general(e):
+    """Revierte un 'hacer general': la saca del perfil y la devuelve a sus fotos."""
+    try:
+        propias = [t for t in tags_mod.get_person(e["name"]) if t != e["tag"]]
+        tags_mod.set_person(e["name"], propias)
+        n = tags_mod.add_photo_tag_many(e["name"], e["rels"], e["tag"])
+        return True, f"«{e['tag']}» ya no es general (volvió a {n} foto/s)."
+    except Exception as ex:
+        return False, str(ex)
+
+
+_UNDO_FN = {"nsfw": _undo_nsfw, "tags": _undo_tags, "tag_masiva": _undo_tag_masiva,
+            "general": _undo_general}
+
+
+@app.route("/undo/estado")
+def undo_estado():
+    """¿Hay algo para deshacer? Devuelve la descripción de lo último."""
+    if UNDO_STACK:
+        return {"puede": True, "desc": UNDO_STACK[-1]["desc"]}
+    return {"puede": False, "desc": ""}
+
+
+@app.route("/undo", methods=["POST"])
+def undo():
+    """Deshace la última acción reversible (marcar NSFW o guardar etiquetas)."""
+    if not UNDO_STACK:
+        return {"ok": False, "error": "Nada para deshacer."}
+    e = UNDO_STACK.pop()
+    fn = _UNDO_FN.get(e["tipo"])
+    if not fn:
+        return {"ok": False, "error": "No sé deshacer eso."}
+    ok, msg = fn(e)
+    if not ok:
+        UNDO_STACK.append(e)         # falló: lo dejo para reintentar
+    return {"ok": ok, "msg": msg}
+
+
+@app.route("/person/<name>/tags_data")
+def person_tags_data(name):
+    """Para el gestor de etiquetas: las del perfil (valen para todas sus fotos) y
+    el recuento de las de foto (en cuántas aparece cada una)."""
+    counts = tags_mod.person_photo_tag_counts(name)
+    # más usadas primero; a igual cantidad, alfabético
+    fotos = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"ok": True, "persona": tags_mod.get_person(name),
+            "fotos": [{"tag": t, "n": n} for t, n in fotos],
+            "fav_global": tags_mod.get_favs(None),
+            "fav_persona": tags_mod.get_favs(name)}
+
+
+@app.route("/person/<name>/tags_fav", methods=["POST"])
+def person_tags_fav(name):
+    """Marca/desmarca una etiqueta como favorita, global o de esta persona."""
+    tag = request.form.get("tag", "").strip()
+    ambito = request.form.get("ambito", "persona")
+    if not tag:
+        return {"ok": False, "error": "Falta la etiqueta."}
+    tags_mod.toggle_fav(tag, None if ambito == "global" else name)
+    return {"ok": True, "fav_global": tags_mod.get_favs(None),
+            "fav_persona": tags_mod.get_favs(name)}
+
+
+@app.route("/person/<name>/tags_promote", methods=["POST"])
+def person_tags_promote(name):
+    """Hace la etiqueta GENERAL (del perfil) y la saca de las fotos sueltas."""
+    tag = request.form.get("tag", "").strip()
+    if not tag:
+        return {"ok": False, "error": "Falta la etiqueta."}
+    rels = tags_mod.promote_to_person(name, tag)
+    _undo_push({"tipo": "general", "desc": f"hacer general «{tag}»",
+                "name": name, "tag": tag, "rels": rels})
+    return {"ok": True, "quitadas": len(rels),
+            "persona": tags_mod.get_person(name)}
+
+
+@app.route("/person/<name>/tags_remove_all", methods=["POST"])
+def person_tags_remove_all(name):
+    """Saca una etiqueta de TODAS las fotos de la persona (limpieza después de
+    etiquetar en lote con IA)."""
+    tag = request.form.get("tag", "").strip()
+    if not tag:
+        return {"ok": False, "error": "Falta la etiqueta."}
+    rels = tags_mod.remove_photo_tag(name, tag)
+    if rels:      # se borra sin preguntar, pero queda deshacible
+        _undo_push({"tipo": "tag_masiva",
+                    "desc": f"borrar «{tag}» de {len(rels)} foto(s)",
+                    "name": name, "tag": tag, "rels": rels})
+    return {"ok": True, "quitadas": len(rels)}
+
+
+@app.route("/person/<name>/tags_rename_all", methods=["POST"])
+def person_tags_rename_all(name):
+    """Renombra una etiqueta en TODAS las fotos de la persona (arreglo masivo:
+    si la IA metió 'tipo de pelo: lacio' en 50 fotos, se corrige de una)."""
+    old = request.form.get("old", "").strip()
+    new = request.form.get("new", "").strip()
+    if not old or not new:
+        return {"ok": False, "error": "Falta la etiqueta."}
+    if old.lower() == new.lower():
+        return {"ok": False, "error": "Es la misma etiqueta."}
+    n = tags_mod.rename_photo_tag(name, old, new)
+    return {"ok": True, "cambiadas": n}
+
+
+@app.route("/person/<name>/tags_person_set", methods=["POST"])
+def person_tags_person_set(name):
+    """Reemplaza las etiquetas DEL PERFIL (las que heredan todas sus fotos)."""
+    try:
+        tags = json.loads(request.form.get("tags", "[]"))
+    except Exception:
+        return {"ok": False, "error": "Etiquetas inválidas."}
+    saved = tags_mod.set_person(name, [str(t) for t in tags])
+    return {"ok": True, "tags": saved}
+
+
+@app.route("/person/<name>/cover_crop", methods=["POST"])
+def person_cover_crop(name):
+    """Portada a medida: recorta la foto elegida al cuadro que marcó el usuario
+    (left/top/side en píxeles reales) y la guarda como miniatura de la persona.
+    No toca la base de caras (es solo la imagen de portada)."""
+    library = get_library()
+    rel = request.form.get("rel", "")
+    if not library or not rel:
+        return {"ok": False, "error": "Falta la foto."}
+    src = Path(library) / name / rel
+    if not src.is_file():
+        return {"ok": False, "error": "Esa foto ya no está."}
+    try:
+        left = int(float(request.form.get("left", 0)))
+        top = int(float(request.form.get("top", 0)))
+        side = int(float(request.form.get("side", 0)))
+    except ValueError:
+        return {"ok": False, "error": "Recorte inválido."}
+    try:
+        im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+        W, H = im.size
+        side = max(16, min(side, W, H))
+        left = max(0, min(left, W - side))
+        top = max(0, min(top, H - side))
+        crop = im.crop((left, top, left + side, top + side)).resize((220, 220), Image.LANCZOS)
+        KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+        crop.save(KNOWN_THUMBS / f"{safe_name(name)}.jpg", quality=88)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    # recordar de qué foto y con qué recorte salió: el editor abre ahí la próxima
+    person_meta.set_cover_src(name, rel, left, top, side)
+    return {"ok": True, "url": url_for("known_thumb", name=name)}
 
 
 def _norm_search(s):
@@ -4384,9 +5397,9 @@ def _tags_worker(name, rels, cfg):
     library = get_library(cfg)
     # el lote de etiquetado usa el mismo modelo "que mira bien" que el sugeridor
     modelo = vlm.tag_model()
-    # salvaguarda: si la persona está etiquetada como menor, el sugeridor NO
-    # describe cuerpo ni nada sexual (igual que el pie y los comentarios)
-    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    # salvaguarda: sin etiqueta de adulto el sugeridor NO describe cuerpo ni nada
+    # sexual (igual que el pie y los comentarios). La duda cierra, no abre.
+    # Va DENTRO del bucle: "adulta" puede estar en la foto y no en el perfil.
     for i, rel in enumerate(rels, 1):
         if TAGS_STATE["stop"]:
             break
@@ -4400,8 +5413,9 @@ def _tags_worker(name, rels, cfg):
             TAGS_STATE["salteadas"] += 1
             continue
         try:
+            sano = posts_mod.identidad_foto(name, rel)["sano"]
             nuevas = vlm.suggest_tags(str(path), model=modelo,
-                                      quien=name, crudo=not menor)
+                                      quien=name, crudo=not sano)
             if nuevas:
                 tags_mod.set_photo(name, rel, propias + nuevas)
                 TAGS_STATE["ultimos"] = ([f"{rel}: {', '.join(nuevas)}"] + TAGS_STATE["ultimos"])[:5]
@@ -4470,7 +5484,10 @@ def post_caption(name):
     cfg = load_config()
     try:
         text = posts_mod.generate_caption(
-            name, rel, str(path), model=request.form.get("model") or None,
+            # el del desplegable del visor manda; si no eligieron, el de Ajustes;
+            # y recién ahí el de fábrica (model=None)
+            name, rel, str(path),
+            model=request.form.get("model") or cfg.get("post_model") or None,
             crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
             diminutivos=bool(cfg.get("diminutivos")))
     except Exception as e:
@@ -4526,7 +5543,7 @@ def post_comments(name):
             tone=cfg.get("comment_tone", posts_mod.DEFAULT_TONE),
             users=cfg.get("comment_users") or None,
             crudeness=cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT),
-            model=request.form.get("model") or None,
+            model=request.form.get("model") or cfg.get("post_model") or None,
             diminutivos=bool(cfg.get("diminutivos")),
             # "más comentarios" SUMA a los que ya están, como una publicación de
             # verdad; el 🗑 es el que borra
@@ -4800,15 +5817,15 @@ def tags_suggest(name):
     vocab = sorted(set(tags_mod.all_tags()) | set(tags_mod.get_shortcuts()))
     # motor: "blip" (rápido, incluido) o "vlm" (modelo de visión en Ollama)
     engine = request.form.get("engine", "blip")
-    # salvaguarda: si la persona está etiquetada como menor, el sugeridor NO
-    # describe cuerpo ni nada sexual (igual que el pie y los comentarios)
-    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    # salvaguarda: sin etiqueta de adulto el sugeridor NO describe cuerpo ni nada
+    # sexual (igual que el pie y los comentarios). La duda cierra, no abre.
+    sano = posts_mod.identidad_foto(name, rel)["sano"]
     # "sugerir más": las que ya salieron, para que el modelo tire otras
     evitar = [t for t in request.form.get("evitar", "").split(",") if t.strip()]
     try:
         r = interrogator.interrogate(str(path), vocab, engine=engine,
                                      vlm_model=request.form.get("vlm_model") or None,
-                                     person=name, crudo=not menor, evitar=evitar)
+                                     person=name, crudo=not sano, evitar=evitar)
     except Exception as e:
         return {"ok": False, "error": f"No se pudo analizar: {e}"}
     # la frase automática se registra y, si vos la reescribiste, se usa la tuya.
@@ -4833,8 +5850,8 @@ def tags_suggest_stream(name):
     path = Path(library) / name / rel if library else None
     if not path or not path.is_file():
         return {"ok": False, "error": "Esa foto ya no está."}, 404
-    # misma salvaguarda de menores que el resto (versión sana si es menor)
-    menor = posts_mod.identidad(tags_mod.get_person(name))["menor"]
+    # misma salvaguarda que el resto: versión sana salvo adulto confirmado
+    sano = posts_mod.identidad_foto(name, rel)["sano"]
     es_nsfw = NSFW_DIR_NAME in Path(rel).parts
     evitar = [t for t in request.form.get("evitar", "").split(",") if t.strip()]
     # el etiquetado usa el modelo que MEJOR mira (qwen2.5vl si está); el pie y los
@@ -4848,8 +5865,9 @@ def tags_suggest_stream(name):
     def gen():
         ev_local = list(evitar)
         # ACTO: clasificador dedicado (porntech/sex-position). Va PRIMERO y anclado.
-        # Solo en fotos NSFW y NUNCA en menores. Nunca debe romper el sugeridor.
-        if es_nsfw and not menor and sexpos.disponible():
+        # Solo en fotos NSFW y solo con adulto confirmado. Nunca debe romper el
+        # sugeridor.
+        if es_nsfw and not sano and sexpos.disponible():
             try:
                 acto = sexpos.clasificar(str(path))
                 if acto and acto[0].lower() not in {e.strip().lower() for e in ev_local}:
@@ -4860,7 +5878,7 @@ def tags_suggest_stream(name):
                 pass
         try:
             for tag in vlm.suggest_tags_stream(str(path), model=model, quien=name,
-                                               crudo=not menor, evitar=ev_local):
+                                               crudo=not sano, evitar=ev_local):
                 nueva = len(tag.split()) == 1 and tag.lower() not in conocidas
                 yield json.dumps({"tag": tag, "nueva": nueva}) + "\n"
         except Exception as e:
@@ -4941,6 +5959,7 @@ guardás y pasás a la que sigue. Las correcciones quedan como diccionario para 
     <span class="meta"><b id="pb-seln">0</b> seleccionada(s)</span>
     <button type="button" class="secondary" onclick="pbSelTodas()">todas</button>
     <button type="button" class="secondary" onclick="pbSelNinguna()">ninguna</button>
+    <button type="button" class="secondary" onclick="pbNsfwLote()" title="Marcar las seleccionadas como NSFW (se mueven a _nsfw)">🔞 NSFW en lote</button>
     <label class="meta" style="cursor:pointer"><input type="checkbox" id="pb-hide-done" onchange="pbAplicarOcultar()"> 🙈 ocultar ya etiquetadas (<b id="pb-done-n">0</b>✓)</label>
     <span class="meta">· Shift-clic = rango · Ctrl-clic = de a una</span>
   </div>
@@ -5262,8 +6281,43 @@ function pbNsfw() {
       pbg('pb-preview').src = d.new_url;
       pbg('pb-nsfw').disabled = true; pbg('pb-nsfw').textContent = '🔞 ya es NSFW';
       pbg('pb-st').textContent = ' ✓ marcada NSFW';
+      if (window.refrescarUndo) window.refrescarUndo();
       setTimeout(() => pbg('pb-st').textContent = '', 2000);
     });
+}
+
+async function pbNsfwLote() {           // marcar todas las SELECCIONADAS como NSFW
+  const targets = [...pbSel].map(i => pbFotos[i]).filter(f => f && !f.nsfw);
+  if (!targets.length) {
+    pbg('pb-st').textContent = ' no hay seleccionadas sin NSFW';
+    setTimeout(() => pbg('pb-st').textContent = '', 2500); return;
+  }
+  if (!confirm('¿Marcar ' + targets.length + ' foto(s) como NSFW? Se mueven a _nsfw.')) return;
+  let ok = 0;
+  for (const foto of targets) {
+    const oldRel = foto.rel;
+    try {
+      const r = await fetch('/post/' + encodeURIComponent(foto.name) + '/nsfw', {method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({rel: oldRel})});
+      const d = await r.json();
+      if (d.ok) {
+        pbCache.delete(oldRel); pbInflight.delete(oldRel);
+        foto.rel = d.new_rel; foto.url = d.new_url; foto.nsfw = true;
+        foto.el.title = d.new_rel; foto.el.src = d.new_url;
+        if (!foto.wrap.querySelector('.pbthumb-nsfw')) {
+          const b = document.createElement('span'); b.className = 'pbthumb-nsfw'; b.textContent = '🔞';
+          foto.wrap.appendChild(b);
+        }
+        ok++;
+        pbg('pb-st').textContent = ' 🔞 marcando… ' + ok + '/' + targets.length;
+      }
+    } catch (e) { /* seguir con las demás */ }
+  }
+  pbg('pb-st').textContent = ' ✓ ' + ok + ' marcada(s) NSFW';
+  setTimeout(() => pbg('pb-st').textContent = '', 3000);
+  pbSelbar();
+  if (window.refrescarUndo) window.refrescarUndo();
 }
 
 function pbGuardarActual(despues) {     // guarda la lista de la foto en foco
@@ -5285,6 +6339,7 @@ function pbGuardarActual(despues) {     // guarda la lista de la foto en foco
         ? (' ✓ ' + d.aplicadas + ' etiqueta(s) · ' + d.conversiones + ' conversión(es)') : ' error';
       setTimeout(() => pbg('pb-save-st').textContent = '', 3000);
       if (d.ok && tuvo && relGuardada) pbMarcarEtiquetada(pbFotoDe(relGuardada));
+      if (d.ok && window.refrescarUndo) window.refrescarUndo();
       if (despues) despues();
     })
     .catch(e => { pbg('pb-save-st').textContent = ' ' + e; });
@@ -5376,23 +6431,27 @@ def probador_fotos(name):
     return {"ok": True, "fotos": fotos}
 
 
-def _es_menor(name):
-    """True si la persona está etiquetada como menor (salvaguarda)."""
+def _modo_sano(name):
+    """True = modo seguro: nada de cuerpo ni sexual. Solo da False con la persona
+    confirmada adulta por etiqueta (ver posts.identidad).
+
+    Sin nombre, o si algo falla leyendo las etiquetas, devuelve True. Antes era al
+    revés y eso era el agujero: cualquier error dejaba la salvaguarda apagada."""
     if not name:
-        return False
+        return True
     try:
         tags = tags_mod.get_person(name) + tags_mod.get_photo(name, "")
-        return posts_mod.identidad(tags)["menor"]
+        return posts_mod.identidad(tags)["sano"]
     except Exception:
-        return False
+        return True
 
 
 def _acto_pares(path, crudo, name, pares, evitar):
-    """Si crudo (NSFW) y la persona NO es menor, corre el detector de actos
-    (sexpos) y devuelve el acto anclado 🎯 como par para PONER PRIMERO, salvo que
-    ya esté entre las etiquetas del VLM o entre las evitadas. Lista vacía si no
+    """Si crudo (NSFW) y la persona está CONFIRMADA adulta, corre el detector de
+    actos (sexpos) y devuelve el acto anclado 🎯 como par para PONER PRIMERO, salvo
+    que ya esté entre las etiquetas del VLM o entre las evitadas. Lista vacía si no
     aplica. El acto viene de un modelo dedicado, no del VLM: por eso va marcado."""
-    if not crudo or _es_menor(name) or not sexpos.disponible():
+    if not crudo or _modo_sano(name) or not sexpos.disponible():
         return []
     try:
         acto = sexpos.clasificar(path)         # (etiqueta_es, confianza) o None
@@ -5480,11 +6539,538 @@ def probador_guardar():
             tags = [str(t).strip() for t in json.loads(request.form.get("tags", "[]"))
                     if str(t).strip()]
             propias = tags_mod.get_photo(name, rel)
-            tags_mod.set_photo(name, rel, propias + [t for t in tags if t not in propias])
+            nuevas = propias + [t for t in tags if t not in propias]
+            if nuevas != propias:        # solo si cambió algo, para poder deshacer
+                _undo_push({"tipo": "tags", "desc": f"guardar etiquetas «{Path(rel).name}»",
+                            "name": name, "rel": rel, "prev": propias})
+            tags_mod.set_photo(name, rel, nuevas)
             aplicadas = len(tags)
         except Exception:
             pass
     return {"ok": True, "conversiones": len(conv), "aplicadas": aplicadas}
+
+
+CONVERSIONES_TEMPLATE = """
+<style>
+  .cv-head, .cv-row { display:grid; grid-template-columns:1fr 1.2rem minmax(0,1fr) 1.6rem;
+    gap:.5rem; align-items:center; }
+  .cv-head { font-size:.78rem; color:var(--mut); text-transform:uppercase;
+    letter-spacing:.03em; margin:.2rem 0 .4rem; }
+  .cv-row { margin:.3rem 0; }
+  .cv-row input { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
+    padding:.4rem .6rem; color:var(--tx); font-size:.95rem; min-width:0; }
+  .cv-row input.edit { border-color:var(--amb); }
+  .cv-arrow { color:var(--mut); text-align:center; }
+  .cv-x { background:none; border:0; color:var(--mut); cursor:pointer; font-size:1rem; }
+  .cv-x:hover { color:var(--red); }
+</style>
+<h1>🔁 Diccionario de conversiones</h1>
+<p class="hint">Cuando el modelo dice la palabra de la <b>izquierda</b>, en TODA la app se
+reemplaza por la de la <b>derecha</b> (ej: <b>rusa → paja rusa</b>). Se crean solas desde el
+<a href="{{ url_for('probador') }}">Probador</a>; acá las ves, editás y borrás.</p>
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+<div class="panel">
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="cv-filtro" class="path" placeholder="🔍 filtrar…" oninput="cvFiltrar()" autofocus>
+    <span class="meta"><b id="cv-count">{{ pares|length }}</b> conversión(es)</span>
+  </div>
+  <div class="cv-head" {% if not pares %}style="display:none" id="cv-head"{% else %}id="cv-head"{% endif %}>
+    <span>dice la IA</span><span></span><span>lo reemplazamos por</span><span></span>
+  </div>
+  <div id="cv-lista">
+    {% for k, v in pares %}
+    <div class="cv-row">
+      <input class="cv-orig" value="{{ k }}" spellcheck="false">
+      <span class="cv-arrow">→</span>
+      <input class="cv-final" value="{{ v }}" spellcheck="false">
+      <button class="cv-x" title="Borrar" onclick="this.closest('.cv-row').remove(); cvContar()">✕</button>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="meta" id="cv-vacio" {% if pares %}style="display:none"{% endif %}>
+    Todavía no hay ninguna conversión. Se van creando cuando corregís una etiqueta en el Probador.</p>
+  <div class="row" style="margin-top:.7rem">
+    <button class="secondary" onclick="cvAgregar()">＋ agregar una</button>
+    <button class="primary" onclick="cvGuardar()">💾 Guardar cambios</button>
+    <span class="meta" id="cv-st"></span>
+  </div>
+</div>
+
+<script>
+const cvg = id => document.getElementById(id);
+function cvContar() {
+  const n = document.querySelectorAll('#cv-lista .cv-row').length;
+  cvg('cv-count').textContent = n;
+  cvg('cv-head').style.display = n ? '' : 'none';
+  cvg('cv-vacio').style.display = n ? 'none' : '';
+}
+function cvFiltrar() {
+  const q = cvg('cv-filtro').value.trim().toLowerCase();
+  document.querySelectorAll('#cv-lista .cv-row').forEach(row => {
+    const a = row.querySelector('.cv-orig').value.toLowerCase();
+    const b = row.querySelector('.cv-final').value.toLowerCase();
+    row.style.display = (!q || a.includes(q) || b.includes(q)) ? '' : 'none';
+  });
+}
+function cvAgregar() {
+  const row = document.createElement('div'); row.className = 'cv-row';
+  const a = document.createElement('input'); a.className = 'cv-orig'; a.placeholder = 'lo que dice la IA'; a.spellcheck = false;
+  const fl = document.createElement('span'); fl.className = 'cv-arrow'; fl.textContent = '→';
+  const b = document.createElement('input'); b.className = 'cv-final'; b.placeholder = 'lo que querés'; b.spellcheck = false;
+  const x = document.createElement('button'); x.className = 'cv-x'; x.textContent = '✕'; x.title = 'Borrar';
+  x.onclick = () => { row.remove(); cvContar(); };
+  row.appendChild(a); row.appendChild(fl); row.appendChild(b); row.appendChild(x);
+  cvg('cv-lista').appendChild(row); cvContar(); a.focus();
+}
+function cvGuardar() {
+  const pares = [];
+  document.querySelectorAll('#cv-lista .cv-row').forEach(row => {
+    const orig = row.querySelector('.cv-orig').value.trim();
+    const final = row.querySelector('.cv-final').value.trim();
+    if (orig && final) pares.push({orig: orig, final: final});
+  });
+  cvg('cv-st').textContent = ' guardando…';
+  fetch("{{ url_for('conversiones_save') }}", {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({pares: JSON.stringify(pares)})})
+    .then(r => r.json()).then(d => {
+      cvg('cv-st').textContent = d.ok ? (' ✓ guardadas ' + d.n) : ' error';
+      setTimeout(() => cvg('cv-st').textContent = '', 3000);
+    }).catch(e => cvg('cv-st').textContent = ' ' + e);
+}
+</script>
+"""
+
+
+MOLDES_TEMPLATE = """
+<style>
+  .mo-cuerpo { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr) auto 1.6rem;
+    gap:.5rem; align-items:start; margin:.4rem 0; }
+  .mo-cuerpo input, .mo-cuerpo textarea { background:var(--bg); border:1px solid var(--bd);
+    border-radius:6px; padding:.4rem .6rem; color:var(--tx); font-size:.95rem; min-width:0;
+    font-family:inherit; }
+  .mo-cuerpo textarea { resize:vertical; min-height:2.4rem; line-height:1.35; }
+  .mo-cuerpo input.tags { border-color:var(--acc2); }
+  .mo-head { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr) auto 1.6rem;
+    gap:.5rem; font-size:.78rem; color:var(--mut); text-transform:uppercase;
+    letter-spacing:.03em; margin:.2rem 0 .4rem; }
+  .mo-x { background:none; border:0; color:var(--mut); cursor:pointer; font-size:1rem; }
+  .mo-x:hover { color:var(--red); }
+  .mo-nsfw { display:flex; flex-direction:column; align-items:center; gap:.15rem; font-size:.8rem;
+    color:var(--mut); white-space:nowrap; cursor:pointer; }
+  .mo-bdg { background:var(--amb); color:#000; border-radius:4px; padding:0 .3rem; font-size:.68rem; }
+  .mo-cuerpo.es-borrador { border-left:3px solid var(--amb); padding-left:.5rem; }
+  .mo-hueco { display:inline-block; background:var(--bg); border:1px solid var(--amb);
+    border-radius:20px; padding:.2rem .6rem; margin:.15rem; font-size:.85rem; cursor:pointer; }
+  .mo-hueco:hover { border-color:var(--acc); color:var(--acc); }
+  .mo-hueco b { color:var(--amb); }
+  details.mo-sec { margin:.8rem 0; }
+  details.mo-sec > summary { cursor:pointer; font-weight:600; padding:.3rem 0; }
+</style>
+<h1>✍ Pies de foto</h1>
+<p class="hint">El pie lo arman <b>tus</b> moldes, al instante, sin IA (probamos seis modelos y
+ninguno sonaba natural). Un molde se dispara cuando la foto tiene <b>todas</b> sus etiquetas.
+Escribí en <b>rioplatense</b>, en primera persona (<i>«no me quiero ir más»</i>). Los de
+🔞 solo salen con la persona marcada <code>adulto</code>.<br>
+Truco de género: poné <code>@</code> donde cambia (<code>pelirroj@</code>, <code>pervertid@</code>) y
+prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</code> ≠ manzana).</p>
+{% if message %}<div class="msg">{{ message }}</div>{% endif %}
+
+{% if huecos %}
+<div class="panel" style="border-color:var(--amb)">
+  <b>⚠ Etiquetas tuyas que todavía no tienen molde</b>
+  <p class="meta">Aparecen en tus fotos pero no disparan ningún pie, así que esas fotos caen al
+    modelo (lento y narrado). Tocá una para empezar un molde con esa etiqueta. Ordenadas por
+    las que más se repiten.</p>
+  <div style="margin-top:.4rem">
+    {% for tag, n in huecos %}
+    <span class="mo-hueco" onclick="moDesdeHueco('{{ tag|e }}')">{{ tag }} <b>{{ n }}</b></span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<details class="mo-sec" style="border:1px solid var(--acc2); border-radius:10px; padding:.6rem .9rem">
+  <summary>🤖 Generar borradores desde mis fotos</summary>
+  <p class="hint">Recorre tu biblioteca, junta las combinaciones de etiquetas que se
+    <b>repiten</b> (una situación real, no un trío casual) y le pide al modelo 3 pies borrador de cada
+    una — sanos o crudos según la carpeta. Después los <b>corregís</b> acá: el modelo escribe medio
+    mal, esto te da el primer borrador, no el pie final. Lento: es de a una, dejalo corriendo.</p>
+  <div class="row" style="margin:.4rem 0">
+    <label>Solo combinaciones que aparezcan en al menos</label>
+    <input type="number" id="gen-k" value="3" min="1" max="50" style="width:4rem">
+    <label>fotos</label>
+    <button class="primary" id="gen-go" onclick="genGo()">▶ Generar</button>
+    <button class="secondary" id="gen-stop" onclick="genStop()" style="display:none">⏹ Frenar</button>
+  </div>
+  <div id="gen-prog" style="display:none">
+    <progress id="gen-bar" style="width:100%"></progress>
+    <p class="meta"><b id="gen-cur">0</b>/<b id="gen-tot">0</b> · <span id="gen-combo"></span>
+       · <b id="gen-frases">0</b> frases nuevas</p>
+    <div id="gen-ultimos" class="meta" style="font-size:.82rem"></div>
+  </div>
+</details>
+
+<div class="panel">
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="mo-filtro" class="path" placeholder="🔍 filtrar por texto o etiqueta…" oninput="moFiltrar()">
+    <span class="meta"><b id="mo-count">{{ cuerpos|length }}</b> molde(s)</span>
+  </div>
+  <div class="mo-head">
+    <span>se dispara con (etiquetas, coma)</span><span>pies — uno por línea, elige al azar</span><span></span><span></span>
+  </div>
+  <div id="mo-lista">
+    {% for tags, textos, nsfw, borrador in cuerpos %}
+    <div class="mo-cuerpo{% if borrador %} es-borrador{% endif %}">
+      <input class="tags" value="{{ tags|join(', ') }}" placeholder="playa, sol" spellcheck="false">
+      <textarea class="textos" rows="{{ [textos|length, 1]|max }}" placeholder="un pie por línea, en primera persona" spellcheck="false">{{ textos|join('\n') }}</textarea>
+      <label class="mo-nsfw"><input type="checkbox" class="nsfw" {% if nsfw %}checked{% endif %}> 🔞{% if borrador %}<br><span class="mo-bdg" title="Lo generó el modelo, revisalo. Al guardar deja de ser borrador.">borrador</span>{% endif %}</label>
+      <button class="mo-x" title="Borrar" onclick="this.closest('.mo-cuerpo').remove(); moContar()">✕</button>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="row" style="margin-top:.7rem">
+    <button class="secondary" onclick="moAgregar()">＋ molde nuevo</button>
+    <button class="primary" onclick="moGuardar()">💾 Guardar</button>
+    <button class="secondary" onclick="moFabrica()" title="Vuelve a los moldes que trae el programa">↺ restaurar los de fábrica</button>
+    <span class="meta" id="mo-st"></span>
+  </div>
+  <div class="row" style="margin-top:.5rem; border-top:1px solid var(--line); padding-top:.6rem">
+    <a class="secondary" href="{{ url_for('moldes_export') }}" style="padding:.4rem .8rem; border-radius:6px; text-decoration:none"
+       title="Baja todos tus moldes como archivo .json (guardá lo escrito o pasalo a otra PC)">⬇ Exportar .json</a>
+    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y REEMPLAZA los moldes actuales">⬆ Importar .json</button>
+    <input type="file" id="mo-file" accept=".json,application/json" style="display:none" onchange="moImportar(this)">
+    <span class="meta">Exportar es tu backup. Importar <b>reemplaza</b> todo lo que tengas.</span>
+  </div>
+</div>
+
+<details class="mo-sec">
+  <summary>Cierres — la coletilla corta que a veces se le suma al pie</summary>
+  <p class="hint">Se pegan a cualquier molde, en 2 de cada 3 pies (<i>«Sola en casa. <b>No me
+    juzguen.</b>»</i>). Los 🔞 solo con moldes 🔞.</p>
+  <div id="mo-cierres">
+    {% for texto, nsfw in cierres %}
+    <div class="mo-cuerpo" style="grid-template-columns:minmax(0,1fr) auto 1.6rem">
+      <input class="texto" value="{{ texto|e }}" placeholder="una coletilla corta" spellcheck="false">
+      <label class="mo-nsfw"><input type="checkbox" class="nsfw" {% if nsfw %}checked{% endif %}> 🔞</label>
+      <button class="mo-x" title="Borrar" onclick="this.closest('.mo-cuerpo').remove()">✕</button>
+    </div>
+    {% endfor %}
+  </div>
+  <button class="secondary" style="margin-top:.5rem" onclick="moAgregarCierre()">＋ cierre</button>
+</details>
+
+<details class="mo-sec">
+  <summary>Alias — sinónimos y tipeos que cuentan como una etiqueta conocida</summary>
+  <p class="hint">Tus etiquetas vienen con variantes (<i>denuda, en bolas</i>). Acá decís que
+    todas ésas valen como una sola, así el molde igual se prende (<b>denuda → desnuda</b>).</p>
+  <div id="mo-alias">
+    {% for k, v in alias %}
+    <div class="mo-cuerpo" style="grid-template-columns:minmax(0,1fr) 1.2rem minmax(0,1fr) 1.6rem">
+      <input class="de" value="{{ k|e }}" placeholder="lo que aparece" spellcheck="false">
+      <span class="cv-arrow" style="text-align:center;color:var(--mut)">→</span>
+      <input class="a" value="{{ v|e }}" placeholder="cuenta como" spellcheck="false">
+      <button class="mo-x" title="Borrar" onclick="this.closest('.mo-cuerpo').remove()">✕</button>
+    </div>
+    {% endfor %}
+  </div>
+  <button class="secondary" style="margin-top:.5rem" onclick="moAgregarAlias()">＋ alias</button>
+</details>
+
+<script>
+const mog = id => document.getElementById(id);
+function moContar() {
+  mog('mo-count').textContent = document.querySelectorAll('#mo-lista .mo-cuerpo').length;
+}
+function moFiltrar() {
+  const q = mog('mo-filtro').value.trim().toLowerCase();
+  document.querySelectorAll('#mo-lista .mo-cuerpo').forEach(row => {
+    const a = row.querySelector('.tags').value.toLowerCase();
+    const b = row.querySelector('.textos').value.toLowerCase();
+    row.style.display = (!q || a.includes(q) || b.includes(q)) ? '' : 'none';
+  });
+}
+function moFilaCuerpo(tags, textos, nsfw) {
+  const row = document.createElement('div'); row.className = 'mo-cuerpo';
+  const t = document.createElement('input'); t.className = 'tags'; t.placeholder = 'playa, sol';
+  t.spellcheck = false; t.value = tags || '';
+  const x = document.createElement('textarea'); x.className = 'textos';
+  x.placeholder = 'un pie por línea, en primera persona'; x.spellcheck = false;
+  x.rows = 2; x.value = textos || '';
+  const lab = document.createElement('label'); lab.className = 'mo-nsfw';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'nsfw'; cb.checked = !!nsfw;
+  lab.appendChild(cb); lab.appendChild(document.createTextNode(' 🔞'));
+  const del = document.createElement('button'); del.className = 'mo-x'; del.textContent = '✕'; del.title = 'Borrar';
+  del.onclick = () => { row.remove(); moContar(); };
+  row.append(t, x, lab, del);
+  return row;
+}
+function moAgregar(tags, textos, nsfw) {
+  const row = moFilaCuerpo(tags, textos, nsfw);
+  mog('mo-lista').appendChild(row); moContar();
+  return row;
+}
+function moDesdeHueco(tag) {   // clic en una etiqueta sin molde: arranca un molde con ella
+  const row = moAgregar(tag, '', false);
+  row.scrollIntoView({behavior: 'smooth', block: 'center'});
+  row.querySelector('.textos').focus();
+}
+function moAgregarCierre() {
+  const row = document.createElement('div'); row.className = 'mo-cuerpo';
+  row.style.gridTemplateColumns = 'minmax(0,1fr) auto 1.6rem';
+  const x = document.createElement('input'); x.className = 'texto'; x.placeholder = 'una coletilla corta'; x.spellcheck = false;
+  const lab = document.createElement('label'); lab.className = 'mo-nsfw';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'nsfw';
+  lab.appendChild(cb); lab.appendChild(document.createTextNode(' 🔞'));
+  const del = document.createElement('button'); del.className = 'mo-x'; del.textContent = '✕';
+  del.onclick = () => row.remove();
+  row.append(x, lab, del); mog('mo-cierres').appendChild(row); x.focus();
+}
+function moAgregarAlias() {
+  const row = document.createElement('div'); row.className = 'mo-cuerpo';
+  row.style.gridTemplateColumns = 'minmax(0,1fr) 1.2rem minmax(0,1fr) 1.6rem';
+  const de = document.createElement('input'); de.className = 'de'; de.placeholder = 'lo que aparece'; de.spellcheck = false;
+  const fl = document.createElement('span'); fl.textContent = '→'; fl.style.textAlign = 'center'; fl.style.color = 'var(--mut)';
+  const a = document.createElement('input'); a.className = 'a'; a.placeholder = 'cuenta como'; a.spellcheck = false;
+  const del = document.createElement('button'); del.className = 'mo-x'; del.textContent = '✕';
+  del.onclick = () => row.remove();
+  row.append(de, fl, a, del); mog('mo-alias').appendChild(row); de.focus();
+}
+function moGuardar() {
+  const cuerpos = [];
+  document.querySelectorAll('#mo-lista .mo-cuerpo').forEach(row => {
+    const tags = row.querySelector('.tags').value.split(',').map(s => s.trim()).filter(Boolean);
+    const textos = row.querySelector('.textos').value.split('\\n').map(s => s.trim()).filter(Boolean);
+    if (tags.length && textos.length) cuerpos.push({tags: tags, textos: textos, nsfw: row.querySelector('.nsfw').checked});
+  });
+  const cierres = [];
+  document.querySelectorAll('#mo-cierres .mo-cuerpo').forEach(row => {
+    const texto = row.querySelector('.texto').value.trim();
+    if (texto) cierres.push({texto: texto, nsfw: row.querySelector('.nsfw').checked});
+  });
+  const alias = {};
+  document.querySelectorAll('#mo-alias .mo-cuerpo').forEach(row => {
+    const de = row.querySelector('.de').value.trim(), a = row.querySelector('.a').value.trim();
+    if (de && a) alias[de] = a;
+  });
+  mog('mo-st').textContent = ' guardando…';
+  fetch("{{ url_for('moldes_save') }}", {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({cuerpos: JSON.stringify(cuerpos), cierres: JSON.stringify(cierres),
+      alias: JSON.stringify(alias)})})
+    .then(r => r.json()).then(d => {
+      mog('mo-st').textContent = d.ok ? (' ✓ ' + d.cuerpos + ' moldes guardados. Recargá para ver los huecos al día.') : ' error';
+      setTimeout(() => mog('mo-st').textContent = '', 6000);
+    }).catch(e => mog('mo-st').textContent = ' ' + e);
+}
+function moFabrica() {
+  if (!confirm('¿Volver a los moldes de fábrica? Se pierden los tuyos.')) return;
+  fetch("{{ url_for('moldes_save') }}", {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({fabrica: '1'})})
+    .then(r => r.json()).then(() => location.reload());
+}
+let genTimer = null;
+function genGo() {
+  const k = mog('gen-k').value || 3;
+  fetch("{{ url_for('moldes_generar') }}", {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({k: k})})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { alert(d.error || 'no se pudo'); return; }
+      mog('gen-go').style.display = 'none';
+      mog('gen-stop').style.display = '';
+      mog('gen-prog').style.display = '';
+      genTimer = setInterval(genPoll, 1500);
+    });
+}
+function genStop() {
+  fetch("{{ url_for('moldes_generar_stop') }}", {method: 'POST'});
+}
+function genPoll() {
+  fetch("{{ url_for('moldes_generar_estado') }}").then(r => r.json()).then(s => {
+    mog('gen-cur').textContent = s.current; mog('gen-tot').textContent = s.total;
+    mog('gen-combo').textContent = s.combo || ''; mog('gen-frases').textContent = s.frases;
+    const bar = mog('gen-bar'); bar.max = s.total || 1; bar.value = s.current;
+    mog('gen-ultimos').innerHTML = (s.ultimos || []).map(u =>
+      '· ' + u.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))).join('<br>');
+    if (s.status !== 'running') {
+      clearInterval(genTimer); genTimer = null;
+      mog('gen-go').style.display = ''; mog('gen-stop').style.display = 'none';
+      if (s.status === 'error') { mog('gen-combo').textContent = '✗ ' + s.error; return; }
+      mog('gen-combo').textContent = '✓ listo: ' + s.combos_nuevos + ' combos, ' + s.frases + ' frases. Recargando…';
+      setTimeout(() => location.reload(), 1500);
+    }
+  });
+}
+function moImportar(input) {
+  const f = input.files[0]; if (!f) return;
+  if (!confirm('Importar REEMPLAZA todos tus moldes por los del archivo. ¿Seguir?')) {
+    input.value = ''; return;
+  }
+  const fd = new FormData(); fd.append('archivo', f);
+  mog('mo-st').textContent = ' importando…';
+  fetch("{{ url_for('moldes_import') }}", {method: 'POST', body: fd})
+    .then(r => r.json()).then(d => {
+      if (d.ok) { mog('mo-st').textContent = ' ✓ ' + d.cuerpos + ' moldes importados'; location.reload(); }
+      else { mog('mo-st').textContent = ' ✗ ' + d.error; }
+      input.value = '';
+    }).catch(e => { mog('mo-st').textContent = ' ' + e; input.value = ''; });
+}
+</script>
+"""
+
+
+@app.route("/moldes")
+def moldes_page():
+    """Editor de moldes de pie: cuerpos, cierres, alias, y los huecos de cobertura."""
+    conteo = tags_mod.all_photo_tag_counts()
+    return render_template_string(
+        shell("moldes", MOLDES_TEMPLATE),
+        cuerpos=moldes_mod.combinaciones(), cierres=moldes_mod.cierres(),
+        alias=sorted(moldes_mod.alias().items(), key=lambda kv: kv[0]),
+        huecos=moldes_mod.huecos(conteo)[:40],
+        message=request.args.get("msg", ""))
+
+
+@app.route("/moldes/save", methods=["POST"])
+def moldes_save():
+    """Reemplaza los moldes con lo que quedó en la web. `fabrica=1` borra los
+    tuyos y vuelve a los del código."""
+    if request.form.get("fabrica") == "1":
+        moldes_mod.MOLDES_PATH.unlink(missing_ok=True)
+        return {"ok": True, "cuerpos": len(moldes_mod.CUERPOS_FABRICA)}
+    try:
+        crudos = json.loads(request.form.get("cuerpos", "[]"))
+        cierres_j = json.loads(request.form.get("cierres", "[]"))
+        alias_j = json.loads(request.form.get("alias", "{}"))
+    except Exception:
+        return {"ok": False, "error": "datos ilegibles"}
+    # forma agrupada: cada molde trae un array de variantes (textos)
+    cuerpos = []
+    for c in crudos:
+        tags = c.get("tags") or []
+        textos = [t.strip() for t in (c.get("textos") or []) if str(t).strip()]
+        if tags and textos:
+            cuerpos.append((tags, textos, bool(c.get("nsfw"))))
+    cierres = [(c["texto"].strip(), bool(c.get("nsfw")))
+               for c in cierres_j if c.get("texto", "").strip()]
+    alias = {str(k).strip(): str(v).strip() for k, v in alias_j.items()
+             if str(k).strip() and str(v).strip()}
+    moldes_mod.guardar(cuerpos_=cuerpos, cierres_=cierres, alias_=alias)
+    return {"ok": True, "cuerpos": len(cuerpos)}
+
+
+def _gen_worker(k, max_tags):
+    """Recolecta combos de toda la biblioteca (con umbral k) y le pide al modelo
+    3 frases borrador por cada uno, de a una. Corre en su propio hilo."""
+    try:
+        entradas = tags_mod.all_photo_entries()
+        # (tags, es_nsfw) por foto: la carpeta _nsfw decide el registro
+        fotos = [(t, NSFW_DIR_NAME in Path(k2.split("/", 1)[1] if "/" in k2 else k2).parts)
+                 for k2, t in entradas]
+        combos = moldes_mod.recolectar_combos(fotos, k=k, max_tags=max_tags)
+        GEN_STATE.update(total=len(combos), current=0, combos_nuevos=0, frases=0)
+        for i, (ctags, nsfw) in enumerate(combos, 1):
+            if GEN_STATE["stop"]:
+                break
+            GEN_STATE.update(current=i, combo=("🔞 " if nsfw else "") + ", ".join(ctags))
+            frases = moldes_mod.generar_frases(ctags, nsfw, n=3)
+            if frases:
+                cn, fn = moldes_mod.fusionar_borradores([(ctags, frases, nsfw)])
+                GEN_STATE["combos_nuevos"] += cn
+                GEN_STATE["frases"] += fn
+                GEN_STATE["ultimos"] = ([f"{', '.join(ctags)}: {frases[0]}"]
+                                        + GEN_STATE["ultimos"])[:6]
+        GEN_STATE["status"] = "stopped" if GEN_STATE["stop"] else "done"
+    except Exception as e:
+        GEN_STATE.update(status="error", error=str(e))
+
+
+@app.route("/moldes/generar", methods=["POST"])
+def moldes_generar():
+    """Arranca el generador de borradores en segundo plano."""
+    if GEN_STATE["status"] == "running":
+        return {"ok": False, "error": "Ya está corriendo."}
+    try:
+        k = max(1, min(int(request.form.get("k", 3)), 50))
+    except ValueError:
+        k = 3
+    GEN_STATE.update(status="running", stop=False, current=0, total=0, combo="",
+                     error="", combos_nuevos=0, frases=0, empezo=time.time(), ultimos=[])
+    threading.Thread(target=_gen_worker, args=(k, 3), daemon=True).start()
+    return {"ok": True}
+
+
+@app.route("/moldes/generar/estado")
+def moldes_generar_estado():
+    return dict(GEN_STATE)
+
+
+@app.route("/moldes/generar/stop", methods=["POST"])
+def moldes_generar_stop():
+    GEN_STATE["stop"] = True
+    return {"ok": True}
+
+
+@app.route("/moldes/export")
+def moldes_export():
+    """Baja los moldes actuales como .json (para backup o pasarlos a otra PC)."""
+    data = json.dumps(moldes_mod.exportar(), ensure_ascii=False, indent=2)
+    return Response(data, mimetype="application/json",
+                    headers={"Content-Disposition":
+                             "attachment; filename=pies-moldes.json"})
+
+
+@app.route("/moldes/import", methods=["POST"])
+def moldes_import():
+    """Reemplaza los moldes con un .json subido (o pegado en el textarea)."""
+    crudo = ""
+    f = request.files.get("archivo")
+    if f:
+        crudo = f.read().decode("utf-8", "replace")
+    else:
+        crudo = request.form.get("texto", "")
+    try:
+        data = json.loads(crudo)
+    except Exception:
+        return {"ok": False, "error": "El archivo no es JSON válido."}
+    try:
+        n = moldes_mod.importar(data)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "cuerpos": n}
+
+
+@app.route("/conversiones")
+def conversiones_page():
+    """Gestor del diccionario de conversiones (rusa->paja rusa): ver, editar, borrar."""
+    cfg = load_config()
+    conv = cfg.get("f_conversiones", {}) or {}
+    pares = sorted(conv.items(), key=lambda kv: kv[0].lower())
+    return render_template_string(
+        shell("conversiones", CONVERSIONES_TEMPLATE),
+        pares=pares, message=request.args.get("msg", ""))
+
+
+@app.route("/conversiones/save", methods=["POST"])
+def conversiones_save():
+    """Reemplaza TODO el diccionario con lo que quedó en la lista (editado/borrado)."""
+    try:
+        pares = json.loads(request.form.get("pares", "[]"))
+    except Exception:
+        pares = []
+    nuevo = {}
+    for p in pares:
+        k = str(p.get("orig", "")).strip()
+        v = str(p.get("final", "")).strip()
+        if k and v and k.lower() != v.lower():
+            nuevo[k] = v                          # si repetís una clave, gana la última
+    cfg = load_config()
+    cfg["f_conversiones"] = nuevo
+    save_config(cfg)
+    return {"ok": True, "n": len(nuevo)}
 
 
 # La búsqueda por etiqueta ya no es una sección aparte: está integrada en la
@@ -6293,11 +7879,12 @@ def dupes_page():
     )
 
 
-def _dupes_worker(folder, threshold, exclude):
+def _dupes_worker(folder, threshold, exclude, video_max_mb):
     def progress(current, total, name):
         DUPE_STATE.update(current=current, total=total, photo=name)
     try:
-        find_duplicates(folder, threshold=threshold, exclude=exclude, progress=progress)
+        find_duplicates(folder, threshold=threshold, exclude=exclude, progress=progress,
+                        video_max_mb=video_max_mb)
         DUPE_STATE["status"] = "done"
     except Exception as e:
         DUPE_STATE.update(status="error", error=str(e))
@@ -6320,9 +7907,12 @@ def dupes_scan():
         libp = Path(library)
         if libp != folder_p and libp.is_relative_to(folder_p):
             exclude = libp
+    cfg = load_config()
+    video_max_mb = cfg.get("dup_video_max_mb", DEFAULT_VIDEO_MAX_MB)
     DUPE_STATE.update(status="running", current=0, total=0, photo="", error="",
                       folder=folder)
-    threading.Thread(target=_dupes_worker, args=(Path(folder), DEFAULT_THRESHOLD, exclude),
+    threading.Thread(target=_dupes_worker,
+                     args=(Path(folder), DEFAULT_THRESHOLD, exclude, video_max_mb),
                      daemon=True).start()
     return redirect(url_for("dupes_page"))
 
@@ -6477,23 +8067,75 @@ def photo(path):
     return send_from_directory(base, path)
 
 
+PORT = 5000
+
+
+def _matar_fantasma_en_puerto(port):
+    """Si quedó un proceso viejo ESCUCHANDO en `port` (un fantasma de una ventana
+    anterior que no cerró bien), lo cierra antes de arrancar. Así el arranque no
+    falla en silencio ni sirve una versión vieja. Solo Windows (netstat/taskkill),
+    y nunca se mata a sí mismo."""
+    import subprocess
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return
+    mi_pid = str(os.getpid())
+    pids = set()
+    for line in out.splitlines():
+        parts = line.split()
+        # TCP | Dirección local | Dirección remota | ESTADO | PID
+        if (len(parts) >= 5 and parts[0].upper().startswith("TCP")
+                and parts[3].upper() == "LISTENING"
+                and parts[1].endswith(f":{port}")):
+            pid = parts[-1]
+            if pid.isdigit() and pid not in (mi_pid, "0"):
+                pids.add(pid)
+    for pid in pids:
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=5)
+            print(f"[web] Cerré un proceso viejo que ocupaba el puerto {port} (PID {pid}).")
+        except Exception:
+            pass
+
+
+def _limpiar_huerfanos():
+    """Saca de data/ la metadata de carpetas que ya no existen (ver limpieza.py).
+    Nunca debe impedir que la app arranque: si falla, se avisa y se sigue."""
+    try:
+        from app import limpieza
+        print(limpieza.resumen(limpieza.purgar(get_library())))
+    except Exception as e:
+        print(f"[limpieza] no se pudo: {e}")
+
+
 def main():
     # El reloader corre DOS procesos (el vigía y el servidor de verdad), y los
     # dos pasan por acá: sin esta guarda se abrían dos pestañas. El navegador
     # lo abre solo el vigía (que arranca una única vez); el servidor, que se
     # reinicia con cada cambio de código, no abre nada.
     if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        print("[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).")
-        threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
-    # use_reloader: si el código cambia (porque lo editó Claude, por ejemplo),
-    # el servidor se reinicia SOLO. Sin esto había que cerrar la ventana y
-    # volver a abrirla para ver cualquier cambio, y nunca quedaba claro qué
-    # versión estaba corriendo. debug sigue en False: el reloader solo, sin
-    # el debugger (que deja ejecutar código desde el navegador).
+        # Al ABRIR (una sola vez, en el vigía — no en cada reinicio del reloader),
+        # echar cualquier fantasma de una ventana anterior que haya quedado en el
+        # puerto. Así se mantiene el auto-reinicio del reloader y el puerto siempre
+        # queda libre para esta ventana.
+        _matar_fantasma_en_puerto(PORT)
+        # La biblioteca manda: lo que ya no está en el disco tampoco tiene que
+        # seguir en data/. Va en un hilo aparte porque recorre la biblioteca
+        # entera y no tiene por qué demorar la ventana. Es seguro correrlo
+        # mientras la app ya atiende: solo saca metadata de carpetas que no
+        # existen, así que nada de lo que puedas estar mirando depende de eso.
+        threading.Thread(target=_limpiar_huerfanos, daemon=True).start()
+        print(f"[web] Abrí http://127.0.0.1:{PORT} en el navegador (solo accesible desde esta máquina).")
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
+    # use_reloader=True: si se edita el código, el servidor se reinicia SOLO (cómodo
+    # cuando Claude toca algo). El fantasma que eso puede dejar al cerrar la ventana
+    # lo limpia _matar_fantasma_en_puerto en el próximo arranque.
     # threaded=True: el sugeridor en streaming tiene una respuesta abierta hasta
     # ~90s; sin hilos, el resto de la app (el sondeo del lote, las miniaturas)
     # quedaría bloqueado todo ese rato esperando que termine.
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=True, threaded=True)
+    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=True, threaded=True)
 
 
 if __name__ == "__main__":

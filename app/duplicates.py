@@ -5,7 +5,12 @@ Detecta dos tipos de repetidos en una carpeta:
   a byte, comparado por hash SHA-1).
 - PARECIDOS: la misma imagen reescalada, recomprimida, con marca de agua o
   guardada dos veces. Se comparan con un "hash perceptual" (dHash): dos fotos
-  visualmente iguales dan hashes casi idénticos.
+  visualmente iguales dan hashes casi idénticos. (Solo fotos, no videos.)
+
+También revisa VIDEOS, pero solo como duplicado EXACTO (mismo archivo) y solo
+hasta un tamaño configurable (por defecto 100 MB): un clip re-descargado de
+WhatsApp da bytes idénticos; uno de 1 GB tarda una eternidad y casi nunca está
+repetido, así que se saltea.
 
 Genera data/duplicates.json con los grupos y miniaturas en data/dupe_thumbs/.
 Dentro de cada grupo se sugiere cuál conservar (la de mayor resolución y peso).
@@ -23,12 +28,18 @@ import numpy as np
 from PIL import Image
 
 from app import (DUPES_PATH, DUPES_THUMBS, GROUP_DIR_NAME, IMAGE_EXTENSIONS,
-                 NSFW_DIR_NAME, REVIEW_DIR_NAME)
+                 NSFW_DIR_NAME, REVIEW_DIR_NAME, VIDEO_EXTENSIONS)
 from app.config import load_config
 
 # Distancia de Hamming máxima entre hashes perceptuales para considerar dos
 # fotos "parecidas" (0 = idénticas). Sobre 64 bits, hasta ~5 es muy parecido.
 DEFAULT_THRESHOLD = 5
+
+# Tope de tamaño (MB) para revisar un VIDEO. Los chicos (WhatsApp, 4-5 MB) sí; uno
+# de 1 GB no (tarda una eternidad leyendo bytes y casi nunca está repetido). Los
+# videos se comparan SOLO como duplicado EXACTO (mismo archivo, SHA-1): la
+# re-descarga del mismo clip da bytes idénticos. No se hace "parecido" en video.
+DEFAULT_VIDEO_MAX_MB = 100
 
 THUMBNAIL_SIZE = 200
 HASH_SIZE = 8  # dHash de 8x8 -> 64 bits
@@ -77,43 +88,98 @@ DUPES_FOLDER_NAME = "_duplicados"
 _SKIP_DIRS = {DUPES_FOLDER_NAME, GROUP_DIR_NAME, REVIEW_DIR_NAME, NSFW_DIR_NAME}
 
 
-def _iter_images(folder, exclude=None):
+def _media_kind(p):
+    """'image', 'video' o None según la extensión."""
+    s = p.suffix.lower()
+    if s in IMAGE_EXTENSIONS:
+        return "image"
+    if s in VIDEO_EXTENSIONS:
+        return "video"
+    return None
+
+
+def _iter_media(folder, exclude=None, video_max_bytes=None):
+    """Recorre la carpeta y va largando (path, kind). Los videos por encima del
+    límite salen con kind='skip-big' (para contarlos y avisar), no se procesan."""
     for p in sorted(folder.rglob("*")):
         if exclude and p.is_relative_to(exclude):
             continue
-        # carpetas de fotos ya apartadas (_duplicados, _grupo, _revisar, _nsfw)
+        # carpetas ya apartadas (_duplicados, _grupo, _revisar, _nsfw)
         if _SKIP_DIRS & set(p.parts):
             continue
-        if p.suffix.lower() in IMAGE_EXTENSIONS:
-            yield p
+        kind = _media_kind(p)
+        if kind is None:
+            continue
+        if (kind == "video" and video_max_bytes is not None
+                and p.stat().st_size > video_max_bytes):
+            yield (p, "skip-big")
+            continue
+        yield (p, kind)
 
 
-def find_duplicates(folder, threshold=DEFAULT_THRESHOLD, exclude=None, progress=None, log=print):
+def _video_frame(path):
+    """Primer frame legible de un video como imagen PIL (para miniatura y tamaño),
+    o None si no se puede abrir. Necesita OpenCV (ya lo usa el analizador)."""
+    import cv2
+    cap = cv2.VideoCapture(str(path))
+    try:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    finally:
+        cap.release()
+
+
+def find_duplicates(folder, threshold=DEFAULT_THRESHOLD, exclude=None, progress=None,
+                    log=print, video_max_mb=DEFAULT_VIDEO_MAX_MB):
     """Busca duplicados exactos y parecidos en `folder`.
+
+    Fotos: exacto (SHA-1) + parecido (dHash perceptual). Videos: SOLO exacto, y
+    solo los que pesan hasta `video_max_mb` (los más grandes se saltean).
 
     Devuelve la cantidad de grupos encontrados. Escribe data/duplicates.json.
     progress: callback opcional progress(actual, total, nombre).
     """
     folder = Path(folder)
-    paths = list(_iter_images(folder, exclude))
+    # None = sin límite; 0 = ningún video. float() para tolerar valores fraccionarios.
+    video_max_bytes = None if video_max_mb is None else float(video_max_mb) * 1024 * 1024
+    paths, saltados_grandes = [], 0
+    for p, kind in _iter_media(folder, exclude, video_max_bytes):
+        if kind == "skip-big":
+            saltados_grandes += 1
+        else:
+            paths.append((p, kind))
+    if saltados_grandes:
+        log(f"[dupes] {saltados_grandes} video(s) salteado(s) por pesar más de {video_max_mb} MB.")
     if not paths:
-        raise ValueError(f"No hay imágenes en {folder}")
+        raise ValueError(f"No hay fotos ni videos (hasta {video_max_mb} MB) en {folder}")
 
     if DUPES_THUMBS.is_dir():
         for old in DUPES_THUMBS.glob("*.jpg"):
             old.unlink()
     DUPES_THUMBS.mkdir(parents=True, exist_ok=True)
 
-    items = []  # {"rel", "size", "w", "h", "sha", "phash"}
+    items = []  # {"rel", "size", "w", "h", "sha", "media"}
     hashes = []
-    for i, path in enumerate(paths):
+    for i, (path, kind) in enumerate(paths):
         if progress:
             progress(i + 1, len(paths), path.name)
         try:
-            with Image.open(path) as img:
-                w, h = img.size
-                ph = dhash(img)
-                thumb = img.convert("RGB")
+            if kind == "image":
+                with Image.open(path) as img:
+                    w, h = img.size
+                    ph = dhash(img)
+                    thumb = img.convert("RGB")
+                    thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+            else:  # video: frame para miniatura/tamaño; no se usa perceptual
+                frame = _video_frame(path)
+                if frame is None:
+                    log(f"[dupes] no se pudo abrir el video {path.name}")
+                    continue
+                w, h = frame.size
+                ph = 0
+                thumb = frame.convert("RGB")
                 thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
         except Exception as e:
             log(f"[dupes] no se pudo leer {path.name}: {e}")
@@ -126,11 +192,12 @@ def find_duplicates(folder, threshold=DEFAULT_THRESHOLD, exclude=None, progress=
             "size": path.stat().st_size,
             "w": w, "h": h,
             "sha": file_hash(path),
+            "media": kind,
         })
         hashes.append(ph)
 
     if not items:
-        raise ValueError("No se pudo leer ninguna imagen.")
+        raise ValueError("No se pudo leer ninguna foto ni video.")
 
     uf = _UnionFind(len(items))
 
@@ -142,13 +209,18 @@ def find_duplicates(folder, threshold=DEFAULT_THRESHOLD, exclude=None, progress=
         for j in group[1:]:
             uf.union(group[0], j)
 
-    # 2) Parecidos: distancia de Hamming <= threshold (vectorizado con numpy)
+    # 2) Parecidos: distancia de Hamming <= threshold (vectorizado con numpy).
+    # SOLO entre fotos: el video no tiene hash perceptual (se compara solo exacto),
+    # así no se arman grupos falsos foto-video por un frame parecido.
     harr = np.array(hashes, dtype=np.uint64)
     for i in range(len(items)):
+        if items[i]["media"] != "image":
+            continue
         dist = np.bitwise_count(harr ^ harr[i])
         for j in np.nonzero(dist <= threshold)[0]:
-            if j > i:
-                uf.union(i, int(j))
+            j = int(j)
+            if j > i and items[j]["media"] == "image":
+                uf.union(i, j)
 
     # Armar grupos (solo los de 2 o más)
     comps = {}
@@ -169,6 +241,7 @@ def find_duplicates(folder, threshold=DEFAULT_THRESHOLD, exclude=None, progress=
                 "rel": items[i]["rel"],
                 "size": items[i]["size"],
                 "w": items[i]["w"], "h": items[i]["h"],
+                "media": items[i]["media"],
                 "keeper": i == keeper,
                 "exact": items[i]["sha"] == keeper_sha,
             })

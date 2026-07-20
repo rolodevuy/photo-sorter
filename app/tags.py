@@ -116,6 +116,158 @@ def people_tagsets():
     return {n: sorted(s) for n, s in out.items()}
 
 
+def person_photo_tag_counts(name):
+    """{etiqueta: en cuántas fotos de la persona aparece} — SOLO etiquetas propias
+    de foto (no las heredadas de la persona). Para el gestor de etiquetas."""
+    data = _load()
+    pref = f"{name}/"
+    counts = {}
+    for key, tags in data["photos"].items():
+        if key.startswith(pref):
+            for t in tags:
+                counts[t] = counts.get(t, 0) + 1
+    return counts
+
+
+def remove_photo_tag(name, tag):
+    """Saca `tag` de TODAS las fotos de la persona. Devuelve la lista de fotos
+    (rel) que la tenían — sirve para deshacer el borrado."""
+    tag = _norm(tag)
+    if not tag:
+        return []
+    data = _load()
+    pref = f"{name}/"
+    tocadas = []
+    for key in list(data["photos"]):
+        if key.startswith(pref) and tag in data["photos"][key]:
+            data["photos"][key] = [t for t in data["photos"][key] if t != tag]
+            tocadas.append(key[len(pref):])
+    if tocadas:
+        _save(data)
+    return tocadas
+
+
+def add_photo_tag_many(name, rels, tag):
+    """Vuelve a poner `tag` en esas fotos (deshacer un borrado masivo)."""
+    tag = _norm(tag)
+    if not tag:
+        return 0
+    data = _load()
+    n = 0
+    for rel in rels:
+        key = photo_key(name, rel)
+        ts = data["photos"].get(key, [])
+        if tag not in ts:
+            data["photos"][key] = ts + [tag]
+            n += 1
+    if n:
+        _save(data)
+    return n
+
+
+# --- Favoritas: tu vocabulario. Dos niveles: GLOBAL (toda la app) y por PERSONA.
+# Sirven para etiquetar rápido a mano y para pisar la redacción de la IA
+# ("tipo de pelo: lacio" -> tu "pelo lacio"). data/tags.json -> {"favs": {...}}
+_FAV_GLOBAL = "_global"
+
+
+def get_favs(name=None):
+    """Favoritas: con name=None las globales; con name, las de esa persona."""
+    favs = (_load().get("favs") or {})
+    return list(favs.get(name or _FAV_GLOBAL, []))
+
+
+def set_favs(tags, name=None):
+    data = _load()
+    data.setdefault("favs", {})
+    key = name or _FAV_GLOBAL
+    tags = _clean_list(tags)
+    if tags:
+        data["favs"][key] = tags
+    else:
+        data["favs"].pop(key, None)
+    _save(data)
+    return tags
+
+
+def toggle_fav(tag, name=None):
+    """Marca/desmarca una etiqueta como favorita. Devuelve la lista resultante."""
+    tag = _norm(tag)
+    cur = get_favs(name)
+    if not tag:
+        return cur
+    cur = [t for t in cur if t != tag] if tag in cur else cur + [tag]
+    return set_favs(cur, name)
+
+
+def favs_efectivas(name):
+    """Las que valen al etiquetar a esta persona: las suyas + las globales."""
+    return _clean_list(get_favs(name) + get_favs(None))
+
+
+def promote_to_person(name, tag):
+    """Hace la etiqueta GENERAL: la suma al perfil y la SACA de las fotos sueltas
+    (ya la heredan todas). Devuelve las fotos de las que la sacó, para deshacer."""
+    tag = _norm(tag)
+    if not tag:
+        return []
+    data = _load()
+    propias = data["people"].get(name, [])
+    if tag not in propias:
+        data["people"][name] = propias + [tag]
+    pref = f"{name}/"
+    tocadas = []
+    for key in list(data["photos"]):
+        if key.startswith(pref) and tag in data["photos"][key]:
+            data["photos"][key] = [t for t in data["photos"][key] if t != tag]
+            tocadas.append(key[len(pref):])
+    _save(data)
+    return tocadas
+
+
+def rename_photo_tag(name, old, new):
+    """Renombra `old` por `new` en TODAS las fotos de la persona (masivo). Si una
+    foto ya tenía `new`, no se duplica. Devuelve en cuántas fotos cambió."""
+    old, new = _norm(old), _norm(new)
+    if not old or not new or old == new:
+        return 0
+    data = _load()
+    pref = f"{name}/"
+    n = 0
+    for key in list(data["photos"]):
+        if not key.startswith(pref) or old not in data["photos"][key]:
+            continue
+        nuevos = []
+        for t in data["photos"][key]:
+            t2 = new if t == old else t
+            if t2 not in nuevos:
+                nuevos.append(t2)
+        data["photos"][key] = nuevos
+        n += 1
+    if n:
+        _save(data)
+    return n
+
+
+def all_photo_entries():
+    """[(clave, [tags])] de cada foto etiquetada. La clave es "<persona>/<rel>",
+    así el llamador saca la carpeta (para saber si es _nsfw). Para el generador
+    de moldes, que recorre toda la biblioteca."""
+    return list(_load()["photos"].items())
+
+
+def all_photo_tag_counts():
+    """{etiqueta: en cuántas fotos aparece} sobre TODA la biblioteca (etiquetas
+    de foto, no las de perfil). Para el editor de moldes: saber qué etiquetas son
+    frecuentes y cuáles no tienen molde todavía."""
+    data = _load()
+    counts = {}
+    for tags in data["photos"].values():
+        for t in set(tags):
+            counts[t] = counts.get(t, 0) + 1
+    return counts
+
+
 def all_tags():
     """Todas las etiquetas usadas (para autocompletar), ordenadas."""
     data = _load()

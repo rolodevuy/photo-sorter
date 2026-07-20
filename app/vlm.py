@@ -86,8 +86,24 @@ MAX_SIDE = 1024
 # lista de reglas metida en el prompt, el modelo (un 4b) la toma como plantilla
 # de salida y te devuelve un listado con títulos "Ropa:", "Ánimo:", en vez de un
 # párrafo. En el system las obedece sin copiarlas.
+# "Hablá rioplatense" no le dice NADA a un modelo chico: escribe neutro o gallego.
+# Las sustituciones y prohibiciones CONCRETAS sí funcionan, y al ser una regla de
+# vocabulario (no una frase de ejemplo) no la copia textual. La usan el pie de acá
+# y los comentarios (posts.py la reusa).
+VOSEO_REGLA = (
+    "Escribís de VOS, nunca de tú: \"tenés\" y no \"tienes\", \"sos\" y no "
+    "\"eres\", \"mirá\" y no \"mira\", \"vos\" y no \"tú\", \"te queda\" y no "
+    "\"te va\". Nada de \"ti\" ni de \"contigo\". "
+    "NO sos español: prohibido \"joder\", \"vale\", \"tío\", \"tía\", \"coño\", "
+    "\"follar\", \"polla\", \"guay\", \"chaval\", \"hostia\", \"gilipollas\", "
+    "\"me mola\", \"vosotros\" y \"os\".")
+
 SYSTEM_PIE = """Escribís el pie de una foto tuya, como el que pondrías en una
 red social.
+
+SOS VOS quien habla, en PRIMERA PERSONA. Nunca describas la foto desde afuera ni
+hables de vos en tercera persona: nada de "en la foto se ve", "una chica que...",
+"ella está". Si no podés decirlo con "estoy/tengo/me", está mal.
 
 Lo más importante: el que lee YA ESTÁ VIENDO LA FOTO. No se la describas —eso lo
 ve solo—. SITUALA: dónde estás y qué estás haciendo. Nada más.
@@ -99,8 +115,8 @@ listo. Es mejor un pie de cinco palabras que uno inventado.
 
 Una o dos frases. Corto. Un párrafo, nunca listas ni títulos ni markdown.
 
-Hablás en español uruguayo, de vos. Crudo y directo: las cosas por su nombre,
-sin eufemismos ni vueltas.
+Crudo y directo: las cosas por su nombre, sin eufemismos ni vueltas.
+""" + VOSEO_REGLA + """
 
 NO enumerás: ni la ropa, ni el cuerpo, ni el pelo, ni la cara, ni la luz, ni el
 fondo. No es un inventario, es un pie de foto. Si algo no se ve, no lo escribas.
@@ -266,6 +282,26 @@ def _post(path, payload):
         return json.loads(r.read().decode("utf-8"))
 
 
+def generar_texto(prompt, model=DEFAULT_MODEL, system="", num_predict=200,
+                  temperature=0.9):
+    """Genera texto SIN imagen (a diferencia de describe, que siempre manda una).
+
+    Lo usa el generador de moldes: le da las etiquetas y le pide que invente una
+    situación. Un modelo de solo texto no puede describir lo que no ve, así que
+    inventa —que es justo lo que se quiere para un pie— y encima va rápido (sin
+    los tokens de la imagen). think=False por lo mismo que en describe()."""
+    payload = {"model": model, "prompt": prompt, "stream": False, "think": False,
+               "options": {"temperature": temperature, "num_predict": num_predict,
+                           "repeat_penalty": 1.2}}
+    if system:
+        payload["system"] = system
+    try:
+        r = _post("/api/generate", payload)
+    except Exception as e:
+        raise RuntimeError(f"No respondió el modelo: {e}")
+    return (r.get("response") or "").strip()
+
+
 def is_up():
     """True si Ollama está corriendo. No levanta nada, solo mira."""
     try:
@@ -331,12 +367,16 @@ def _encode(image_path):
 # pies arrancan igual ("Acá comiendo", "Acá abajo del árbol"...). Rotando, cada
 # foto abre distinto. Todas mantienen la primera persona situacional.
 PREFILL_PIE = "Acá"          # el default suelto (cuando no se rota)
-PREFILL_OPCIONES = ["Acá", "Hoy", "Recién", "Ahora", "Justo acá", "En la foto",
-                    "Este día", "Un rato"]
+# El arranque se inyecta como el PRINCIPIO de la respuesta del modelo, así que no
+# lo puede ignorar: es la forma más fuerte de imponer el POV. Por eso TODOS tienen
+# que comprometer la primera persona. Un arranque neutro ("Acá", "Hoy") no sirve:
+# el modelo lo continúa igual en tercera ("Acá se ve una chica...") — probado.
+PREFILL_OPCIONES = ["Acá estoy", "Estoy", "Me", "Ando", "Hoy ando",
+                    "Recién me", "Justo estaba", "Tengo"]
 
 
 def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
-             temperature=0.8, system=SYSTEM_PIE, prefill=""):
+             temperature=0.8, system=SYSTEM_PIE, prefill="", repeat_penalty=1.15):
     """Lo que el modelo tenga para decir de la foto, según el prompt.
 
     Sin prompt: el pie de foto, en español. Con otro prompt sirve para cualquier
@@ -364,7 +404,11 @@ def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
     # "pensando" y devuelven la respuesta vacía: think=False. Los que no razonan
     # (llava) ignoran esa clave sin quejarse.
     # temperatura: baja para describir (literal), alta para inventar.
-    opts = {"temperature": temperature, "num_predict": num_predict}
+    # repeat_penalty: sin esto, un modelo que se queda sin qué decir RELLENA hasta
+    # gastar num_predict repitiendo la misma frase (visto: el mismo verso 3 veces
+    # en un pie). Ollama por defecto usa 1.1, que para esto es poco.
+    opts = {"temperature": temperature, "num_predict": num_predict,
+            "repeat_penalty": repeat_penalty}
     if prefill:
         msgs = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt, "images": [b64]},

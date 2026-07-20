@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 
 from app import NSFW_DIR_NAME, POSTS_PATH
-from app import finder, person_meta, sexpos, vlm
+from app import finder, moldes, person_meta, sexpos, vlm
 from app import tags as tags_mod
 from app.config import load_config
 from app.known import load_known
@@ -102,6 +102,12 @@ _GENERO_M = {"hombre", "masculino", "varón", "varon", "chico", "señor", "niño
 _MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
           "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta",
           "hijo", "hija"}
+# Etiquetas que HABILITAN lo subido de tono. Sin una de estas no hay crudeza,
+# aunque tampoco haya etiqueta de menor (ver identidad()): la duda cierra, no
+# abre. Son pocas y a propósito: es una marca que ponés vos a mano, no algo que
+# adivine el modelo. Las de edad que sugiere la IA ("veinteañera", "madura") NO
+# cuentan — si contaran, el modelo volvería a decidir solo y esto no serviría.
+_ADULTO = {"adulto", "adulta", "mayordeedad"}
 
 
 def _norm_tag(t):
@@ -109,13 +115,38 @@ def _norm_tag(t):
 
 
 def identidad(tags):
-    """De las etiquetas de la persona: {"genero": "f"|"m"|None, "menor": bool}.
+    """De las etiquetas de la persona:
+    {"genero": "f"|"m"|None, "menor": bool, "sano": bool}.
 
-    Sirve para que los comentarios se refieran bien a la persona ("qué linda" vs
-    "qué lindo") y, sobre todo, para NO tratar a un chico como a un adulto."""
+    - "genero" para que el texto concuerde ("qué linda" vs "qué lindo").
+    - "menor": la persona está etiquetada como chico. Manda el LENGUAJE: se le
+      habla como a un chico (ver quien_es_texto).
+    - "sano": modo seguro, la COMPUERTA. True salvo que haya etiqueta explícita
+      de adulto. Apaga la crudeza, saca a los comentadores que desean y no deja
+      correr el detector de actos.
+
+    Ojo con la diferencia, que es el punto de todo esto: sin etiquetas, "menor"
+    es False pero "sano" es True. O sea, a una persona sin etiquetar NO se la
+    trata como a un nene (sería absurdo), pero TAMPOCO se le escribe nada subido
+    de tono. Antes esto fallaba al revés: sin etiquetas se asumía adulto y salía
+    todo crudo. Si falla, que falle para el lado seguro."""
     t = {_norm_tag(x) for x in tags}
     genero = "f" if t & _GENERO_F else ("m" if t & _GENERO_M else None)
-    return {"genero": genero, "menor": bool(t & menor_set())}
+    menor = bool(t & menor_set())
+    # la etiqueta de menor le gana a la de adulto: si están las dos, es menor
+    adulto = bool(t & adulto_set()) and not menor
+    return {"genero": genero, "menor": menor, "sano": not adulto}
+
+
+def identidad_foto(name, rel):
+    """identidad() pero mirando TAMBIÉN las etiquetas de la foto, no solo las del
+    perfil.
+
+    Es lo que hay que usar siempre que se sepa de qué foto se trata. "adulta" o
+    "nena" se etiquetan naturalmente en la foto (es donde estás mirando cuando la
+    ponés), y si solo miráramos el perfil una foto marcada `adulta` seguiría en
+    modo sano —pasó— o, peor, una marcada `nena` no activaría la protección."""
+    return identidad(tags_mod.effective_photo(name, rel))
 
 
 def _tags_para_pie(name, rel):
@@ -124,20 +155,22 @@ def _tags_para_pie(name, rel):
 
     Es la intención confirmada: el pie y los comentarios se escriben A PARTIR de
     esto, literal, en vez de que el modelo se floree con lo que cree ver."""
-    fuera = _GENERO_F | _GENERO_M | menor_set()
+    fuera = _GENERO_F | _GENERO_M | menor_set() | adulto_set()
     return [t for t in tags_mod.effective_photo(name, rel) if _norm_tag(t) not in fuera]
 
 
-def _intencion(name, rel, image_path, menor):
+def _intencion(name, rel, image_path, sano):
     """El "intento confirmado" que alimenta el pie y los comentarios: las
-    etiquetas de la foto MÁS, si es NSFW y NO es menor, el acto que detecta el
-    clasificador dedicado (porntech/sex-position). Así el texto sabe qué está
-    pasando aunque no hayas aceptado el acto como etiqueta a mano.
+    etiquetas de la foto MÁS, si es NSFW y la persona está confirmada como
+    adulta, el acto que detecta el clasificador dedicado (porntech/sex-position).
+    Así el texto sabe qué está pasando aunque no hayas aceptado el acto como
+    etiqueta a mano.
 
-    Salvaguarda: nunca corre en menores, ni en fotos que no sean NSFW (ahí el
-    clasificador tira cualquier cosa)."""
+    Salvaguarda: solo corre con adulto confirmado (sano=False) y en fotos NSFW.
+    Sin etiqueta de adulto no corre, aunque la foto esté en NSFW: la duda cierra.
+    Fuera de NSFW tampoco, porque ahí el clasificador tira cualquier cosa."""
     tags = _tags_para_pie(name, rel)
-    if not menor and NSFW_DIR_NAME in Path(rel).parts:
+    if not sano and NSFW_DIR_NAME in Path(rel).parts:
         try:
             acto = sexpos.clasificar(image_path)
             if acto and _norm_tag(acto[0]) not in {_norm_tag(t) for t in tags}:
@@ -149,9 +182,27 @@ def _intencion(name, rel, image_path, menor):
 # Un 4b escribe en español neutro por más que le pidas "rioplatense": no sabe qué
 # es. Prohibirle las formas concretas SÍ funciona, y como es una regla de
 # gramática y no un ejemplo, no la copia textual (los ejemplos sí los copiaba).
-_VOSEO = ("Escribís de VOS, nunca de tú: \"tenés\" y no \"tienes\", \"sos\" y no "
-          "\"eres\", \"mirá\" y no \"mira\", \"vos\" y no \"tú\", \"te queda\" y "
-          "no \"te va\". Nada de \"ti\" ni de \"contigo\".")
+# La misma regla que usa el pie (vlm.VOSEO_REGLA): un solo lugar para el voseo y
+# la prohibición de españolismos, así el pie y los comentarios hablan igual.
+_VOSEO = vlm.VOSEO_REGLA
+
+# Misma lógica que _VOSEO: "sin eufemismos" no le dice NADA a un 4b, no sabe
+# cuáles son. Darle la sustitución concreta sí funciona, y como es una regla de
+# vocabulario (no un comentario de ejemplo) no la copia textual. Las palabras son
+# las mismas que usa el endurecedor de etiquetas (vlm._CRUDO_MAP), para que el
+# pie, los comentarios y las etiquetas hablen igual.
+_CRUDO_VOCAB = (
+    "Nombrás las cosas con la palabra vulgar, nunca la clínica ni el eufemismo: "
+    "\"tetas\" y no \"senos\" ni \"pechos\" ni \"busto\"; \"culo\" y no \"glúteos\" "
+    "ni \"nalgas\" ni \"trasero\"; \"concha\" y no \"vagina\" ni \"vulva\" ni "
+    "\"entrepierna\"; \"pija\" y no \"pene\" ni \"miembro\"; \"en bolas\" y no "
+    "\"desnuda\" ni \"sin ropa\". Prohibido \"figura\", \"silueta\", \"curvas\", "
+    "\"anatomía\", \"escultural\" y \"despampanante\": esas palabras no se usan acá.")
+
+# Desde qué nivel de la perilla se le suma la regla de vocabulario (0 sano,
+# 1 pícaro no la llevan; 2 subido en adelante sí). Con menores la crudeza se
+# fuerza a 0 antes de llegar acá, así que nunca les toca.
+_CRUDO_DESDE = 2
 
 _PROMPT = """Mirá esta foto. Estas {n} personas la están comentando en una red
 social. Escribí el comentario de cada una, en su voz:
@@ -347,11 +398,18 @@ def crudeness_text(level):
     except (TypeError, ValueError):
         i = CRUDENESS_DEFAULT
     niveles = crudeness_list()      # fábrica + lo que reescribiste en Ajustes
-    return niveles[max(0, min(i, len(niveles) - 1))][1]
+    i = max(0, min(i, len(niveles) - 1))
+    txt = niveles[i][1]
+    # de "subido" para arriba se le suma QUÉ palabras usar: sin esto el 4b
+    # entiende "sin eufemismos" pero igual escribe "senos" y "figura escultural"
+    if i >= _CRUDO_DESDE:
+        txt += " " + _CRUDO_VOCAB
+    return txt
 
 
 def generate_caption(name, rel, image_path, model=None,
-                     crudeness=CRUDENESS_DEFAULT, diminutivos=False):
+                     crudeness=CRUDENESS_DEFAULT, diminutivos=False,
+                     usar_moldes=True):
     """Escribe el pie de foto y lo guarda. ~1,5 minutos en CPU.
 
     Sabemos de quién es la foto (sale de la carpeta), así que el pie lo escribe
@@ -364,38 +422,91 @@ def generate_caption(name, rel, image_path, model=None,
     Las ETIQUETAS de la foto (propias + de la persona) son la intención real:
     el pie se escribe A PARTIR de ellas, literal, no de lo que el modelo cree
     ver — evita que se floree o invente un clima que no está."""
+    # el pie va en primera persona, así que el género importa: "estoy cansada"
+    # o "cansado" sale de las etiquetas de la persona
+    ident = identidad_foto(name, rel)
+    if ident["sano"]:
+        crudeness = 0
+
+    # MOLDES PRIMERO, antes de tocar nada caro. Escritos por el usuario, salen
+    # instantáneos y con su voz; el modelo local, probado en seis configuraciones,
+    # no llega a eso (ver app/moldes.py). Si ninguna etiqueta prende un molde se
+    # cae al modelo, así una foto sin cobertura igual tiene pie.
+    # Va ANTES del reconocimiento de caras a propósito: who_is_in carga la base de
+    # vectores y escanea la imagen, y no tendría sentido pagar eso para después
+    # contestar con un molde que no lo usa.
+    if usar_moldes:
+        # el pie que ya tiene: se le pasa para que devuelva OTRO. Sin esto,
+        # apretar "regenerar" te daba siempre exactamente el mismo.
+        pie = moldes.escribir(_key(name, rel),
+                              tags_mod.effective_photo(name, rel), sano=ident["sano"],
+                              evitar=get(name, rel)["caption"])
+        if pie:
+            if diminutivos:
+                pie = con_diminutivos(pie)
+            _put(name, rel, caption=pie)
+            return pie
+
     con = get(name, rel)["people"]      # etiquetados a mano, si hay
     if not con:
         try:
             con = finder.who_is_in(image_path, exclude=[name])
         except Exception:
             con = []      # sin base de caras o foto ilegible: el pie igual sale
-    # el pie va en primera persona, así que el género importa: "estoy cansada"
-    # o "cansado" sale de las etiquetas de la persona
-    ident = identidad(tags_mod.get_person(name))
-    if ident["menor"]:
-        crudeness = 0
     voz = person_meta.get_voice(name)
     crudeza, quien_es = crudeness_text(crudeness), quien_es_pie(ident)
     prompt = vlm.caption_prompt(name, voz, con=con, crudeza=crudeza, quien_es=quien_es,
-                                etiquetas=_intencion(name, rel, image_path, ident["menor"]))
+                                etiquetas=_intencion(name, rel, image_path, ident["sano"]))
     extra = (_cfg().get("post_extra_pie") or "").strip()   # tu caja de Ajustes
     if extra:
         prompt += "\n" + extra
     # el arranque rota por foto (estable): así no salen todos con "Acá..."
     ops = vlm.PREFILL_OPCIONES
     arranque = ops[_stable_hash(_key(name, rel)) % len(ops)]
-    raw = vlm.describe(image_path, model=model or vlm.DEFAULT_MODEL,
-                       prompt=prompt, prefill=arranque)
-    # El modelo repite lo que le pusiste en el prompt: real, devolvió "Acá en la
-    # playa, ser directo, vulgar..." y pies terminados en "Sos Alejandro". Se
-    # compara contra el prompt ENTERO, no contra los pedazos: cualquier línea que
-    # le mandemos puede volver copiada.
-    text = _sin_autonombre(
-        _sin_instrucciones(vlm.clean_caption(raw), [prompt, vlm.SYSTEM_PIE]),
-        name)
+    modelo = model or vlm.DEFAULT_MODEL
+
+    def escribir(prefill):
+        # El modelo repite lo que le pusiste en el prompt: real, devolvió "Acá en
+        # la playa, ser directo, vulgar..." y pies terminados en "Sos Alejandro".
+        # Se compara contra el prompt ENTERO, no contra los pedazos: cualquier
+        # línea que le mandemos puede volver copiada.
+        # num_predict corto a propósito: el pie son una o dos frases. Con 280 el
+        # modelo se queda sin qué decir a la mitad y RELLENA repitiendo el mismo
+        # verso hasta gastar el presupuesto (visto: 3 veces la misma frase). Menos
+        # techo = menos relleno, y encima tarda menos.
+        crudo = vlm.describe(image_path, model=modelo, prompt=prompt, prefill=prefill,
+                             num_predict=100)
+        # _rioplatense corrige el tuteo y lo peninsular ("chaval"->"pibe",
+        # "polla"->"pija"). Estaba SOLO en los comentarios, así que al pie le
+        # llegaban gallegismos tal cual: real, devolvió "un chaval de 25 años".
+        return crudo, _rioplatense(_sin_repetidas(_sin_autonombre(
+            _sin_instrucciones(vlm.clean_caption(crudo), [prompt, vlm.SYSTEM_PIE]),
+            name)))
+
+    # SIN arranque primero: es el camino rápido (medido con el 7B de captions:
+    # 30s sin arranque contra 121s con) y el único que no puede romperle la
+    # plantilla del chat a nadie. El arranque solo entra si hace falta.
+    if _NECESITA_ARRANQUE.get(modelo):
+        raw, text = escribir(arranque)
+        if not text or _fuga_de_rol(raw):     # dejó de andar: se vuelve a probar
+            _NECESITA_ARRANQUE[modelo] = False
+            raw, text = escribir(None)
+    else:
+        raw, text = escribir(None)
+        # sin arranque algunos describen desde afuera ("una chica sentada en..."):
+        # a esos, y solo a esos, se les pone el arranque y se recuerda.
+        if text and not _fuga_de_rol(raw) and not _sirve(text):
+            crudo2, text2 = escribir(arranque)
+            # el arranque solo se adopta si el resultado sirve DE VERDAD: en
+            # primera persona descontando el arranque, y sin tratarla de "vos"
+            if text2 and not _fuga_de_rol(crudo2) and _sirve(text2, arranque):
+                _NECESITA_ARRANQUE[modelo] = True
+                raw, text = crudo2, text2
+        elif not text:
+            raw, text = escribir(arranque)
     if not text:
         raise RuntimeError("El modelo solo repitió las instrucciones. Probá de nuevo.")
+    text = _sin_cola_cortada(text)
     if diminutivos:
         text = con_diminutivos(text)
     _put(name, rel, caption=text)
@@ -448,6 +559,19 @@ _TUTEO = [
     (r"\beres\b", "sos"), (r"\btienes\b", "tenés"), (r"\bpuedes\b", "podés"),
     (r"\bquieres\b", "querés"), (r"\bhaces\b", "hacés"), (r"\bsabes\b", "sabés"),
     (r"\bestás muy\b", "estás re"), (r"\boye\b", "che"),
+    # Españolismos: al 4b no le alcanza con prohibírselos en el prompt (igual se
+    # le escapan), así que se CORRIGEN acá, después de generar. Solo los que son
+    # inequívocamente de España: "joder" y "no jodas" acá se usan, no se tocan.
+    (r"\bme mola\b", "me encanta"), (r"\bte mola\b", "te gusta"),
+    (r"\bmolan\b", "están buenísimas"), (r"\bmola\b", "está buenísimo"),
+    (r"\bguay\b", "genial"), (r"\bcoño\b", "la concha"),
+    (r"\bfollando\b", "cogiendo"), (r"\bfollar\b", "coger"),
+    (r"\bpolla\b", "pija"), (r"\bgilipollas\b", "pelotudo"),
+    (r"\bchaval\b", "pibe"), (r"\bchavala\b", "piba"),
+    (r"\bhostia\b", "la puta madre"), (r"\bflipo\b", "no lo puedo creer"),
+    (r"\bflipar\b", "alucinar"), (r"\bcurrar\b", "laburar"),
+    (r"\bmajo\b", "copado"), (r"\bmaja\b", "copada"),
+    (r"\bvosotros\b", "ustedes"), (r"\bvale\?", "dale?"),
 ]
 
 
@@ -554,6 +678,16 @@ def _nw(w):
 def menor_set():
     """Etiquetas que marcan menor: las de fábrica + las que sumaste en Ajustes."""
     return _MENOR | {_nw(w) for w in _cfg().get("f_menor_extra", []) if w.strip()}
+
+
+def adulto_set():
+    """Etiquetas que habilitan lo subido de tono.
+
+    A diferencia de menor_set(), esta NO se puede ampliar desde Ajustes, y es a
+    propósito: sumar palabras acá AFLOJA la protección en vez de reforzarla, y
+    alcanzaría con una palabra común de más ("joven") para volver al viejo
+    default de asumir adulto sin que te des cuenta."""
+    return set(_ADULTO)
 
 
 def vacias_set():
@@ -671,6 +805,105 @@ def eco_de(texto, fragmentos, n=4):
     return bool(mios and _ngramas(texto, n) & mios)
 
 
+# Marcadores de rol del chat largados como texto plano. No todos los modelos
+# aceptan el "arranque" (que les pongamos palabras en la boca): a los que no les
+# calza la plantilla se les escapa el rol y siguen escribiendo instrucciones en
+# vez de un pie. "user"/"assistant" no son palabras en español, así que buscarlas
+# sueltas no da falsos positivos en un pie real.
+_FUGA_ROL = re.compile(r"\b(?:user|assistant|system)\b|<\|im_(?:start|end)\|>", re.I)
+# La fuga no siempre viene como palabra suelta: se vio "Me systema es un chaval
+# de 25 años…", con el marcador PEGADO. Buscar "sistema" en cualquier lado daría
+# falsos positivos (es una palabra normal), así que solo cuenta si aparece al
+# principio, que es donde arranca una fuga de plantilla.
+_FUGA_ARRANQUE = re.compile(r"^.{0,20}\bs[yi]stema?\b", re.I)
+
+
+def _fuga_de_rol(raw):
+    """True si al modelo se le escapó un marcador de rol: señal de que el arranque
+    le rompió la plantilla y lo que devolvió no es un pie."""
+    raw = (raw or "").lstrip()
+    return bool(_FUGA_ROL.search(raw) or _FUGA_ARRANQUE.search(raw))
+
+
+# Marcas de que el pie está en primera persona. Si no hay ninguna, el modelo se
+# puso a describir desde afuera ("una chica sentada en...") y ahí sí hace falta
+# el arranque para forzarlo.
+_PRIMERA_PERSONA = re.compile(
+    r"\b(?:estoy|estaba|tengo|tenía|ando|andaba|soy|era|salgo|salí|vengo|vine|"
+    r"me|mi|mis|conmigo|acá estoy)\b", re.I)
+
+
+def _en_primera_persona(texto, arranque=""):
+    """El pie habla en primera persona.
+
+    OJO con el `arranque`: se lo inyectamos nosotros, así que si no lo sacamos
+    antes, buscar "ando" en un texto que EMPIEZA con "Ando" da siempre que sí y
+    la verificación se aprueba sola. Pasó: aceptó "Ando osome mirando al
+    espejo..." como bueno y encima memorizó que ese modelo servía."""
+    t = (texto or "").strip()
+    a = (arranque or "").strip()
+    if a and t.lower().startswith(a.lower()):
+        t = t[len(a):]
+    return bool(_PRIMERA_PERSONA.search(t))
+
+
+# Le habla a OTRO en vez de escribir como ella: "Sos flaca de costado y tu pelo
+# castaño...", "Te has tatuado...". Un pie donde la persona se trata de "vos" a
+# sí misma está roto, venga del arranque o no.
+_SEGUNDA_PERSONA = re.compile(
+    r"\b(?:sos|estás|estabas|tenés|tenías|te\s+has|te\s+ves|tu|tus|vos|"
+    r"tuyo|tuya|contigo|tienes|eres)\b", re.I)
+
+
+def _habla_en_segunda(texto):
+    return bool(_SEGUNDA_PERSONA.search(texto or ""))
+
+
+def _sirve(texto, arranque=""):
+    """El pie está en primera persona Y no le habla a otro. Las dos cosas: el que
+    motivó esto ("Ando osome... Sos flaca de costado y tu pelo castaño...")
+    arrancaba en primera y a la segunda frase ya la estaba describiendo a ella."""
+    return _en_primera_persona(texto, arranque) and not _habla_en_segunda(texto)
+
+
+def _sin_cola_cortada(texto):
+    """Saca la última frase si quedó a medio terminar.
+
+    Con el techo de tokens el modelo se corta donde sea ("...estás usando tu
+    teléfono para hacer"). Mejor un pie más corto que uno colgado."""
+    t = (texto or "").strip()
+    if not t or t[-1] in ".!?…":
+        return t
+    corte = max(t.rfind("."), t.rfind("!"), t.rfind("?"))
+    return t[:corte + 1].strip() if corte > 0 else t
+
+
+# Qué modelos necesitan el arranque, aprendido en caliente (modelo -> bool). El
+# arranque le fuerza la primera persona al 4B, pero a otros les rompe la
+# plantilla del chat: devuelven basura ("Me xxxie la cara de la camera") o largan
+# el rol como texto. Como no se puede saber de antemano, se prueba una vez por
+# modelo y se recuerda mientras corra la app.
+_NECESITA_ARRANQUE = {}
+
+
+def _sin_repetidas(texto):
+    """Saca las frases repetidas del pie, conservando la primera de cada una.
+
+    Un modelo que se queda sin qué decir rellena repitiendo hasta gastar el
+    presupuesto de tokens. Bajar num_predict y subir repeat_penalty lo hace mucho
+    menos probable, pero no imposible: esto lo garantiza. Se compara por palabras
+    (sin puntuación ni mayúsculas) para que "Estoy en la playa." y "estoy en la
+    playa!" cuenten como la misma."""
+    frases = [f.strip() for f in re.split(r"(?<=[.!?])\s+|\n+", texto or "") if f.strip()]
+    vistas, quedan = set(), []
+    for f in frases:
+        k = " ".join(_palabras(f))
+        if k and k not in vistas:
+            vistas.add(k)
+            quedan.append(f)
+    return " ".join(quedan).strip()
+
+
 def _sin_instrucciones(texto, fragmentos):
     """Saca del texto las frases donde el modelo repitió las instrucciones.
 
@@ -722,7 +955,11 @@ def _sin_eco(textos, personas):
 
 
 def quien_es_texto(ident):
-    """La regla de cómo referirse a la persona, para el prompt."""
+    """La regla de cómo referirse a la persona, para el prompt.
+
+    Tres casos, no dos: chico confirmado, adulto confirmado, y el del medio (sin
+    etiquetar). Ese último va sano pero SIN lenguaje de chico: tratar de "lindo
+    chiquito" a una persona que solo no tiene etiquetas sería absurdo."""
     if ident["menor"]:
         # Es un chico: comentarios tiernos y nada más. Ver generate_comments,
         # que además saca a los comentadores que desean y apaga la crudeza.
@@ -737,13 +974,21 @@ def quien_es_texto(ident):
                      else " Es un nene: hablá en masculino.")
         return base
     if ident["genero"] == "f":
-        return ("La persona de la foto es una MUJER: referite a ella en femenino "
-                "(\"qué linda\", \"estás hermosa\"), nunca en masculino.")
-    if ident["genero"] == "m":
-        return ("La persona de la foto es un HOMBRE: referite a él en masculino "
-                "(\"qué lindo\", \"estás hecho un toro\"), nunca en femenino.")
-    return ("No sabemos si es hombre o mujer: no arriesgues el género, escribí "
-            "los comentarios de forma que sirvan para cualquiera.")
+        quien = ("La persona de la foto es una MUJER: referite a ella en femenino "
+                 "(\"qué linda\", \"estás hermosa\"), nunca en masculino.")
+    elif ident["genero"] == "m":
+        quien = ("La persona de la foto es un HOMBRE: referite a él en masculino "
+                 "(\"qué lindo\", \"estás hecho un toro\"), nunca en femenino.")
+    else:
+        quien = ("No sabemos si es hombre o mujer: no arriesgues el género, escribí "
+                 "los comentarios de forma que sirvan para cualquiera.")
+    if ident["sano"]:
+        # no está confirmada como adulta: comentarios de amigo, sin levante
+        quien += (" No sabemos su edad, así que los comentarios son sanos y "
+                  "amistosos —de lo que está haciendo, del lugar, de la ropa—. "
+                  "NADA sexual, NADA de levante, NADA sobre su cuerpo: está "
+                  "terminantemente prohibido acá.")
+    return quien
 
 
 def quien_es_pie(ident):
@@ -761,10 +1006,17 @@ def quien_es_pie(ident):
             return base + " Sos nene: escribí en masculino (\"estoy cansado\")."
         return base
     if ident["genero"] == "f":
-        return "Sos mujer: escribí en femenino (\"estoy cansada\", \"tirada\")."
-    if ident["genero"] == "m":
-        return "Sos hombre: escribí en masculino (\"estoy cansado\", \"tirado\")."
-    return ""
+        quien = "Sos mujer: escribí en femenino (\"estoy cansada\", \"tirada\")."
+    elif ident["genero"] == "m":
+        quien = "Sos hombre: escribí en masculino (\"estoy cansado\", \"tirado\")."
+    else:
+        quien = ""
+    if ident["sano"]:
+        # sin adulto confirmado: el pie cuenta qué estás haciendo y nada más
+        quien += (" El pie es sano: contás qué estás haciendo, dónde estás o "
+                  "cómo la estás pasando. NADA sexual ni subido de tono, y nada "
+                  "sobre tu cuerpo: está terminantemente prohibido acá.")
+    return quien.strip()
 
 
 def _sin_copia_del_pie(textos, pie):
@@ -895,13 +1147,13 @@ def generate_comments(name, rel, image_path, tone=DEFAULT_TONE, model=None,
     # Cómo referirse a la persona, según SUS etiquetas (las que ponés de a
     # muchas en la galería). Si dicen que es un chico, la perilla de crudeza no
     # corre y los que desean no comentan: no es negociable desde Ajustes.
-    ident = identidad(tags_mod.get_person(name))
-    if ident["menor"]:
+    ident = identidad_foto(name, rel)
+    if ident["sano"]:
         crudeness = 0
     post = get(name, rel)
     pie = post["caption"]          # los comentarios lo ven: unos le contestan
     ya_estan = post["comments"] if sumar else []
-    elegidos = _pick(name, rel, n, users, solo_sanos=ident["menor"],
+    elegidos = _pick(name, rel, n, users, solo_sanos=ident["sano"],
                      evitar=[c["user"] for c in ya_estan])
     if not elegidos:
         raise RuntimeError("No hay comentadores disponibles (ver COMMENTERS).")
@@ -912,7 +1164,7 @@ def generate_comments(name, rel, image_path, tone=DEFAULT_TONE, model=None,
     prompt = _PROMPT.format(n=len(elegidos), quienes=quienes, voseo=_VOSEO,
                             pie=_regla_pie(pie, len(elegidos)),
                             compania=_regla_compania(post["people"]),
-                            etiquetas=_regla_etiquetas(_intencion(name, rel, image_path, ident["menor"])),
+                            etiquetas=_regla_etiquetas(_intencion(name, rel, image_path, ident["sano"])),
                             quien_es=quien_es_texto(ident),
                             tono=TONES.get(tone, TONES[DEFAULT_TONE]),
                             crudeza=crudeness_text(crudeness), edad=edad)
@@ -938,11 +1190,15 @@ def generate_comments(name, rel, image_path, tone=DEFAULT_TONE, model=None,
         raise RuntimeError(f"El modelo no devolvió comentarios usables: {raw[:120]}")
     # el i-ésimo comentario es del i-ésimo comentador (se lo pedimos en orden)
     def pulir(t):
+        # el modelo a veces le pega una etiqueta de género al final del comentario
+        # ("...qué linda! (fem)"). No se la pedimos: se la inventa. Se saca acá.
+        t = re.sub(r"\s*[\(\[]\s*(?:fem|hom|masc|f|m|femenino|masculino)\.?\s*[\)\]]\s*$",
+                   "", t, flags=re.IGNORECASE).strip()
         t = _rioplatense(t)
         if diminutivos:
-            # los piropos (mamita, reinita) SOLO a adultos; los diminutivos
-            # comunes valen para todos
-            t = con_diminutivos(t, piropos=not ident["menor"])
+            # los piropos (mamita, reinita) SOLO con adulto confirmado; los
+            # diminutivos comunes valen para todos
+            t = con_diminutivos(t, piropos=not ident["sano"])
         return t
     con_firma = [{"user": u, "text": pulir(t)} for (u, _), t in zip(elegidos, got)]
     todos = ya_estan + con_firma

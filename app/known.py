@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from app import (GROUP_DIR_NAME, IMAGE_EXTENSIONS, KNOWN_PATH, KNOWN_THUMBS,
-                 NSFW_DIR_NAME, REVIEW_DIR_NAME)
+                 NSFW_DIR_NAME, REVIEW_DIR_NAME, VIDEO_EXTENSIONS)
 from app.facedet import detect_and_encode
 
 # Distancia coseno máxima para dar por conocida a una persona. Más bajo = más
@@ -245,19 +245,24 @@ def _largest_face(dets):
     return max(dets, key=lambda d: area(d[0]))
 
 
-def person_photos(known_dir, name, only_nsfw=False):
+def person_photos(known_dir, name, only_nsfw=False, media="images"):
     """Fotos de <carpeta_importada>/<nombre>/ (rutas relativas a esa subcarpeta),
     para la galería de la persona. Lista vacía si la subcarpeta no existe.
 
     Siempre excluye _revisar. Por defecto también excluye _nsfw (las apartadas
     por el revisor); con only_nsfw=True devuelve SOLO esas, para el botón de
-    mostrar/ocultar NSFW en la galería."""
+    mostrar/ocultar NSFW en la galería.
+
+    media: "images" (por defecto, solo fotos — así el etiquetado/pie no toca
+    videos), "videos" (solo videos) o "all" (ambos)."""
+    exts = {"videos": VIDEO_EXTENSIONS,
+            "all": IMAGE_EXTENSIONS | VIDEO_EXTENSIONS}.get(media, IMAGE_EXTENSIONS)
     folder = Path(known_dir) / name
     if not folder.is_dir():
         return []
     out = []
     for p in sorted(folder.rglob("*")):
-        if p.suffix.lower() not in IMAGE_EXTENSIONS or REVIEW_DIR_NAME in p.parts:
+        if p.suffix.lower() not in exts or REVIEW_DIR_NAME in p.parts:
             continue
         in_nsfw = NSFW_DIR_NAME in p.parts
         if in_nsfw != only_nsfw:
