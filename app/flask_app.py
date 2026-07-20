@@ -6763,7 +6763,7 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
     <p class="meta" style="margin:0 0 .5rem">Buscá etiquetas que estén en tus fotos y agregá hasta 3.
       "Armar" te da el JSON de esa combinación para copiar, editar y guardar.</p>
     <input id="cmb-buscar" class="path" placeholder="🔍 buscar etiqueta viva…" autocomplete="off"
-           oninput="cmbSug()" onkeydown="cmbKey(event)" style="width:100%">
+           oninput="cmbSug()" onfocus="cmbSug()" onkeydown="cmbKey(event)" style="width:100%">
     <div id="cmb-sug" style="max-height:9rem;overflow-y:auto;margin:.3rem 0"></div>
     <div id="cmb-chips" style="margin:.3rem 0;min-height:1.6rem"></div>
     <div class="row" style="margin:.3rem 0">
@@ -6921,11 +6921,22 @@ function cmbCerrar() { mog('cmb-modal').style.display = 'none'; }
 function cmbSug() {
   const q = norm(mog('cmb-buscar').value.trim());
   const box = mog('cmb-sug'); box.innerHTML = '';
-  if (!q) return;
-  const hits = CMB_VIVAS.filter(([t]) => norm(t).includes(q) && !cmbSel.includes(t)).slice(0, 12);
+  // sin texto: las 10 más usadas (CMB_VIVAS ya viene ordenada por uso). Con
+  // texto: las que coinciden.
+  let hits;
+  if (!q) {
+    hits = CMB_VIVAS.filter(([t]) => !cmbSel.includes(t)).slice(0, 10);
+    if (hits.length) {
+      const h = document.createElement('div'); h.className = 'meta'; h.style.padding = '.2rem .3rem';
+      h.textContent = 'más usadas:'; box.appendChild(h);
+    }
+  } else {
+    hits = CMB_VIVAS.filter(([t]) => norm(t).includes(q) && !cmbSel.includes(t)).slice(0, 12);
+  }
   if (!hits.length) {
     const d = document.createElement('div'); d.className = 'meta'; d.style.padding = '.3rem';
-    d.textContent = 'sin etiquetas vivas que coincidan'; box.appendChild(d); return;
+    d.textContent = q ? 'sin etiquetas vivas que coincidan' : 'no hay etiquetas en tus fotos todavía';
+    box.appendChild(d); return;
   }
   hits.forEach(([t, n]) => {
     const d = document.createElement('div'); d.className = 'pmodal-item';
