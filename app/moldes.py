@@ -310,12 +310,15 @@ def exportar():
     }
 
 
-def importar(data):
-    """Reemplaza los moldes con un dict importado. Tolera basura: saca lo que no
-    tenga la forma esperada en vez de romper. Devuelve cuántos cuerpos entraron.
+def importar(data, reemplazar=False):
+    """Trae los moldes de un dict importado. Devuelve cuántos cuerpos entraron.
 
-    Levanta ValueError si el dict no tiene NADA usable, para que la web avise en
-    vez de dejar los moldes vacíos sin que te des cuenta."""
+    reemplazar=False (por defecto): FUSIONA. Es lo que necesita el trabajo por
+    bloques — exportás las de playa, las corregís, las reimportás y NO se borra
+    el resto. Un cuerpo que ya existe (misma combinación+registro) recibe las
+    frases nuevas; uno nuevo se agrega. cierres y alias del archivo se suman.
+    reemplazar=True: pisa TODO con lo del archivo (para restaurar un backup
+    entero). Tolera basura: descarta lo mal formado en vez de romper."""
     if not isinstance(data, dict):
         raise ValueError("el archivo no es un objeto JSON")
     cu = []
@@ -341,8 +344,66 @@ def importar(data):
               if str(k).strip() and str(v).strip()}
     if not cu and not ci and not al:
         raise ValueError("no hay ni un molde válido en el archivo")
-    guardar(cuerpos_=cu, cierres_=ci, alias_=al)
+
+    if reemplazar:
+        guardar(cuerpos_=cu, cierres_=ci, alias_=al)
+        return len(cu)
+
+    # FUSIÓN: los cuerpos por combinación (sin marca de borrador, son revisados),
+    # los cierres y alias sumados a lo que ya hay
+    _fusionar_cuerpos(cu)
+    if ci or al:
+        d = _load()
+        vistos = {(c.get("texto"), bool(c.get("nsfw"))) for c in (d.get("cierres") or [])}
+        cierres_ = list(d.get("cierres") or [])
+        for texto, nsfw in ci:
+            if (texto, nsfw) not in vistos:
+                cierres_.append({"texto": texto, "nsfw": nsfw})
+        d["cierres"] = cierres_
+        alias_ = dict(d.get("alias") or {})
+        alias_.update(al)
+        d["alias"] = alias_
+        _save(d)
     return len(cu)
+
+
+def _fusionar_cuerpos(nuevos, borrador=False):
+    """Suma cuerpos a los que hay SIN pisar el resto. Cada `nuevo` es
+    (tags, [frases], nsfw). Si la combinación+registro ya existe, se le agregan
+    las frases que falten; si no, se crea (con `borrador` si se pide). Devuelve
+    (combos_nuevos, frases_agregadas)."""
+    d = _load()
+    cuerpos_ = d.get("cuerpos")
+    if not isinstance(cuerpos_, list):
+        cuerpos_ = [{"tags": t, "textos": [x], "nsfw": n} for t, x, n in CUERPOS_FABRICA]
+    idx = {}
+    for c in cuerpos_:
+        clave = (tuple(sorted(_norm(t) for t in c.get("tags", []))), bool(c.get("nsfw")))
+        idx[clave] = c
+    combos_nuevos = frases_nuevas = 0
+    for tags, frases, nsfw in nuevos:
+        frases = [f.strip() for f in frases if (f or "").strip()]
+        if not tags or not frases:
+            continue
+        clave = (tuple(sorted(_norm(t) for t in tags)), bool(nsfw))
+        if clave in idx:
+            c = idx[clave]
+            tx = c.setdefault("textos", [c.pop("texto")] if c.get("texto") else [])
+            for f in frases:
+                if f not in tx:
+                    tx.append(f)
+                    frases_nuevas += 1
+        else:
+            nuevo = {"tags": tags, "textos": frases, "nsfw": bool(nsfw)}
+            if borrador:
+                nuevo["borrador"] = True
+            cuerpos_.append(nuevo)
+            idx[clave] = nuevo
+            combos_nuevos += 1
+            frases_nuevas += len(frases)
+    d["cuerpos"] = cuerpos_
+    _save(d)
+    return combos_nuevos, frases_nuevas
 
 
 def _expandir(tags):
@@ -607,39 +668,5 @@ def generar_frases(tags, nsfw, n=3, model=None):
 
 def fusionar_borradores(nuevos):
     """Suma moldes BORRADOR a los que ya hay, SIN pisar los tuyos. Cada `nuevo` es
-    (tags, [frases], nsfw). Si ya existe un molde para esa combinación+registro,
-    se le agregan las frases que falten; si no, se crea con borrador=True.
-
-    Devuelve (combos_nuevos, frases_agregadas)."""
-    d = _load()
-    cuerpos_ = d.get("cuerpos")
-    if not isinstance(cuerpos_, list):
-        # partir de fábrica aplanada a la forma de disco, para no perderla
-        cuerpos_ = [{"tags": t, "textos": [x], "nsfw": n} for t, x, n in CUERPOS_FABRICA]
-    # índice por (combinación normalizada, nsfw)
-    idx = {}
-    for c in cuerpos_:
-        clave = (tuple(sorted(_norm(t) for t in c.get("tags", []))), bool(c.get("nsfw")))
-        idx[clave] = c
-    combos_nuevos = frases_nuevas = 0
-    for tags, frases, nsfw in nuevos:
-        frases = [f.strip() for f in frases if (f or "").strip()]
-        if not tags or not frases:
-            continue
-        clave = (tuple(sorted(_norm(t) for t in tags)), bool(nsfw))
-        if clave in idx:
-            c = idx[clave]
-            tx = c.setdefault("textos", [c.pop("texto")] if c.get("texto") else [])
-            for f in frases:
-                if f not in tx:
-                    tx.append(f)
-                    frases_nuevas += 1
-        else:
-            nuevo = {"tags": tags, "textos": frases, "nsfw": bool(nsfw), "borrador": True}
-            cuerpos_.append(nuevo)
-            idx[clave] = nuevo
-            combos_nuevos += 1
-            frases_nuevas += len(frases)
-    d["cuerpos"] = cuerpos_
-    _save(d)
-    return combos_nuevos, frases_nuevas
+    (tags, [frases], nsfw). Devuelve (combos_nuevos, frases_agregadas)."""
+    return _fusionar_cuerpos(nuevos, borrador=True)

@@ -6736,12 +6736,26 @@ prende con las dos formas. Sin <code>@</code> no se mezcla nada (<code>manzano</
     <button class="secondary" onclick="moFabrica()" title="Vuelve a los moldes que trae el programa">↺ restaurar los de fábrica</button>
     <span class="meta" id="mo-st"></span>
   </div>
+  <div style="margin-top:.6rem; border-top:1px solid var(--line); padding-top:.6rem">
+    <b>⬇ Exportar en bloques</b>
+    <p class="meta" style="margin:.2rem 0 .5rem">Para trabajar de a poco (ej. pasárselo a una IA sin
+      que sea un archivo gigante). Filtrá por etiqueta y/o por cantidad de etiquetas, y bajás solo eso.
+      Vacío = todo.</p>
+    <div class="row" style="margin:.3rem 0">
+      <input id="exp-tags" class="path" placeholder="solo las que tengan… (ej: playa, cama)"
+             oninput="expContar()" style="max-width:22rem">
+      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="1" checked onchange="expContar()"> 1</label>
+      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="2" checked onchange="expContar()"> 2</label>
+      <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" class="exp-sz" value="3" checked onchange="expContar()"> 3+ etiquetas</label>
+      <button class="primary" onclick="expBajar()">⬇ Bajar bloque (<b id="exp-n">0</b>)</button>
+    </div>
+    <a class="meta" href="{{ url_for('moldes_export') }}" style="text-decoration:underline">o bajá el backup completo (todo, con cierres y alias)</a>
+  </div>
   <div class="row" style="margin-top:.5rem; border-top:1px solid var(--line); padding-top:.6rem">
-    <a class="secondary" href="{{ url_for('moldes_export') }}" style="padding:.4rem .8rem; border-radius:6px; text-decoration:none"
-       title="Baja todos tus moldes como archivo .json (guardá lo escrito o pasalo a otra PC)">⬇ Exportar .json</a>
-    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y REEMPLAZA los moldes actuales">⬆ Importar .json</button>
+    <button class="secondary" onclick="mog('mo-file').click()" title="Cargá un .json y FUSIONA con lo que tenés">⬆ Importar bloque</button>
     <input type="file" id="mo-file" accept=".json,application/json" style="display:none" onchange="moImportar(this)">
-    <span class="meta">Exportar es tu backup. Importar <b>reemplaza</b> todo lo que tengas.</span>
+    <label class="mo-nsfw" style="flex-direction:row"><input type="checkbox" id="imp-reemp"> reemplazar todo en vez de fusionar</label>
+    <span class="meta">Importar <b>fusiona</b> por defecto (trae el bloque sin borrar el resto).</span>
   </div>
 </div>
 
@@ -6871,6 +6885,42 @@ function moFabrica() {
     body: new URLSearchParams({fabrica: '1'})})
     .then(r => r.json()).then(() => location.reload());
 }
+// --- exportar en bloques: filtra las filas del editor y baja solo esas ---
+function norm(s) {   // minúsculas y sin tildes, para comparar sin exactitud
+  return (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+}
+function expFilas() {   // [{tags:[], textos:[], nsfw}] segun los filtros
+  const q = norm(mog('exp-tags').value).split(',').map(s => s.trim()).filter(Boolean);
+  const sizes = [...document.querySelectorAll('.exp-sz:checked')].map(c => c.value);
+  const out = [];
+  document.querySelectorAll('#mo-lista .mo-cuerpo').forEach(row => {
+    const tags = row.querySelector('.tags').value.split(',').map(s => s.trim()).filter(Boolean);
+    const textos = row.querySelector('.textos').value.split('\\n').map(s => s.trim()).filter(Boolean);
+    if (!tags.length || !textos.length) return;
+    // tamaño: 1, 2, o 3+ (el checkbox "3" cubre 3 o más)
+    const sz = tags.length >= 3 ? '3' : String(tags.length);
+    if (!sizes.includes(sz)) return;
+    // etiqueta: la fila tiene que contener AL MENOS una de las pedidas (vacío = todas)
+    if (q.length) {
+      const hay = tags.map(norm);
+      if (!q.some(t => hay.some(h => h.includes(t)))) return;
+    }
+    out.push({tags: tags, textos: textos, nsfw: row.querySelector('.nsfw').checked});
+  });
+  return out;
+}
+function expContar() { mog('exp-n').textContent = expFilas().length; }
+function expBajar() {
+  const cuerpos = expFilas();
+  if (!cuerpos.length) { alert('No hay moldes que cumplan el filtro.'); return; }
+  const blob = new Blob([JSON.stringify({cuerpos: cuerpos}, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const tg = norm(mog('exp-tags').value).split(',')[0].trim() || 'bloque';
+  a.href = url; a.download = 'pies-' + tg.replace(/[^a-z0-9]/g, '') + '.json';
+  a.click(); URL.revokeObjectURL(url);
+}
+
 let genTimer = null;
 function genGo() {
   const k = mog('gen-k').value || 3;
@@ -6906,10 +6956,12 @@ function genPoll() {
 }
 function moImportar(input) {
   const f = input.files[0]; if (!f) return;
-  if (!confirm('Importar REEMPLAZA todos tus moldes por los del archivo. ¿Seguir?')) {
-    input.value = ''; return;
-  }
+  const reemp = mog('imp-reemp').checked;
+  const msg = reemp ? 'Reemplazar TODOS tus moldes por los del archivo. ¿Seguir?'
+                    : 'Fusionar el archivo con tus moldes (no borra el resto). ¿Seguir?';
+  if (!confirm(msg)) { input.value = ''; return; }
   const fd = new FormData(); fd.append('archivo', f);
+  if (reemp) fd.append('reemplazar', '1');
   mog('mo-st').textContent = ' importando…';
   fetch("{{ url_for('moldes_import') }}", {method: 'POST', body: fd})
     .then(r => r.json()).then(d => {
@@ -6918,6 +6970,7 @@ function moImportar(input) {
       input.value = '';
     }).catch(e => { mog('mo-st').textContent = ' ' + e; input.value = ''; });
 }
+expContar();   // conteo inicial del bloque al cargar la página
 </script>
 """
 
@@ -7037,7 +7090,7 @@ def moldes_import():
     except Exception:
         return {"ok": False, "error": "El archivo no es JSON válido."}
     try:
-        n = moldes_mod.importar(data)
+        n = moldes_mod.importar(data, reemplazar=request.form.get("reemplazar") == "1")
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "cuerpos": n}
