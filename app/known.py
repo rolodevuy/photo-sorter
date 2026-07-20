@@ -154,6 +154,56 @@ def import_folder_as_person(known_dir, src, name, recursive=True):
             "otras": sorted(otras.items(), key=lambda x: -x[1])}
 
 
+def save_uploaded_photos(known_dir, name, files):
+    """Guarda archivos SUBIDOS directo (desde el navegador) en
+    <Biblioteca>/<name>/. Todos se asumen de esa persona, sin analizar caras.
+    Devuelve {copiadas, dup, otras}. Lanza ValueError si falta biblioteca/nombre.
+
+    `files` son los FileStorage de request.files.getlist. Si ya hay un archivo
+    con ese nombre, no se pisa: se guarda como nombre_2, _3…"""
+    if not known_dir:
+        raise ValueError("Falta configurar la Biblioteca (Ajustes).")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Falta el nombre de la persona.")
+    dest_dir = Path(known_dir) / name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copiadas, dup, primera = 0, 0, None
+    otras = {}
+    for f in files:
+        fn = Path((f.filename or "")).name        # sin ruta, solo el nombre
+        if not fn:
+            continue
+        ext = Path(fn).suffix.lower()
+        if ext not in IMPORT_EXTENSIONS:
+            otras[ext or "(sin extensión)"] = otras.get(ext or "(sin extensión)", 0) + 1
+            continue
+        dest = dest_dir / fn
+        n = 2
+        while dest.exists():
+            dest = dest_dir / f"{Path(fn).stem}_{n}{ext}"
+            n += 1
+        try:
+            f.save(str(dest))
+        except Exception:
+            continue
+        copiadas += 1
+        if primera is None:
+            primera = dest
+    # portada de cortesía si la persona todavía no tenía una
+    thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+    if primera is not None and not thumb.is_file():
+        try:
+            KNOWN_THUMBS.mkdir(parents=True, exist_ok=True)
+            im = ImageOps.exif_transpose(Image.open(primera)).convert("RGB")
+            im.thumbnail((220, 220))
+            im.save(thumb, quality=85)
+        except Exception:
+            pass
+    return {"copiadas": copiadas, "dup": dup,
+            "otras": sorted(otras.items(), key=lambda x: -x[1])}
+
+
 def forget_person(name):
     """Borra una persona de la base y su miniatura."""
     db = load_known()

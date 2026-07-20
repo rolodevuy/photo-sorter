@@ -46,7 +46,7 @@ from app.finder import (EPS_DEFAULT, EPS_MAX, EPS_MIN, find_known, find_person,
 from app.known import (add_faces, enroll_from_folder, forget_person,
                        import_folder_as_person, known_summary, library_people,
                        load_known, move_photo, person_photos, save_face_crops,
-                       save_known, safe_name, set_cover)
+                       save_known, safe_name, save_uploaded_photos, set_cover)
 from app.linkgrab import grab_links
 from app.notfaces import add_not_faces, clear_not_faces, count_not_faces
 from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
@@ -3312,17 +3312,12 @@ PERSON_TEMPLATE = """
       <button class="secondary iconbtn" onclick="toggleCfg(this)" title="Configuración de {{ name }}">⚙</button>
     </div>
 
-    <!-- Menú ⚙: voz + acciones -->
+    <!-- Menú ⚙: acciones -->
     <div id="pcfg" class="pcfg-menu" style="display:none">
-      <label class="meta">🗣 Cómo habla {{ name }}</label>
-      <div class="row" style="margin:.25rem 0 0">
-        <input class="path" id="pvoice" value="{{ voice }}" style="flex:1"
-               placeholder="ej: sos directa y vulgar…"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();saveVoice()}">
-        <button class="secondary" onclick="saveVoice()" title="Guardar">💾</button>
-        <span class="meta" id="pvoice-st"></span>
-      </div>
-      <p class="meta" style="margin:.3rem 0 0">Se suma al prompt del pie · vacío = voz genérica.</p>
+      <button class="pcfg-item" onclick="document.getElementById('pupload').click()"
+              title="Todas las fotos que elijas se guardan como de {{ name }}, sin analizar caras.">🖼 Subir fotos (todas de {{ name }})…</button>
+      <input type="file" id="pupload" accept="image/*" multiple style="display:none" onchange="subirFotos(this)">
+      <span class="meta" id="pupload-st" style="display:block;margin:.15rem 0 .2rem"></span>
       <hr class="pcfg-sep">
       {% if display %}
       <button class="pcfg-item" onclick="cfgTagSel()">🏷 Etiquetar con IA…</button>
@@ -3754,16 +3749,20 @@ document.addEventListener('click', e => {
   if (!m.contains(e.target) && !e.target.closest('.iconbtn')) m.style.display = 'none';
 });
 
-// --- cómo habla esta persona (va al prompt del pie de foto) ---
-const VOICE_URL = "{{ url_for('person_voice', name=name) }}";
-function saveVoice() {
-  const st = document.getElementById('pvoice-st');
-  st.textContent = ' guardando…';
-  post(VOICE_URL, {voice: document.getElementById('pvoice').value}).then(r => r.json())
-    .then(d => {
-      st.textContent = d.ok ? ' ✓ guardado' : ' error';
-      setTimeout(() => st.textContent = '', 1800);
-    }).catch(() => st.textContent = ' error');
+// --- subir fotos directo al perfil (todas quedan como de esta persona) ---
+const SUBIR_URL = "{{ url_for('person_subir', name=name) }}";
+function subirFotos(input) {
+  const files = input.files; if (!files || !files.length) return;
+  const st = document.getElementById('pupload-st');
+  st.textContent = ' subiendo ' + files.length + ' foto(s)…';
+  const fd = new FormData();
+  for (const f of files) fd.append('fotos', f);
+  fetch(SUBIR_URL, {method: 'POST', body: fd}).then(r => r.json()).then(d => {
+    input.value = '';
+    if (!d.ok) { st.textContent = ' ✗ ' + d.error; return; }
+    st.textContent = ' ✓ ' + d.copiadas + ' subidas' + (d.dup ? ', ' + d.dup + ' repetidas' : '');
+    if (d.copiadas) setTimeout(() => location.reload(), 1200);   // que aparezcan
+  }).catch(e => { st.textContent = ' ' + e; input.value = ''; });
 }
 
 // El filtro por etiqueta lo hace el SERVIDOR (el <form> de arriba), no el
@@ -5598,14 +5597,18 @@ def person_export(name):
                              f'attachment; filename="{safe_name(name)}_perfil.zip"'})
 
 
-@app.route("/person/<name>/voice", methods=["POST"])
-def person_voice(name):
-    """Guarda cómo habla esta persona: se le suma al prompt de SUS pies de foto.
-
-    Como la foto está en su carpeta sabemos que es ella, así que el pie lo
-    escribe ella en primera persona; esto es lo que la hace sonar distinta."""
-    return {"ok": True,
-            "voice": person_meta.set_voice(name, request.form.get("voice", ""))}
+@app.route("/person/<name>/subir", methods=["POST"])
+def person_subir(name):
+    """Sube fotos directo al perfil: todas se guardan en la carpeta de esa
+    persona, sin analizar caras (ya sabemos de quién son)."""
+    files = request.files.getlist("fotos")
+    if not files:
+        return {"ok": False, "error": "No elegiste ninguna foto."}
+    try:
+        r = save_uploaded_photos(get_library(), name, files)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **r}
 
 
 @app.route("/tags/person/<name>", methods=["POST"])
