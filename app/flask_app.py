@@ -2180,6 +2180,15 @@ SETTINGS_TEMPLATE = """
         placeholder="ej: que alguno pregunte por la ropa. que sean más largos.">{{ extra_com }}</textarea>
     </div>
 
+    <div style="margin:.6rem 0; border-top:1px solid var(--line); padding-top:.6rem">
+      <label>🧩 Prompt para copiar desde una foto</label>
+      <textarea class="path" name="prompt_externo" rows="4" style="width:100%"
+        placeholder='ej: Escribí 3 pies de foto en primera persona, español rioplatense, usando SOLO estas palabras: $etiquetas'>{{ prompt_externo }}</textarea>
+      <p class="meta">Desde el <b>✍</b> de una foto, el botón <b>"📋 Copiar prompt"</b> copia este texto
+        con <code>$etiquetas</code> reemplazado por las etiquetas de esa foto, entre comillas y comas
+        (<code>"pelo largo", "buzo negro"</code>). Para pegarlo en la IA que quieras y traerte los pies.</p>
+    </div>
+
     <details class="lote"><summary>Filtros por palabras (avanzado)</summary>
       <div style="margin:.5rem 0">
         <label>🔞 Palabras que marcan MENOR (además de las de fábrica)</label>
@@ -2276,6 +2285,7 @@ def settings_page():
         dup_video_max_mb=cfg.get("dup_video_max_mb", DEFAULT_VIDEO_MAX_MB),
         # textos y filtros
         extra_pie=cfg.get("post_extra_pie", ""),
+        prompt_externo=cfg.get("prompt_externo", ""),
         extra_com=cfg.get("post_extra_com", ""),
         f_menor="\n".join(cfg.get("f_menor_extra", [])),
         f_tuteo="\n".join(cfg.get("f_tuteo_extra", [])),
@@ -2348,6 +2358,7 @@ def settings_save():
         f = request.form
         cfg["post_extra_pie"] = f.get("extra_pie", "").strip()
         cfg["post_extra_com"] = f.get("extra_com", "").strip()
+        cfg["prompt_externo"] = f.get("prompt_externo", "").strip()
         # listas: una palabra/línea, sin vacías ni duplicados
         def _lineas(campo):
             vistas, out = set(), []
@@ -3520,6 +3531,7 @@ const PERSON = {{ name|tojson }};
 let PERSON_TAGS = {{ person_tags|tojson }};
 let FAVS = {{ favs_tags|tojson }};             // tus favoritas (persona + globales)
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
+const PROMPT_TPL = {{ prompt_externo|tojson }};   // plantilla de Ajustes ($etiquetas)
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
 
@@ -3950,7 +3962,8 @@ POST_LIGHTBOX = """
         (y a cualquiera con las mismas etiquetas).</p>
       <textarea id="lb-molde-json" class="textos" spellcheck="false" rows="12" style="width:100%"></textarea>
       <div class="row" style="margin-top:.4rem">
-        <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar</button>
+        <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar JSON</button>
+        <button class="secondary" id="lb-molde-prompt" onclick="copiarPromptFoto()" title="Copia el prompt de Ajustes con las etiquetas de esta foto">🧩 Copiar prompt</button>
         <button class="primary" onclick="guardarMoldeFoto()">💾 Guardar y traer el pie</button>
         <span class="meta" id="lb-molde-st"></span>
       </div>
@@ -4327,6 +4340,20 @@ POST_LIGHTBOX = """
       () => $('lb-molde-st').textContent = ' ✓ copiado',
       () => { document.execCommand('copy'); $('lb-molde-st').textContent = ' ✓ copiado'; });
   }
+  function copiarPromptFoto() {
+    if (!PROMPT_TPL || !PROMPT_TPL.trim()) {
+      $('lb-molde-st').textContent = ' ✗ configurá el prompt en Ajustes primero'; return;
+    }
+    const tags = PHOTO_TAGS[rel()] || [];
+    // "pelo largo", "buzo negro" — comillas y comas; escapo comillas internas
+    const lista = tags.map(t => '"' + String(t).replace(/"/g, '\\"') + '"').join(', ');
+    const texto = PROMPT_TPL.split('$etiquetas').join(lista);
+    navigator.clipboard.writeText(texto).then(
+      () => $('lb-molde-st').textContent = ' ✓ prompt copiado',
+      () => { const ta = document.createElement('textarea'); ta.value = texto;
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+        ta.remove(); $('lb-molde-st').textContent = ' ✓ prompt copiado'; });
+  }
   function guardarMoldeFoto() {
     const val = $('lb-molde-json').value;
     if (!val.trim()) { $('lb-molde-st').textContent = ' escribí algo primero'; return; }
@@ -4663,7 +4690,8 @@ POST_LIGHTBOX = """
 
   Object.assign(window, {genCaption, editCap, genComments, clearComments,
                          openTagModal, closeTagModal, suggestTags,
-                         abrirMoldeFoto, cerrarMoldeFoto, copiarMoldeFoto, guardarMoldeFoto});
+                         abrirMoldeFoto, cerrarMoldeFoto, copiarMoldeFoto, guardarMoldeFoto,
+                         copiarPromptFoto});
 
   lb.addEventListener('wheel', e => {
     if (!e.target.closest('.stage')) return;    // la columna del post scrollea normal
@@ -4898,6 +4926,7 @@ def person_page(name):
         # etiquetar rápido a mano y para pisar la redacción de la IA
         favs_tags=tags_mod.favs_efectivas(name),
         photo_tags=photo_tags,
+        prompt_externo=load_config().get("prompt_externo", ""),
         all_tags=tags_mod.all_tags(),
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
         filter_con=filter_con,         # filtro por co-aparición (👥 también aparece X)
