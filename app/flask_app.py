@@ -4329,7 +4329,10 @@ POST_LIGHTBOX = """
   }
   function guardarMoldeFoto() {
     const val = $('lb-molde-json').value;
-    try { JSON.parse(val); } catch (e) { $('lb-molde-st').textContent = ' ✗ JSON inválido'; return; }
+    if (!val.trim()) { $('lb-molde-st').textContent = ' escribí algo primero'; return; }
+    // no valido acá: el servidor es tolerante (saca cercas, comillas curvas,
+    // comas colgando) y acepta emojis tal cual. Si algo está roto de verdad,
+    // vuelve con un mensaje claro.
     $('lb-molde-st').textContent = ' guardando…';
     post_(IMPORT_URL, {texto: val}).then(d => {     // import fusiona por defecto
       if (!d.ok) { $('lb-molde-st').textContent = ' ✗ ' + d.error; return; }
@@ -7063,10 +7066,9 @@ function cmbCopiar() {
     () => { document.execCommand('copy'); mog('cmb-st').textContent = ' ✓ copiado'; });
 }
 function cmbGuardar() {
-  let data;
-  try { data = mog('cmb-json').value; JSON.parse(data); }
-  catch (e) { mog('cmb-st').textContent = ' ✗ JSON inválido'; return; }
-  const fd = new FormData(); fd.append('texto', data);   // fusiona por defecto
+  const data = mog('cmb-json').value;
+  if (!data.trim()) { mog('cmb-st').textContent = ' escribí algo primero'; return; }
+  const fd = new FormData(); fd.append('texto', data);   // fusiona; server tolerante
   mog('cmb-st').textContent = ' guardando…';
   fetch("{{ url_for('moldes_import') }}", {method: 'POST', body: fd})
     .then(r => r.json()).then(d => {
@@ -7246,9 +7248,11 @@ def moldes_import():
     else:
         crudo = request.form.get("texto", "")
     try:
-        data = json.loads(crudo)
+        # tolerante: saca cercas ```json, comillas curvas, comas colgando y prosa
+        # alrededor. Los emojis pasan tal cual. Ver moldes.json_laxo.
+        data = json.loads(moldes_mod.json_laxo(crudo))
     except Exception:
-        return {"ok": False, "error": "El archivo no es JSON válido."}
+        return {"ok": False, "error": "No pude leer el JSON (revisá que las llaves { } y las comillas estén completas)."}
     try:
         n = moldes_mod.importar(data, reemplazar=request.form.get("reemplazar") == "1")
     except ValueError as e:

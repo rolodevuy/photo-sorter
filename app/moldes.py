@@ -296,6 +296,31 @@ def guardar(cuerpos_=None, cierres_=None, alias_=None):
     return d
 
 
+def json_laxo(texto):
+    """Limpia un JSON pegado (típicamente de una IA) para que no rompa por
+    tonterías de formato. Devuelve un string listo para json.loads.
+
+    Los EMOJIS nunca fueron el problema —JSON los acepta tal cual—; lo que sí
+    rompe es lo que la IA suele agregar alrededor: cercas ```json, comillas
+    tipográficas curvas, comas colgando, o texto antes/después. Todo eso se saca
+    acá para que 'Guardar' no tire 'JSON inválido' por nada."""
+    t = (texto or "").strip()
+    # cercas de markdown: ```json ... ```  (o ``` a secas)
+    t = re.sub(r"^```[a-zA-Z0-9]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t).strip()
+    # comillas DOBLES tipográficas -> rectas. Las simples NO se tocan: son
+    # apóstrofos dentro del texto ("qué lindo día") y romperían las frases.
+    for curva in ("“", "”", "„", "‟", "«", "»"):
+        t = t.replace(curva, '"')
+    # quedarse con el objeto: del primer { al último } (tira prosa alrededor)
+    i, j = t.find("{"), t.rfind("}")
+    if i != -1 and j > i:
+        t = t[i:j + 1]
+    # comas colgando antes de } o ]
+    t = re.sub(r",(\s*[}\]])", r"\1", t)
+    return t
+
+
 def json_combo(tags, nsfw):
     """El dict importable para UNA combinación exacta: el molde que ya exista para
     esas etiquetas+registro, o un esqueleto con pies vacíos si es nueva. Lo usa el
