@@ -6723,6 +6723,26 @@ CONVERSIONES_TEMPLATE = """
 <h1>🔁 Diccionario de conversiones <span class="hint-ico" title="Cuando el modelo dice la palabra de la izquierda, en TODA la app se reemplaza por la de la derecha (ej: rusa → paja rusa). Se crean solas desde el Probador; acá las ves, editás y borrás.">ⓘ</span></h1>
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 
+{% if parecidas %}
+<div class="panel" style="border-color:var(--amb)">
+  <b>🧹 Etiquetas casi iguales <span class="hint-ico" title="La misma cosa escrita distinto (denuda/desnuda). Cada variante es un molde que no dispara y un alias que tenés que escribir a mano. Al juntarlas se conserva la MÁS usada y se reemplaza en las fotos de todas las personas.">ⓘ</span></b>
+  <div id="pa-lista" style="margin-top:.5rem">
+    {% for a, na, b, nb, r in parecidas %}
+    <div class="row pa-fila" style="margin:.25rem 0; gap:.5rem">
+      <span class="chip">{{ b }} <b class="meta">{{ nb }}</b></span>
+      <span class="meta">→</span>
+      <span class="chip">{{ a }} <b class="meta">{{ na }}</b></span>
+      <button class="secondary sm" onclick="paJuntar(this)"
+              data-vieja="{{ b|e }}" data-nueva="{{ a|e }}">juntar</button>
+      <button class="secondary sm" onclick="this.closest('.pa-fila').remove()"
+              title="Son cosas distintas, no las junto">✕</button>
+    </div>
+    {% endfor %}
+  </div>
+  <span class="meta" id="pa-st"></span>
+</div>
+{% endif %}
+
 <div class="panel">
   <div class="row" style="margin-bottom:.5rem">
     <input id="cv-filtro" class="path" placeholder="🔍 filtrar…" oninput="cvFiltrar()" autofocus>
@@ -6751,6 +6771,19 @@ CONVERSIONES_TEMPLATE = """
 
 <script>
 const cvg = id => document.getElementById(id);
+function paJuntar(btn) {
+  const vieja = btn.dataset.vieja, nueva = btn.dataset.nueva;
+  if (!confirm('Reemplazar «' + vieja + '» por «' + nueva + '» en las fotos de todas las personas. ¿Seguro?')) return;
+  cvg('pa-st').textContent = ' juntando…';
+  fetch("{{ url_for('tags_merge') }}", {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({vieja: vieja, nueva: nueva})})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { cvg('pa-st').textContent = ' ✗ ' + (d.error || 'error'); return; }
+      btn.closest('.pa-fila').remove();
+      cvg('pa-st').textContent = ' ✓ ' + d.n + ' cambiadas';
+    }).catch(e => cvg('pa-st').textContent = ' ' + e);
+}
 function cvContar() {
   const n = document.querySelectorAll('#cv-lista .cv-row').length;
   cvg('cv-count').textContent = n;
@@ -7407,6 +7440,16 @@ def moldes_desde_foto(name):
     return {"ok": True, "cuerpos": n, "tags": tags_foto}
 
 
+@app.route("/tags/merge", methods=["POST"])
+def tags_merge():
+    """Junta dos etiquetas casi iguales en TODA la base (denuda -> desnuda)."""
+    vieja = request.form.get("vieja", "")
+    nueva = request.form.get("nueva", "")
+    if not vieja or not nueva:
+        return {"ok": False, "error": "Faltan las etiquetas."}
+    return {"ok": True, "n": tags_mod.merge_tag_global(vieja, nueva)}
+
+
 @app.route("/conversiones")
 def conversiones_page():
     """Gestor del diccionario de conversiones (rusa->paja rusa): ver, editar, borrar."""
@@ -7415,7 +7458,8 @@ def conversiones_page():
     pares = sorted(conv.items(), key=lambda kv: kv[0].lower())
     return render_template_string(
         shell("conversiones", CONVERSIONES_TEMPLATE),
-        pares=pares, message=request.args.get("msg", ""))
+        pares=pares, parecidas=tags_mod.pares_parecidos()[:30],
+        message=request.args.get("msg", ""))
 
 
 @app.route("/conversiones/save", methods=["POST"])

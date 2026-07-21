@@ -251,6 +251,58 @@ def rename_photo_tag(name, old, new):
     return n
 
 
+def pares_parecidos(umbral=0.82, minimo=4):
+    """Pares de etiquetas casi iguales: la misma cosa escrita distinto.
+
+    Devuelve [(a, na, b, nb, parecido)] con la MÁS USADA primero, para que al
+    juntarlas se conserve la forma que ya predomina. Sale de un problema real:
+    conviven "denuda"/"desnuda", "ojoz azules"/"ojos azules". Cada variante mal
+    escrita es un molde que no dispara y un alias que hay que escribir a mano.
+
+    `minimo` evita comparar palabras muy cortas, donde todo se parece a todo."""
+    import difflib
+    conteo = all_photo_tag_counts()
+    vocab = [t for t in conteo if len(t) >= minimo]
+    out = []
+    for i, a in enumerate(sorted(vocab)):
+        for b in sorted(vocab)[i + 1:]:
+            if abs(len(a) - len(b)) > 3:
+                continue
+            r = difflib.SequenceMatcher(None, a, b).ratio()
+            if r > umbral:
+                x, y = (a, b) if conteo[a] >= conteo[b] else (b, a)
+                out.append((x, conteo[x], y, conteo[y], round(r, 2)))
+    # primero los que más fotos destraban
+    out.sort(key=lambda p: -(p[1] + p[3]))
+    return out
+
+
+def merge_tag_global(vieja, nueva):
+    """Reemplaza `vieja` por `nueva` en las fotos de TODAS las personas (y en las
+    etiquetas de perfil). Para limpiar el vocabulario de una.
+
+    Devuelve en cuántas fotos cambió. Si una foto ya tenía las dos, no duplica."""
+    vieja, nueva = _norm(vieja), _norm(nueva)
+    if not vieja or not nueva or vieja == nueva:
+        return 0
+    data = _load()
+    n = 0
+    for seccion in ("photos", "people"):
+        for clave, lista in list(data[seccion].items()):
+            if vieja not in lista:
+                continue
+            nuevas = []
+            for t in lista:
+                t2 = nueva if t == vieja else t
+                if t2 not in nuevas:
+                    nuevas.append(t2)
+            data[seccion][clave] = nuevas
+            n += 1
+    if n:
+        _save(data)
+    return n
+
+
 def all_photo_entries():
     """[(clave, [tags])] de cada foto etiquetada. La clave es "<persona>/<rel>",
     así el llamador saca la carpeta (para saber si es _nsfw). Para el generador
