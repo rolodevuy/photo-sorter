@@ -6773,7 +6773,13 @@ MOLDES_TEMPLATE = """
 <details class="mo-sec">
   <summary>Cierres — la coletilla corta que a veces se le suma al pie <span class="hint-ico" title="Se pegan a cualquier molde, en 2 de cada 3 pies («Sola en casa. No me juzguen.»). Los 🔞 solo con moldes 🔞.">ⓘ</span></summary>
   <div class="row" style="margin:.3rem 0 0">
-    <a class="meta" href="{{ url_for('cierres_export') }}" style="text-decoration:underline">exportar cierres (json)</a>
+    <button class="secondary" onclick="location.href='{{ url_for('cierres_export') }}'"
+            title="Baja los cierres como .json">⬇ Exportar cierres</button>
+    <button class="secondary" onclick="mog('ci-file').click()"
+            title="Cargá un .json de cierres y los suma a los que tenés">⬆ Importar cierres</button>
+    <input type="file" id="ci-file" accept=".json,application/json" style="display:none"
+           onchange="ciImportar(this)">
+    <span class="meta" id="ci-st"></span>
   </div>
   <div id="mo-cierres">
     {% for texto, nsfw in cierres %}
@@ -7039,6 +7045,19 @@ function genPoll() {
     }
   });
 }
+function ciImportar(input) {   // importar SOLO cierres (fusiona con los que hay)
+  const f = input.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('archivo', f);
+  mog('ci-st').textContent = ' importando…';
+  fetch("{{ url_for('moldes_import') }}", {method: 'POST', body: fd})
+    .then(r => r.json()).then(d => {
+      input.value = '';
+      if (!d.ok) { mog('ci-st').textContent = ' ✗ ' + d.error; return; }
+      mog('ci-st').textContent = ' ✓ importados, recargando…';
+      setTimeout(() => location.reload(), 800);
+    }).catch(e => { mog('ci-st').textContent = ' ' + e; input.value = ''; });
+}
+
 function moImportar(input) {
   const f = input.files[0]; if (!f) return;
   const reemp = mog('imp-reemp').checked;
