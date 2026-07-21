@@ -2317,11 +2317,16 @@ def settings_save():
     """Guarda la Biblioteca (una sola para todo). El Origen se elige por
     análisis en la página principal."""
     cfg = load_config()
+    # La biblioteca se toca SOLO si el form la mandó con una ruta. Antes se
+    # pisaba SIEMPRE (set_library con "" si no venía), así que guardar el
+    # formulario de textos —que no manda `library`— borraba la biblioteca
+    # entera. Ahora cada campo se toca solo si vino, la biblioteca incluida.
     library = request.form.get("library", "").strip()
-    if library and not Path(library).is_dir():
-        return redirect(url_for("settings_page",
-                                msg=f"Esa carpeta de Biblioteca no existe: {library}"))
-    set_library(cfg, library)
+    if library:
+        if not Path(library).is_dir():
+            return redirect(url_for("settings_page",
+                                    msg=f"Esa carpeta de Biblioteca no existe: {library}"))
+        set_library(cfg, library)
 
     # comentarios: los dos formularios de Ajustes postean acá, así que cada campo
     # se toca solo si vino (si no, guardar uno pisaría lo del otro)
