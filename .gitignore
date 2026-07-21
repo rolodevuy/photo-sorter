@@ -15,3 +15,7 @@ data/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Log del servidor local
+flask.log
+*.log
