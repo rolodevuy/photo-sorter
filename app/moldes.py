@@ -594,12 +594,22 @@ _VAR_VINCULO_DIM = "{vinculito}"
 
 
 def relacion_de(tags):
-    """La primera etiqueta que sea un vínculo (hermana, novia…), tal cual está
-    escrita. None si la persona no tiene ninguna."""
+    """El vínculo de la persona (hermana, novia…). None si no tiene ninguno.
+
+    Pasa por el mapa de ALIAS (el editable, en la página Pies), así podés
+    escribir en el perfil como te salga —"broda", "tío juan", "vieja"— y con un
+    alias (broda → hermano) igual lo reconoce. Cuando entra por alias devuelve la
+    palabra CANÓNICA, porque de ahí salen el diminutivo y el recíproco: "broda"
+    no tiene diminutivo en la tabla, "hermano" sí."""
     conocidas = {_norm(r) for r in _RELACIONES}
+    al = alias()
     for t in tags or []:
-        if _norm(t) in conocidas:
+        n = _norm(t)
+        if n in conocidas:
             return t
+        destino = al.get(n)
+        if destino and _norm(destino) in conocidas:
+            return destino
     return None
 
 
