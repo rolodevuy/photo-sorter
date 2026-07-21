@@ -3894,7 +3894,10 @@ POST_LIGHTBOX = """
         <code>tags_perfil</code> = lo heredado de la persona (relación: <i>hermana</i>, <i>mujer</i>).
         Dispara el molde pero <b>no</b> se agrega a la foto.<br>
         <code>tags</code> = las de esta foto. Si le agregás acá, <b>se suman también a la foto</b>
-        (nunca borra las que ya tiene; para sacar una, usá el gestor 🏷).</p>
+        (nunca borra las que ya tiene; para sacar una, usá el gestor 🏷).<br>
+        En los pies podés usar <code>{relacion}</code>: se reemplaza por el vínculo de la persona
+        (<i>«con mi {relacion}»</i> → «con mi hermana» / «con mi novia»). Así un solo molde sirve para
+        todos los vínculos. Si la persona no tiene ninguno, ese pie no se usa.</p>
       <textarea id="lb-molde-json" class="textos" spellcheck="false" rows="12" style="width:100%"></textarea>
       <div class="row" style="margin-top:.4rem">
         <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar JSON</button>

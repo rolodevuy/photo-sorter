@@ -480,6 +480,43 @@ def _expandir(tags):
     return out
 
 
+# Palabras que son un VÍNCULO con la persona (no una situación ni un atributo).
+# Sirven para la variable {relacion} en los pies: un solo molde
+# ("un día de playa con mi {relacion}") vale para hermana, novia, amiga… en vez
+# de escribir uno por cada vínculo.
+_RELACIONES = {
+    "hermana", "hermano", "mamá", "mama", "madre", "papá", "papa", "padre",
+    "tía", "tia", "tío", "tio", "prima", "primo", "abuela", "abuelo",
+    "sobrina", "sobrino", "cuñada", "cuñada", "cuñado", "suegra", "suegro",
+    "hija", "hijo", "nieta", "nieto", "familia", "familiar",
+    "novia", "novio", "esposa", "esposo", "mujer de", "marido", "pareja",
+    "amiga", "amigo", "compañera", "compañero", "vecina", "vecino",
+    "jefa", "jefe", "profesora", "profesor", "alumna", "alumno",
+}
+
+_VAR_RELACION = "{relacion}"
+
+
+def _relacion_de(tags):
+    """La primera etiqueta que sea un vínculo (hermana, novia…), tal cual está
+    escrita. None si la persona no tiene ninguna."""
+    for t in tags or []:
+        if _norm(t) in {_norm(r) for r in _RELACIONES}:
+            return t
+    return None
+
+
+def _con_relacion(texto, relacion):
+    """Reemplaza {relacion} por el vínculo. Devuelve None si el texto la pide y
+    la persona no tiene vínculo: mejor no usar ese pie que escribir
+    "con mi {relacion}" o inventar un parentesco que no es."""
+    if _VAR_RELACION not in texto:
+        return texto
+    if not relacion:
+        return None
+    return texto.replace(_VAR_RELACION, relacion)
+
+
 def _semilla(clave):
     """Número estable para esta foto: el mismo pie sale siempre igual, pero dos
     fotos distintas no comparten molde. Sin esto el pie cambiaría en cada
@@ -560,8 +597,15 @@ def variantes(clave, tags, sano=True, maximo=12):
     corte = s % len(top)
     empatados = top[corte:] + top[:corte] + resto
 
+    # el vínculo de ESTA persona (hermana, novia…), para la variable {relacion}
+    relacion = _relacion_de(tags)
     out = []
     for j, (texto, cuerpo_nsfw) in enumerate(empatados):
+        # un pie que pide {relacion} en alguien sin vínculo se descarta: mejor
+        # ninguno que "con mi {relacion}" o inventarle un parentesco
+        texto = _con_relacion(texto, relacion)
+        if texto is None:
+            continue
         # Los cierres subidos SOLO con un cuerpo subido: si no, quedaba "Hecha
         # pomada pero contenta. Alguien va a tener que hacerse cargo." en una
         # foto de gimnasio.
