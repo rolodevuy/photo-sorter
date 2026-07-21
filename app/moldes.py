@@ -697,7 +697,7 @@ def candidatos(tags, sano=True):
     return out
 
 
-def variantes(clave, tags, sano=True, maximo=12):
+def variantes(clave, tags, sano=True, maximo=90):
     """TODOS los pies posibles para esta foto, en un orden estable.
 
     Que sean varios es el punto: con uno solo, el botón de regenerar no servía
@@ -723,7 +723,8 @@ def variantes(clave, tags, sano=True, maximo=12):
 
     # el vínculo de ESTA persona (hermana, novia…), para la variable {relacion}
     relacion = relacion_de(tags)
-    out = []
+    # primero resolver cada pie (vínculo aplicado) con sus cierres válidos
+    listos = []
     for j, (texto, cuerpo_nsfw) in enumerate(empatados):
         # un pie que pide {relacion} en alguien sin vínculo se descarta: mejor
         # ninguno que "con mi {relacion}" o inventarle un parentesco
@@ -742,9 +743,19 @@ def variantes(clave, tags, sano=True, maximo=12):
             c = _con_relacion(c, relacion)
             if c is not None:      # None = pide vínculo y la persona no tiene
                 disponibles.append(c)
-        out.append(texto)                     # seco, sin cierre
-        for k in range(2):                    # y con dos cierres distintos
-            if disponibles:
+        listos.append((j, texto, disponibles))
+
+    # POR RONDAS, no de a un pie a la vez: primero TODOS los pies secos, después
+    # todos con un cierre, después con otro. Antes era al revés (pie 1 con sus 3
+    # cierres, pie 2 con los suyos…) y como la lista tiene tope, con 25 pies
+    # escritos entraban solo los primeros 4 repetidos con distinta coletilla:
+    # parecía que siempre caían los mismos tres.
+    out = []
+    for k in range(3):                        # ronda 0 = seco; 1 y 2 = con cierre
+        for j, texto, disponibles in listos:
+            if k == 0:
+                out.append(texto)
+            elif disponibles:
                 out.append(f"{texto} {disponibles[(s // 3 + j * 5 + k * 11) % len(disponibles)]}")
         if len(out) >= maximo:
             break
