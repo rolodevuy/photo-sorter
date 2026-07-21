@@ -443,14 +443,24 @@ def generate_caption(name, rel, image_path, model=None,
         # transformadas; si no, nunca coincide y regenerar devuelve siempre el
         # primero (pasó con los diminutivos: guardaba "playita", comparaba "playa").
         pulir_pie = con_diminutivos if diminutivos else None
+        # "Solo mis pies" (Ajustes): los 62 de fábrica quedan horneados en tu
+        # moldes.json al guardar el primero y después compiten con los tuyos, así
+        # que el pie variaba mucho antes de caer en uno propio.
+        solo_mios = bool(_cfg().get("solo_moldes_propios"))
         pie = moldes.escribir(_key(name, rel),
                               tags_mod.effective_photo(name, rel), sano=ident["sano"],
-                              evitar=get(name, rel)["caption"], pulir=pulir_pie)
+                              evitar=get(name, rel)["caption"], pulir=pulir_pie,
+                              solo_propios=solo_mios)
         if pie:
             if pulir_pie:
                 pie = pulir_pie(pie)
             _put(name, rel, caption=pie)
             return pie
+        if solo_mios:
+            # con "solo mis pies" no se cae al modelo: se avisa, que es lo útil
+            # (te dice dónde falta escribir un molde en vez de tapar el agujero)
+            raise RuntimeError("No hay un pie tuyo para estas etiquetas. "
+                               "Escribí uno con ✍ (o destildá «Solo mis pies» en Ajustes).")
 
     con = get(name, rel)["people"]      # etiquetados a mano, si hay
     if not con:

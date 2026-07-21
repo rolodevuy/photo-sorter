@@ -2138,6 +2138,12 @@ SETTINGS_TEMPLATE = """
     <input type="hidden" name="library" value="{{ library }}">
 
     <div class="row">
+      <label><input type="checkbox" name="solo_moldes_propios" value="1"
+             {% if solo_moldes_propios %}checked{% endif %}> Solo mis pies</label>
+      <span class="hint-ico" title="El programa trae 62 pies de fábrica que quedan mezclados con los tuyos y hacen que varíe mucho antes de caer en uno propio. Con esto solo se usan los que escribiste vos, y si no hay ninguno para esa foto te avisa en vez de inventar uno estándar.">ⓘ</span>
+    </div>
+
+    <div class="row">
       <label>Vos sos:</label>
       <select name="genero_duenio">
         <option value="" {% if not genero_duenio %}selected{% endif %}>(sin definir)</option>
@@ -2315,6 +2321,7 @@ def settings_page():
         # con qué modelo se escriben el pie y los comentarios (vacío = el de fábrica)
         post_model=cfg.get("post_model", ""),
         genero_duenio=cfg.get("genero_duenio", ""),
+        solo_moldes_propios=bool(cfg.get("solo_moldes_propios")),
         default_model=vlm.DEFAULT_MODEL,
         vlm_models=vlm.list_models(),
         vlm_crudos=vlm.modelos_descensurados(),
@@ -2378,6 +2385,7 @@ def settings_save():
         cfg["comment_users"] = users        # vacío = los de fábrica
     if "guardar_post" in request.form:      # el form de los comentarios
         cfg["diminutivos"] = request.form.get("diminutivos") == "1"
+        cfg["solo_moldes_propios"] = request.form.get("solo_moldes_propios") == "1"
     if "genero_duenio" in request.form:     # tu género: da vuelta los vínculos
         g = request.form.get("genero_duenio", "").strip().lower()
         cfg["genero_duenio"] = g if g in ("m", "f") else ""

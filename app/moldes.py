@@ -680,7 +680,19 @@ def _coincide(tag_molde, presentes):
                for p in presentes)
 
 
-def candidatos(tags, sano=True):
+def _clave_fabrica():
+    """Las combinaciones+texto que trae el programa, para distinguirlas de las
+    tuyas. Hace falta porque al guardar el primer molde los 62 de fábrica quedan
+    horneados en tu moldes.json y después son indistinguibles."""
+    return {(tuple(sorted(_norm(x) for x in t)), tx) for t, tx, n in CUERPOS_FABRICA}
+
+
+def es_propio(tags, texto):
+    """True si ese pie lo escribiste vos (no viene de fábrica)."""
+    return (tuple(sorted(_norm(t) for t in tags)), texto) not in _clave_fabrica()
+
+
+def candidatos(tags, sano=True, solo_propios=False):
     """Los cuerpos que se prenden con estas etiquetas, más específico primero.
 
     Se exigen TODAS las etiquetas del molde, no alguna. Con "alguna" pasaba esto:
@@ -692,10 +704,13 @@ def candidatos(tags, sano=True):
     Gana el que exige más: ["cama","desnuda"] le gana a ["cama"] si están las
     dos, que es lo que querés."""
     presentes = _expandir(tags)
+    fabrica = _clave_fabrica() if solo_propios else None
     out = []
     for disparo, texto, nsfw in cuerpos():
         if nsfw and sano:
             continue                      # sin adulto confirmado, no entra
+        if fabrica is not None and (tuple(sorted(_norm(t) for t in disparo)), texto) in fabrica:
+            continue                      # de fábrica: fuera si pediste solo los tuyos
         req = [d for d in disparo if (d or "").strip()]
         if req and all(_coincide(d, presentes) for d in req):
             out.append((len(req), texto, nsfw))
@@ -703,14 +718,14 @@ def candidatos(tags, sano=True):
     return out
 
 
-def variantes(clave, tags, sano=True, maximo=90):
+def variantes(clave, tags, sano=True, maximo=90, solo_propios=False):
     """TODOS los pies posibles para esta foto, en un orden estable.
 
     Que sean varios es el punto: con uno solo, el botón de regenerar no servía
     para nada —devolvía siempre lo mismo—. El orden depende de la foto (por eso
     dos fotos con las mismas etiquetas no arrancan igual) pero no del reloj, así
     que recargar la página no te cambia el pie: solo pedir otro."""
-    opciones = candidatos(tags, sano)
+    opciones = candidatos(tags, sano, solo_propios=solo_propios)
     if not opciones:
         return []
     # TODOS los que prendieron, no solo los más específicos. Quedándome con el
@@ -773,7 +788,7 @@ def variantes(clave, tags, sano=True, maximo=90):
     return fin[:maximo]
 
 
-def escribir(clave, tags, sano=True, evitar=None, pulir=None):
+def escribir(clave, tags, sano=True, evitar=None, pulir=None, solo_propios=False):
     """El pie para esta foto, o None si ninguna etiqueta prendió un molde.
 
     `evitar` es el pie que ya tiene puesto: se devuelve el SIGUIENTE de la lista,
@@ -782,7 +797,7 @@ def escribir(clave, tags, sano=True, evitar=None, pulir=None):
 
     Devolver None es a propósito — el que llama decide si cae al modelo o deja el
     pie vacío."""
-    vs = variantes(clave, tags, sano)
+    vs = variantes(clave, tags, sano, solo_propios=solo_propios)
     if not vs:
         return None
     # Comparar normalizando espacios Y con la MISMA transformación que se le
