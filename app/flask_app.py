@@ -763,6 +763,20 @@ EARLY_JS = """
 
 BASE_JS = """
 <script>
+/* Helpers compartidos. Estaban repetidos: `norm` y `esc` definidos dos veces, y
+   el header de fetch copiado 22 veces. Acá van una sola vez, para todas las
+   páginas. Los templates que ya los definen los pisan sin romper nada. */
+function norm(s) {          // minúsculas y sin tildes, para comparar sin exactitud
+  return (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+}
+function esc(s) {           // texto seguro para meter en innerHTML
+  return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+}
+function postForm(url, body) {   // POST de formulario -> json (el 90% de los fetch)
+  return fetch(url, {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams(body)}).then(r => r.json());
+}
 function tagAC(input, opts) {
   if (!input) return;
   opts = opts || {};
