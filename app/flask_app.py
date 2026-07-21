@@ -3885,8 +3885,9 @@ POST_LIGHTBOX = """
         <button class="secondary sm" onclick="cerrarMoldeFoto()" title="Cerrar">✕</button>
       </div>
       <p class="meta" style="margin:0 0 .4rem">El JSON con las etiquetas de esta foto. Escribí los pies
-        (uno por línea del array), copialo/editalo, y Guardá: queda como molde y se aplica a esta foto
-        (y a cualquiera con las mismas etiquetas).</p>
+        (uno por línea del array), copialo/editalo, y Guardá: queda como molde. Si le <b>agregás
+        etiquetas</b> al array <code>tags</code>, se suman también a esta foto (nunca borra las que ya
+        tiene; para sacar una, usá el gestor 🏷).</p>
       <textarea id="lb-molde-json" class="textos" spellcheck="false" rows="12" style="width:100%"></textarea>
       <div class="row" style="margin-top:.4rem">
         <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar JSON</button>
@@ -3969,6 +3970,7 @@ POST_LIGHTBOX = """
   const PEOPLE_URL = "{{ url_for('post_people', name=name) }}";
   const COMBO_URL = "{{ url_for('moldes_combo') }}";
   const IMPORT_URL = "{{ url_for('moldes_import') }}";
+  const DESDE_FOTO_URL = "{{ url_for('moldes_desde_foto', name=name) }}";
 
   const rel = () => P[idx].rel;
   const post_ = (url, body) => fetch(url, {method:'POST',
@@ -4285,11 +4287,12 @@ POST_LIGHTBOX = """
     const val = $('lb-molde-json').value;
     if (!val.trim()) { $('lb-molde-st').textContent = ' escribí algo primero'; return; }
     // no valido acá: el servidor es tolerante (saca cercas, comillas curvas,
-    // comas colgando) y acepta emojis tal cual. Si algo está roto de verdad,
-    // vuelve con un mensaje claro.
+    // comas colgando) y acepta emojis tal cual. Guarda el molde Y suma las
+    // etiquetas del JSON a la foto (unión, nunca pisa).
     $('lb-molde-st').textContent = ' guardando…';
-    post_(IMPORT_URL, {texto: val}).then(d => {     // import fusiona por defecto
+    post_(DESDE_FOTO_URL, {rel: rel(), texto: val}).then(d => {
       if (!d.ok) { $('lb-molde-st').textContent = ' ✗ ' + d.error; return; }
+      if (Array.isArray(d.tags)) PHOTO_TAGS[rel()] = d.tags;   // reflejar las nuevas
       cerrarMoldeFoto();
       genCaption();     // regenera el pie de esta foto: ahora lo trae del molde
     }).catch(e => $('lb-molde-st').textContent = ' ' + e);
@@ -7224,6 +7227,34 @@ def moldes_combo():
     nsfw = request.form.get("nsfw") == "1"
     data = moldes_mod.json_combo(tags, nsfw)
     return {"ok": True, "json": json.dumps(data, ensure_ascii=False, indent=2)}
+
+
+@app.route("/moldes/desde_foto/<name>", methods=["POST"])
+def moldes_desde_foto(name):
+    """Guarda el molde del ✍ del visor Y suma sus etiquetas a la foto.
+
+    IMPORTANTE — SOLO AGREGA, nunca pisa ni borra: las etiquetas del JSON se
+    UNEN a las que la foto ya tiene (después de la pérdida de datos de hoy, esto
+    no se negocia). Para SACAR una etiqueta de una foto está el gestor 🏷, no
+    esto."""
+    rel = request.form.get("rel", "")
+    try:
+        data = json.loads(moldes_mod.json_laxo(request.form.get("texto", "")))
+    except Exception:
+        return {"ok": False, "error": "No pude leer el JSON (revisá llaves y comillas)."}
+    try:
+        n = moldes_mod.importar(data)          # fusiona el molde (no reemplaza)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    # etiquetas del JSON -> a la foto, en UNIÓN con las que ya tiene
+    del_json = [str(t).strip() for c in (data.get("cuerpos") or [])
+                for t in (c.get("tags") or []) if str(t).strip()]
+    tags_foto = tags_mod.get_photo(name, rel)
+    if del_json:
+        # set_photo normaliza y saca duplicados; le paso EXISTENTES + nuevas, así
+        # la unión conserva todo lo previo y solo agrega lo que falta
+        tags_foto = tags_mod.set_photo(name, rel, tags_foto + del_json)
+    return {"ok": True, "cuerpos": n, "tags": tags_foto}
 
 
 @app.route("/conversiones")
