@@ -733,8 +733,15 @@ def variantes(clave, tags, sano=True, maximo=12):
         # Los cierres subidos SOLO con un cuerpo subido: si no, quedaba "Hecha
         # pomada pero contenta. Alguien va a tener que hacerse cargo." en una
         # foto de gimnasio.
-        disponibles = [c for c, nsfw in cierres()
-                       if not nsfw or (cuerpo_nsfw and not sano)]
+        # Y pasan por la MISMA regla de vínculo que el cuerpo: antes se pegaban
+        # crudos, así que un cierre con {vinculo} salía con las llaves puestas.
+        disponibles = []
+        for c, nsfw in cierres():
+            if nsfw and not (cuerpo_nsfw and not sano):
+                continue
+            c = _con_relacion(c, relacion)
+            if c is not None:      # None = pide vínculo y la persona no tiene
+                disponibles.append(c)
         out.append(texto)                     # seco, sin cierre
         for k in range(2):                    # y con dos cierres distintos
             if disponibles:
