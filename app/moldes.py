@@ -321,16 +321,34 @@ def json_laxo(texto):
     return t
 
 
-def json_combo(tags, nsfw):
+def json_combo(tags, nsfw, tags_perfil=None):
     """El dict importable para UNA combinación exacta: el molde que ya exista para
     esas etiquetas+registro, o un esqueleto con pies vacíos si es nueva. Lo usa el
-    botón "armar pie" del visor: se abre con las etiquetas de la foto ya puestas."""
+    botón "armar pie" del visor: se abre con las etiquetas de la foto ya puestas.
+
+    `tags_perfil` son las heredadas de la persona (relación: "hermana", "mujer").
+    Van en un campo APARTE (`tags_perfil`) porque cumplen dos roles distintos:
+    disparan el molde igual que las otras —el motor matchea contra perfil+foto—
+    pero NO se le agregan a la foto al guardar, porque ya viven en el perfil.
+    Así podés escribir el pie sabiendo que es tu hermana, sin ensuciar la foto."""
     tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
-    clave = tuple(sorted(_norm(t) for t in tags))
+    perfil = [str(t).strip() for t in (tags_perfil or []) if str(t).strip()]
+    # el molde se busca/guarda por el conjunto COMPLETO (perfil + foto)
+    clave = tuple(sorted(_norm(t) for t in perfil + tags))
+
+    def armar(textos, nsfw_):
+        c = {}
+        if perfil:
+            c["tags_perfil"] = perfil
+        c["tags"] = tags
+        c["textos"] = textos
+        c["nsfw"] = bool(nsfw_)
+        return {"cuerpos": [c]}
+
     for t, textos, n, _ in combinaciones():
         if bool(n) == bool(nsfw) and tuple(sorted(_norm(x) for x in t)) == clave:
-            return {"cuerpos": [{"tags": t, "textos": textos, "nsfw": bool(n)}]}
-    return {"cuerpos": [{"tags": tags, "textos": ["", "", ""], "nsfw": bool(nsfw)}]}
+            return armar(textos, n)
+    return armar(["", "", ""], nsfw)
 
 
 def exportar():
@@ -362,7 +380,10 @@ def importar(data, reemplazar=False):
     for c in (data.get("cuerpos") or []):
         if not isinstance(c, dict):
             continue
-        tags = [str(t).strip() for t in (c.get("tags") or []) if str(t).strip()]
+        # el disparador del molde es perfil + foto: las de perfil (relación) valen
+        # igual para prender, el motor matchea contra las efectivas de la foto
+        tags = [str(t).strip() for t in ((c.get("tags_perfil") or []) + (c.get("tags") or []))
+                if str(t).strip()]
         # acepta las dos formas: `textos` (array, nuevo) o `texto` (str, viejo)
         if isinstance(c.get("textos"), list):
             textos = [str(x).strip() for x in c["textos"] if str(x).strip()]

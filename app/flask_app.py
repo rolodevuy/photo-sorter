@@ -3889,10 +3889,12 @@ POST_LIGHTBOX = """
         <b style="font-size:1.05rem">✍ Molde de pie de esta foto</b>
         <button class="secondary sm" onclick="cerrarMoldeFoto()" title="Cerrar">✕</button>
       </div>
-      <p class="meta" style="margin:0 0 .4rem">El JSON con las etiquetas de esta foto. Escribí los pies
-        (uno por línea del array), copialo/editalo, y Guardá: queda como molde. Si le <b>agregás
-        etiquetas</b> al array <code>tags</code>, se suman también a esta foto (nunca borra las que ya
-        tiene; para sacar una, usá el gestor 🏷).</p>
+      <p class="meta" style="margin:0 0 .4rem">Escribí los pies (uno por línea del array), copialo o
+        editalo, y Guardá: queda como molde.<br>
+        <code>tags_perfil</code> = lo heredado de la persona (relación: <i>hermana</i>, <i>mujer</i>).
+        Dispara el molde pero <b>no</b> se agrega a la foto.<br>
+        <code>tags</code> = las de esta foto. Si le agregás acá, <b>se suman también a la foto</b>
+        (nunca borra las que ya tiene; para sacar una, usá el gestor 🏷).</p>
       <textarea id="lb-molde-json" class="textos" spellcheck="false" rows="12" style="width:100%"></textarea>
       <div class="row" style="margin-top:.4rem">
         <button class="secondary" onclick="copiarMoldeFoto()">📋 Copiar JSON</button>
@@ -4262,7 +4264,10 @@ POST_LIGHTBOX = """
     const nsfw = ('/' + r).split('/').includes('_nsfw');   // el registro sale de la carpeta
     $('lb-molde-modal').style.display = 'flex';
     $('lb-molde-json').value = ''; $('lb-molde-st').textContent = ' cargando…';
-    post_(COMBO_URL, {tags: tags.join(','), nsfw: nsfw ? '1' : '0'}).then(d => {
+    // las del perfil (relación: hermana, mujer…) van aparte: sirven para
+    // disparar el molde, pero no se le agregan a la foto
+    post_(COMBO_URL, {tags: tags.join(','), perfil: (PERSON_TAGS || []).join(','),
+                      nsfw: nsfw ? '1' : '0'}).then(d => {
       $('lb-molde-json').value = d.json || '';
       $('lb-molde-st').textContent = '';
     }).catch(e => $('lb-molde-st').textContent = ' ' + e);
@@ -7229,8 +7234,9 @@ def moldes_combo():
     """El JSON de UNA combinación (para el botón "armar pie" del visor): el molde
     que exista para esas etiquetas, o un esqueleto vacío."""
     tags = [t.strip() for t in request.form.get("tags", "").split(",") if t.strip()]
+    perfil = [t.strip() for t in request.form.get("perfil", "").split(",") if t.strip()]
     nsfw = request.form.get("nsfw") == "1"
-    data = moldes_mod.json_combo(tags, nsfw)
+    data = moldes_mod.json_combo(tags, nsfw, tags_perfil=perfil)
     return {"ok": True, "json": json.dumps(data, ensure_ascii=False, indent=2)}
 
 
@@ -7251,7 +7257,10 @@ def moldes_desde_foto(name):
         n = moldes_mod.importar(data)          # fusiona el molde (no reemplaza)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
-    # etiquetas del JSON -> a la foto, en UNIÓN con las que ya tiene
+    # etiquetas del JSON -> a la foto, en UNIÓN con las que ya tiene.
+    # SOLO `tags` (las de la foto): `tags_perfil` (relación: hermana, mujer) se
+    # ignora acá a propósito — ya vive en el perfil y la hereda toda la persona,
+    # meterla en cada foto sería duplicarla.
     del_json = [str(t).strip() for c in (data.get("cuerpos") or [])
                 for t in (c.get("tags") or []) if str(t).strip()]
     tags_foto = tags_mod.get_photo(name, rel)
