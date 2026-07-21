@@ -2718,6 +2718,7 @@ def known_forget():
         tags_mod.forget_person(name)      # etiquetas
         posts_mod.forget_person(name)     # pies y comentarios
         person_meta.forget(name)          # fechas y su voz
+        procesadas.olvidar(name)          # el registro de "ya pasó por la IA"
     return redirect(url_for("known_page", msg=f"Se olvidó a {name}."))
 
 
@@ -3273,6 +3274,16 @@ PERSON_TEMPLATE = """
         {% endif %}
       </details>
       {% endif %}
+
+      {# destructivo: va último y separado, para no apretarlo de paso #}
+      <hr class="pcfg-sep">
+      <form method="post" action="{{ url_for('known_forget') }}" style="margin:0">
+        <input type="hidden" name="name" value="{{ name }}">
+        <button class="pcfg-item" style="color:var(--red)"
+                onclick="return confirm('Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios.\n\nLAS FOTOS NO SE BORRAN: quedan en su carpeta.\n\n¿Seguro?')">
+          🗑 Eliminar perfil y rostro…
+        </button>
+      </form>
     </div>
 
     {# Las etiquetas de la persona salieron del hero: se manejan en ⚙ → Gestor de
