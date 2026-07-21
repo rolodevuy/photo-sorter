@@ -741,13 +741,24 @@ def escribir(clave, tags, sano=True, evitar=None):
     vs = variantes(clave, tags, sano)
     if not vs:
         return None
-    actual = (evitar or "").strip()
-    if actual in vs:
-        return vs[(vs.index(actual) + 1) % len(vs)]
-    if actual:
-        # tenía un pie que no salió de un molde (lo escribió el modelo, o lo
-        # editaste a mano): se arranca por el primero
+    # Comparar normalizando espacios: el pie guardado puede diferir del molde por
+    # un espacio de más y entonces no se encontraba en la lista. Antes eso caía
+    # en vs[0] SIEMPRE, así que regenerar devolvía una y otra vez el mismo pie.
+    def limpio(t):
+        return " ".join((t or "").split())
+
+    actual = limpio(evitar)
+    if not actual:
         return vs[0]
+    norm = [limpio(v) for v in vs]
+    if actual in norm:
+        return vs[(norm.index(actual) + 1) % len(vs)]
+    # el pie que había no salió de un molde (lo escribió el modelo, o lo editaste
+    # a mano): devolver el primero que sea DISTINTO al que ya está puesto, para
+    # que regenerar siempre cambie algo
+    for v, n in zip(vs, norm):
+        if n != actual:
+            return v
     return vs[0]
 
 
