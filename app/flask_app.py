@@ -6856,6 +6856,25 @@ MOLDES_TEMPLATE = """
 <h1>✍ Pies de foto <span class="hint-ico" title="El pie lo arman tus moldes, al instante, sin IA (probamos seis modelos y ninguno sonaba natural). Un molde se dispara cuando la foto tiene todas sus etiquetas. Escribí en rioplatense, en primera persona («no me quiero ir más»). Los de 🔞 solo salen con la persona marcada adulto. Truco de género: poné @ donde cambia (pelirroj@, pervertid@) y prende con las dos formas. Sin @ no se mezcla nada (manzano ≠ manzana).">ⓘ</span></h1>
 {% if message %}<div class="msg">{{ message }}</div>{% endif %}
 
+{% if cob %}
+<div class="panel">
+  <b>📊 Cobertura de pies <span class="hint-ico" title="Cuántas de tus fotos reciben un pie de molde (instantáneo) y cuántas caen al modelo (lento y narrado). Abajo, las combinaciones que más fotos destraban si les escribís un molde.">ⓘ</span></b>
+  <div class="row" style="margin:.4rem 0; gap:1.2rem">
+    <span><b style="font-size:1.3rem">{{ cob.con_molde }}</b> <span class="meta">con molde</span></span>
+    <span><b style="font-size:1.3rem; color:var(--amb)">{{ cob.sin_molde }}</b> <span class="meta">caen al modelo</span></span>
+    <span><b style="font-size:1.3rem; color:var(--mut)">{{ cob.sin_tags }}</b> <span class="meta">sin etiquetar</span></span>
+  </div>
+  {% if cob.faltan %}
+  <p class="meta" style="margin:.3rem 0 .2rem">Combinaciones que más te rinde escribir (fotos que destraba cada una):</p>
+  <div>
+    {% for combo, n in cob.faltan %}
+    <span class="mo-hueco" onclick="moDesdeCombo(this)" data-combo="{{ combo|e }}">{{ combo }} <b>{{ n }}</b></span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if huecos %}
 <div class="panel" style="border-color:var(--amb)">
   <b>⚠ Etiquetas tuyas que todavía no tienen molde</b>
@@ -7019,6 +7038,11 @@ function moAgregar(tags, textos, nsfw) {
   const row = moFilaCuerpo(tags, textos, nsfw);
   mog('mo-lista').appendChild(row); moContar();
   return row;
+}
+function moDesdeCombo(el) {    // clic en una combinación sin cubrir: la abre en el modal
+  cmbAbrir();
+  (el.dataset.combo || '').split(',').map(s => s.trim()).filter(Boolean).forEach(cmbAdd);
+  cmbArmar();
 }
 function moDesdeHueco(tag) {   // clic en una etiqueta sin molde: arranca un molde con ella
   const row = moAgregar(tag, '', false);
@@ -7264,11 +7288,20 @@ def moldes_page():
     # etiquetas "vivas": las que de verdad están en fotos, con en cuántas. Para el
     # buscador del modal de combinaciones (así se ve qué se usa y qué no).
     vivas = sorted(conteo.items(), key=lambda kv: (-kv[1], kv[0]))
+    # cobertura: por cada foto etiquetada, ¿le prende algún molde o cae al modelo?
+    fotos_cob = []
+    for clave, _ in tags_mod.all_photo_entries():
+        if "/" not in clave:
+            continue
+        persona, rel = clave.split("/", 1)
+        fotos_cob.append((tags_mod.effective_photo(persona, rel),
+                          posts_mod.identidad_foto(persona, rel)["sano"]))
+    cob = moldes_mod.cobertura_de(fotos_cob) if fotos_cob else None
     return render_template_string(
         shell("moldes", MOLDES_TEMPLATE),
         cuerpos=moldes_mod.combinaciones(), cierres=moldes_mod.cierres(),
         alias=sorted(moldes_mod.alias().items(), key=lambda kv: kv[0]),
-        vivas=vivas,
+        vivas=vivas, cob=cob,
         huecos=moldes_mod.huecos(conteo)[:40],
         message=request.args.get("msg", ""))
 

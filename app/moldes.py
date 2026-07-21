@@ -833,6 +833,31 @@ def _es_atributo(tag):
             or any(n.startswith(p) for p in _PREFIJOS_ATRIBUTO))
 
 
+def cobertura_de(fotos):
+    """Cuántas fotos tienen molde y cuántas caen al modelo.
+
+    `fotos` = [(tags_efectivas, sano)]. Devuelve {con_molde, sin_molde, sin_tags}
+    más las COMBINACIONES sin cubrir ordenadas por cuántas fotos destraba cada
+    una: eso convierte "escribí moldes hasta que se sienta bien" en una lista de
+    tareas con impacto medible."""
+    from collections import Counter
+    res = {"con_molde": 0, "sin_molde": 0, "sin_tags": 0}
+    faltan = Counter()
+    for tags, sano in fotos:
+        sit = _situacionales(tags)
+        if not sit:
+            res["sin_tags"] += 1
+            continue
+        if candidatos(tags, sano):
+            res["con_molde"] += 1
+        else:
+            res["sin_molde"] += 1
+            # la combinación que habría que escribir (hasta 3, las situacionales)
+            faltan[", ".join(sorted(sit)[:3])] += 1
+    res["faltan"] = faltan.most_common(20)
+    return res
+
+
 def huecos(conteo_por_tag):
     """De {etiqueta: en cuántas fotos aparece}, las que NO prenden ningún molde,
     ordenadas por las que más rinden. Sirven de sugerencia de dónde escribir.
