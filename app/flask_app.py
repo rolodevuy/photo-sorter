@@ -86,6 +86,18 @@ def _sin_cache_html(resp):
     return resp
 
 
+@app.route("/estatico/base.css")
+def base_css():
+    """El CSS común, servido aparte para que el navegador lo cachee.
+
+    Antes iba embebido en cada página: 537 líneas repetidas en cada carga (el
+    perfil pesaba 145 KB). Ahora se baja una vez. El ?v= del enlace lleva el
+    hash del CSS, así que si lo editás cambia la URL y se ve al instante — no
+    hay que acordarse de vaciar la caché."""
+    return Response(BASE_CSS, mimetype="text/css",
+                    headers={"Cache-Control": "public, max-age=31536000"})
+
+
 @app.route("/debug/jserror", methods=["POST"])
 def debug_jserror():
     """Los errores de JS del navegador llegan acá y se imprimen en esta
@@ -681,7 +693,12 @@ BASE_CSS = """
   }
 """
 
-# Cuántas fotos por página en la galería de una persona. Sin paginar, 1500 fotos
+# Versión del CSS = hash de su contenido. Va en el ?v= del <link>: si editás el
+# CSS cambia la URL y el navegador lo vuelve a pedir, sin tener que acordarse de
+# vaciar la caché (y sin perder el cacheo del resto del tiempo).
+CSS_VER = hashlib.sha1(BASE_CSS.encode("utf-8")).hexdigest()[:10]
+
+# Cuántas fotos por página en la galería de una persona. Sin paginar, 1500fotos
 # son 1500 <select> con toda la gente adentro y el navegador se arrastra.
 PER_OPTIONS = [10, 20, 50, 100]
 PER_DEFAULT = 50
@@ -839,7 +856,10 @@ def shell(active, inner, head_extra=""):
         '<!doctype html><html lang="es"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>photo-sorter</title>" + EARLY_JS + BASE_JS + head_extra +
-        "<style>" + BASE_CSS + "</style></head><body>"
+        # el CSS va por su propia URL para que el navegador lo cachee; el ?v= es
+        # el hash del contenido, así editarlo se ve al instante
+        '<link rel="stylesheet" href="/estatico/base.css?v=' + CSS_VER + '">'
+        "</head><body>"
         '<div class="app">' + _nav_html(active) + '<main class="main">'
         + inner +
         "</main></div>" + UNDO_FAB + CONFIRM_JS + "</body></html>")
