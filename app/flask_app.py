@@ -843,7 +843,7 @@ def shell(active, inner, head_extra=""):
 # Va en TODAS las páginas (dentro del shell). Chequea al cargar y expone
 # window.refrescarUndo() para que las acciones AJAX lo muestren en el momento.
 UNDO_FAB = """
-<div id="undo-fab" style="display:none; position:fixed; left:1rem; bottom:1rem; z-index:500">
+<div id="undo-fab" style="display:none; position:fixed; left:50%; transform:translateX(-50%); bottom:1rem; z-index:18">
   <button onclick="hacerUndo()" title="Deshacer la última acción"
     style="background:var(--pan); color:var(--tx); border:1px solid var(--bd);
     border-radius:999px; padding:.55rem 1rem; cursor:pointer; font-size:.9rem;
