@@ -2183,8 +2183,10 @@ SETTINGS_TEMPLATE = """
       <textarea class="path" name="prompt_externo" rows="4" style="width:100%"
         placeholder='ej: Escribí 3 pies de foto en primera persona, español rioplatense, usando SOLO estas palabras: $etiquetas'>{{ prompt_externo }}</textarea>
       <p class="meta">Desde el <b>✍</b> de una foto, el botón <b>"📋 Copiar prompt"</b> copia este texto
-        con <code>$etiquetas</code> reemplazado por las etiquetas de esa foto, entre comillas y comas
-        (<code>"pelo largo", "buzo negro"</code>). Para pegarlo en la IA que quieras y traerte los pies.</p>
+        reemplazando las variables. Para pegarlo en la IA que quieras y traerte los pies.<br>
+        <code>$etiquetas</code> → las de esa foto: <code>"playa", "sol", "bikini"</code><br>
+        <code>$perfil</code> → las del perfil: <code>"mujer", "adulto", "hermana"</code><br>
+        <code>$relacion</code> → solo el vínculo: <code>hermana</code> (vacío si no tiene)</p>
     </div>
 
     <details class="lote"><summary>Filtros por palabras (avanzado)</summary>
@@ -3464,6 +3466,7 @@ let PERSON_TAGS = {{ person_tags|tojson }};
 let FAVS = {{ favs_tags|tojson }};             // tus favoritas (persona + globales)
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
 const PROMPT_TPL = {{ prompt_externo|tojson }};   // plantilla de Ajustes ($etiquetas)
+const RELACION = {{ relacion|tojson }};           // vínculo de esta persona, o ""
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
 
@@ -4286,10 +4289,12 @@ POST_LIGHTBOX = """
     if (!PROMPT_TPL || !PROMPT_TPL.trim()) {
       $('lb-molde-st').textContent = ' ✗ configurá el prompt en Ajustes primero'; return;
     }
-    const tags = PHOTO_TAGS[rel()] || [];
     // "pelo largo", "buzo negro" — comillas y comas; escapo comillas internas
-    const lista = tags.map(t => '"' + String(t).replace(/"/g, '\\"') + '"').join(', ');
-    const texto = PROMPT_TPL.split('$etiquetas').join(lista);
+    const comillas = a => (a || []).map(t => '"' + String(t).replace(/"/g, '\\"') + '"').join(', ');
+    const texto = PROMPT_TPL
+      .split('$etiquetas').join(comillas(PHOTO_TAGS[rel()]))   // las de la foto
+      .split('$perfil').join(comillas(PERSON_TAGS))            // las del perfil
+      .split('$relacion').join(RELACION || '');                // el vínculo, solo
     navigator.clipboard.writeText(texto).then(
       () => $('lb-molde-st').textContent = ' ✓ prompt copiado',
       () => { const ta = document.createElement('textarea'); ta.value = texto;
@@ -4870,6 +4875,8 @@ def person_page(name):
         favs_tags=tags_mod.favs_efectivas(name),
         photo_tags=photo_tags,
         prompt_externo=load_config().get("prompt_externo", ""),
+        # el vínculo de esta persona (hermana, novia…), para las variables del prompt
+        relacion=moldes_mod.relacion_de(tags_mod.get_person(name)) or "",
         all_tags=tags_mod.all_tags(),
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
         filter_con=filter_con,         # filtro por co-aparición (👥 también aparece X)

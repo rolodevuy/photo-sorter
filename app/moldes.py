@@ -494,26 +494,64 @@ _RELACIONES = {
     "jefa", "jefe", "profesora", "profesor", "alumna", "alumno",
 }
 
+# Diminutivo de cada vínculo, para {relacionita}. Explícito y no por regla: en
+# español son irregulares (amiga -> amiguita, no "amigita"). Los que no tienen un
+# diminutivo natural quedan afuera a propósito: se cae al vínculo tal cual antes
+# que inventar una palabra rara.
+_RELACION_DIM = {
+    "hermana": "hermanita", "hermano": "hermanito",
+    "mamá": "mamita", "mama": "mamita", "madre": "mamita",
+    "papá": "papito", "papa": "papito", "padre": "papito",
+    "tía": "tiíta", "tia": "tiíta", "tío": "tiíto", "tio": "tiíto",
+    "prima": "primita", "primo": "primito",
+    "abuela": "abuelita", "abuelo": "abuelito",
+    "sobrina": "sobrinita", "sobrino": "sobrinito",
+    "cuñada": "cuñadita", "cuñado": "cuñadito",
+    "suegra": "suegrita", "suegro": "suegrito",
+    "hija": "hijita", "hijo": "hijito", "nieta": "nietita", "nieto": "nietito",
+    "novia": "noviecita", "novio": "noviecito",
+    "esposa": "esposita", "esposo": "esposito",
+    "amiga": "amiguita", "amigo": "amiguito",
+    "compañera": "compañerita", "compañero": "compañerito",
+    "vecina": "vecinita", "vecino": "vecinito",
+    "jefa": "jefita", "jefe": "jefecito",
+    "alumna": "alumnita", "alumno": "alumnito",
+}
+_DIM_NORM = {_norm(k): v for k, v in _RELACION_DIM.items()}
+
 _VAR_RELACION = "{relacion}"
+_VAR_RELACION_DIM = "{relacionita}"
 
 
-def _relacion_de(tags):
+def relacion_de(tags):
     """La primera etiqueta que sea un vínculo (hermana, novia…), tal cual está
     escrita. None si la persona no tiene ninguna."""
+    conocidas = {_norm(r) for r in _RELACIONES}
     for t in tags or []:
-        if _norm(t) in {_norm(r) for r in _RELACIONES}:
+        if _norm(t) in conocidas:
             return t
     return None
 
 
+def dim_relacion(relacion):
+    """El vínculo en diminutivo: prima -> primita. No hace falta tenerlo en el
+    perfil. Si no hay uno natural en la tabla, devuelve el vínculo tal cual."""
+    if not relacion:
+        return None
+    return _DIM_NORM.get(_norm(relacion), relacion)
+
+
 def _con_relacion(texto, relacion):
-    """Reemplaza {relacion} por el vínculo. Devuelve None si el texto la pide y
-    la persona no tiene vínculo: mejor no usar ese pie que escribir
-    "con mi {relacion}" o inventar un parentesco que no es."""
-    if _VAR_RELACION not in texto:
+    """Reemplaza {relacion} y {relacionita} por el vínculo (y su diminutivo).
+    Devuelve None si el texto los pide y la persona no tiene vínculo: mejor no
+    usar ese pie que escribir "con mi {relacion}" o inventar un parentesco."""
+    if _VAR_RELACION not in texto and _VAR_RELACION_DIM not in texto:
         return texto
     if not relacion:
         return None
+    # el diminutivo primero; igual no se pisan ({relacion} no está dentro de
+    # {relacionita}, porque después de "relacion" va "ita" y no "}")
+    texto = texto.replace(_VAR_RELACION_DIM, dim_relacion(relacion))
     return texto.replace(_VAR_RELACION, relacion)
 
 
@@ -598,7 +636,7 @@ def variantes(clave, tags, sano=True, maximo=12):
     empatados = top[corte:] + top[:corte] + resto
 
     # el vínculo de ESTA persona (hermana, novia…), para la variable {relacion}
-    relacion = _relacion_de(tags)
+    relacion = relacion_de(tags)
     out = []
     for j, (texto, cuerpo_nsfw) in enumerate(empatados):
         # un pie que pide {relacion} en alguien sin vínculo se descarta: mejor
