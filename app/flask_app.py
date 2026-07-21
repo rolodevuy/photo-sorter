@@ -3279,8 +3279,11 @@ PERSON_TEMPLATE = """
       <hr class="pcfg-sep">
       <form method="post" action="{{ url_for('known_forget') }}" style="margin:0">
         <input type="hidden" name="name" value="{{ name }}">
+        {# OJO: nada de \\n en el confirm. Esto es un string de Python, así que
+           \\n se convierte en un salto de línea REAL dentro del onclick y parte
+           el string de JS al medio: rompe el atributo y todo lo que sigue. #}
         <button class="pcfg-item" style="color:var(--red)"
-                onclick="return confirm('Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios.\n\nLAS FOTOS NO SE BORRAN: quedan en su carpeta.\n\n¿Seguro?')">
+                onclick="return confirm('Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios. LAS FOTOS NO SE BORRAN, quedan en su carpeta. ¿Seguro?')">
           🗑 Eliminar perfil y rostro…
         </button>
       </form>
