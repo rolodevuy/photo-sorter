@@ -56,6 +56,7 @@ from app import interrogator, vlm
 from app import sexpos
 from app import moldes as moldes_mod
 from app import posts as posts_mod
+from app import procesadas
 from app import phrases as phrases_mod
 from app.organizer import organize
 from app.renamer import apply_rename, plan_rename
@@ -5435,6 +5436,7 @@ def _tags_worker(name, rels, cfg):
             if nuevas:
                 tags_mod.set_photo(name, rel, propias + nuevas)
                 TAGS_STATE["ultimos"] = ([f"{rel}: {', '.join(nuevas)}"] + TAGS_STATE["ultimos"])[:5]
+            procesadas.marcar(name, rel, len(nuevas))   # aunque hayan sido 0
             TAGS_STATE["hechas"] += 1
         except Exception as e:
             # una foto que falla no puede cortar el lote entero
@@ -5892,13 +5894,18 @@ def tags_suggest_stream(name):
                                       "acto": True}) + "\n"
             except Exception:
                 pass
+        n = 0
         try:
             for tag in vlm.suggest_tags_stream(str(path), model=model, quien=name,
                                                crudo=not sano, evitar=ev_local):
+                n += 1
                 nueva = len(tag.split()) == 1 and tag.lower() not in conocidas
                 yield json.dumps({"tag": tag, "nueva": nueva}) + "\n"
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"
+        else:
+            # solo si NO hubo error: la foto pasó por el modelo (aunque n sea 0)
+            procesadas.marcar(name, rel, n)
 
     return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
 
@@ -6048,7 +6055,18 @@ function pbPersona() {
       im.onmouseleave = pbHoverHide;
       w.appendChild(im);
       if (f.nsfw) { const b = document.createElement('span'); b.className = 'pbthumb-nsfw'; b.textContent = '🔞'; w.appendChild(b); }
-      if (f.tagged) { ndone++; const t = document.createElement('span'); t.className = 'pbthumb-done'; t.textContent = '✓'; t.title = 'ya tiene etiquetas'; w.appendChild(t); }
+      if (f.tagged) {
+        ndone++;
+        const t = document.createElement('span'); t.className = 'pbthumb-done';
+        // n_ia === 0: pasó por la IA y volvió VACÍA. Se marca distinto para poder
+        // reintentarla a propósito en vez de darla por hecha.
+        const vacia = f.n_ia === 0;
+        t.textContent = vacia ? '∅' : '✓';
+        if (vacia) t.style.background = 'var(--amb)';
+        t.title = (vacia ? 'la IA no devolvió etiquetas' : 'ya pasó por la IA (' + f.n_ia + ')')
+                  + (f.fecha_ia ? ' · ' + f.fecha_ia : '');
+        w.appendChild(t);
+      }
       box.appendChild(w);
     });
     pbg('pb-done-n').textContent = ndone;
@@ -6432,10 +6450,16 @@ def probador_fotos(name):
     if not library:
         return {"ok": False, "fotos": []}
     fotos = []
+    # el ✓ marca "ya pasó por el modelo", no "tiene etiquetas": una puesta a mano
+    # no cuenta, y una que el modelo devolvió vacía SÍ (para no repetirla)
+    hechas = procesadas.de_persona(name)
     for rel in person_photos(library, name) + person_photos(library, name, only_nsfw=True):
+        marca = hechas.get(rel)
         fotos.append({"rel": rel, "nsfw": NSFW_DIR_NAME in Path(rel).parts,
-                      # ya tiene etiquetas propias guardadas = "ya etiquetada" (✓)
-                      "tagged": bool(tags_mod.get_photo(name, rel)),
+                      "tagged": marca is not None,
+                      # 0 = pasó por la IA pero no devolvió nada (se puede reintentar)
+                      "n_ia": (marca or {}).get("n"),
+                      "fecha_ia": (marca or {}).get("fecha"),
                       "thumb": url_for("person_thumb", name=name, rel=rel),
                       "url": url_for("person_photo", name=name, rel=rel)})
     return {"ok": True, "fotos": fotos}
@@ -6501,6 +6525,9 @@ def probador_etiquetar():
             pares = vlm.suggest_tags_pairs(str(path), model=model, quien=name,
                                            crudo=crudo, evitar=evitar)
             pares = _acto_pares(str(path), crudo, name, pares, evitar) + pares
+            # queda anotado que ESTA foto ya pasó por el modelo, aunque haya
+            # vuelto con 0 etiquetas (ese caso antes se perdía y la repetías)
+            procesadas.marcar(name, rel, len(pares))
             return {"ok": True, "pares": pares}
         except Exception as e:
             return {"ok": False, "error": str(e)}
