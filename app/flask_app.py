@@ -2199,7 +2199,8 @@ SETTINGS_TEMPLATE = """
         reemplazando las variables. Para pegarlo en la IA que quieras y traerte los pies.<br>
         <code>$etiquetas</code> → las de esa foto: <code>"playa", "sol", "bikini"</code><br>
         <code>$perfil</code> → las del perfil: <code>"mujer", "adulto", "hermana"</code><br>
-        <code>$relacion</code> → solo el vínculo: <code>hermana</code> (vacío si no tiene)</p>
+        <code>$vinculo</code> → lo que <b>es ella</b> para vos: <code>prima</code><br>
+        <code>$relacion</code> → cómo <b>te llama a vos</b>: <code>primo</code> (necesita tu género)</p>
     </div>
 
     <details class="lote"><summary>Filtros por palabras (avanzado)</summary>
@@ -3483,7 +3484,8 @@ let PERSON_TAGS = {{ person_tags|tojson }};
 let FAVS = {{ favs_tags|tojson }};             // tus favoritas (persona + globales)
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
 const PROMPT_TPL = {{ prompt_externo|tojson }};   // plantilla de Ajustes ($etiquetas)
-const RELACION = {{ relacion|tojson }};           // vínculo de esta persona, o ""
+const VINCULO = {{ vinculo|tojson }};             // lo que ES ella (prima), o ""
+const RELACION = {{ relacion|tojson }};           // cómo te llama a vos (primo), o ""
 const PTAGS_URL = "{{ url_for('tags_person', name=name) }}";
 const PHOTOTAG_URL = "{{ url_for('tags_photo', name=name) }}";
 
@@ -4302,7 +4304,8 @@ POST_LIGHTBOX = """
     const texto = PROMPT_TPL
       .split('$etiquetas').join(comillas(PHOTO_TAGS[rel()]))   // las de la foto
       .split('$perfil').join(comillas(PERSON_TAGS))            // las del perfil
-      .split('$relacion').join(RELACION || '');                // el vínculo, solo
+      .split('$vinculo').join(VINCULO || '')                   // lo que ES ella: prima
+      .split('$relacion').join(RELACION || '');                // cómo te llama: primo
     navigator.clipboard.writeText(texto).then(
       () => $('lb-molde-st').textContent = ' ✓ prompt copiado',
       () => { const ta = document.createElement('textarea'); ta.value = texto;
@@ -4859,6 +4862,8 @@ def person_page(name):
     # etiquetas propias de cada foto mostrada (para renderizarlas en la grilla)
     photo_tags = {f["rel"]: tags_mod.get_photo(name, f["rel"]) for f in display}
     photo_tags = {k: v for k, v in photo_tags.items() if v}
+    # el vínculo de esta persona (hermana, prima…), del perfil
+    _vinc_persona = moldes_mod.relacion_de(tags_mod.get_person(name)) or ""
     return render_template_string(
         shell("known", PERSON_TEMPLATE),
         name=name,
@@ -4883,8 +4888,10 @@ def person_page(name):
         favs_tags=tags_mod.favs_efectivas(name),
         photo_tags=photo_tags,
         prompt_externo=load_config().get("prompt_externo", ""),
-        # el vínculo de esta persona (hermana, novia…), para las variables del prompt
-        relacion=moldes_mod.relacion_de(tags_mod.get_person(name)) or "",
+        # variables de vínculo para el prompt, con el MISMO sentido que en los
+        # moldes: $vinculo = lo que ES ella; $relacion = cómo te llama a vos
+        vinculo=_vinc_persona,
+        relacion=(moldes_mod.relacion_para_duenio(_vinc_persona) or "") if _vinc_persona else "",
         all_tags=tags_mod.all_tags(),
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
         filter_con=filter_con,         # filtro por co-aparición (👥 también aparece X)
