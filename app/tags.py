@@ -55,6 +55,8 @@ def _load():
 
 def _save(data):
     TAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    from app import respaldo
+    respaldo.respaldar(TAGS_PATH)        # copia la versión buena antes de pisar
     # limpiar entradas vacías para no acumular basura
     data["people"] = {k: v for k, v in data["people"].items() if v}
     data["photos"] = {k: v for k, v in data["photos"].items() if v}

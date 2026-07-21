@@ -26,6 +26,8 @@ def load_config():
 
 def save_config(cfg):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    from app import respaldo
+    respaldo.respaldar(CONFIG_PATH)      # copia la versión buena antes de pisar
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
