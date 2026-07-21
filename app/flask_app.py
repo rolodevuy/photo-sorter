@@ -7166,9 +7166,13 @@ def moldes_export():
 
 @app.route("/cierres/export")
 def cierres_export():
-    """Baja SOLO los cierres como .json (emojis tal cual, sin escapar)."""
-    data = json.dumps([{"texto": x, "nsfw": n} for x, n in moldes_mod.cierres()],
-                       ensure_ascii=False, indent=2)
+    """Baja SOLO los cierres como .json (emojis tal cual, sin escapar).
+
+    Sale envuelto en {"cierres": [...]} — la misma forma que espera el importador,
+    así el botón "Importar archivo" los trae de vuelta. Antes bajaba un array
+    pelado que el importador rechazaba: exportar no servía para nada."""
+    data = json.dumps({"cierres": [{"texto": x, "nsfw": n} for x, n in moldes_mod.cierres()]},
+                      ensure_ascii=False, indent=2)
     return Response(data, mimetype="application/json",
                     headers={"Content-Disposition":
                              "attachment; filename=cierres.json"})
