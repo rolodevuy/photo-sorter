@@ -842,12 +842,31 @@ def shell(active, inner, head_extra=""):
         "<style>" + BASE_CSS + "</style></head><body>"
         '<div class="app">' + _nav_html(active) + '<main class="main">'
         + inner +
-        "</main></div>" + UNDO_FAB + "</body></html>")
+        "</main></div>" + UNDO_FAB + CONFIRM_JS + "</body></html>")
 
 
 # Botón flotante "↩ Deshacer": aparece si el servidor tiene algo para revertir.
 # Va en TODAS las páginas (dentro del shell). Chequea al cargar y expone
 # window.refrescarUndo() para que las acciones AJAX lo muestren en el momento.
+# Confirmaciones por data-confirm en vez de onclick/onsubmit="confirm('…')".
+# Un nombre o etiqueta con apóstrofo ("Iara D'Angelo") partía el string de JS y
+# rompía el atributo entero, y con él el HTML que seguía. En un atributo normal
+# el escapado lo hace el navegador y no hay nada que romper.
+CONFIRM_JS = """
+<script>
+document.addEventListener('submit', e => {
+  const m = e.target.getAttribute && e.target.getAttribute('data-confirm');
+  if (m && !confirm(m)) e.preventDefault();
+}, true);
+document.addEventListener('click', e => {
+  const el = e.target.closest && e.target.closest('[data-confirm]');
+  if (el && el.tagName === 'BUTTON' && !confirm(el.getAttribute('data-confirm'))) {
+    e.preventDefault(); e.stopPropagation();
+  }
+}, true);
+</script>"""
+
+
 UNDO_FAB = """
 <div id="undo-fab" style="display:none; position:fixed; left:50%; transform:translateX(-50%); bottom:1rem; z-index:18">
   <button onclick="hacerUndo()" title="Deshacer la última acción"
@@ -1460,7 +1479,7 @@ RENAME_TEMPLATE = """
       <input type="hidden" name="digits" value="{{ f.digits }}">
       <input type="hidden" name="start" value="{{ f.start }}">
       <input type="hidden" name="order" value="{{ f.order }}">
-      <button class="apply" onclick="return confirm('Se renombrarán {{ total }} archivo(s). ¿Continuar?')">
+      <button class="apply" data-confirm="Se renombrarán {{ total }} archivo(s). ¿Continuar?">
         ✏️ Renombrar {{ total }} archivo(s)
       </button>
       <span class="meta">Esto cambia los nombres reales en el disco.</span>
@@ -1964,7 +1983,7 @@ function bulk(accion) {
       <div class="pname">{{ p.name }}</div>
       <div class="pfill"></div>
       <form method="post" action="{{ url_for('known_forget') }}"
-            onsubmit="return confirm('¿Olvidar a {{ p.name }}? Se dejará de reconocer sola.')">
+            data-confirm="¿Olvidar a {{ p.name }}? Se dejará de reconocer sola.">
         <input type="hidden" name="name" value="{{ p.name }}">
         <button class="forget-btn">🗑 Olvidar</button>
       </form>
@@ -2452,7 +2471,7 @@ FINDER_TEMPLATE = """
   <div class="counter">{{ state.results|length }} de {{ state.scanned }} archivo(s) tienen a <b>{{ state.name }}</b></div>
   {% if state.results %}
   <form method="post" action="{{ url_for('finder_move') }}"
-        onsubmit="return confirm('Se moverán los tildados a la carpeta de {{ state.name }}. Los que destildaste se descartan de esta lista. ¿Continuar?')">
+        data-confirm="Se moverán los tildados a la carpeta de {{ state.name }}. Los que destildaste se descartan de esta lista. ¿Continuar?">
     <input type="hidden" name="person" value="{{ state.name }}">
     <div class="row">
       <button type="button" class="secondary" onclick="toggleAll(this)">Marcar / desmarcar todos</button>
@@ -3360,7 +3379,7 @@ PERSON_TEMPLATE = """
            \\n se convierte en un salto de línea REAL dentro del onclick y parte
            el string de JS al medio: rompe el atributo y todo lo que sigue. #}
         <button class="pcfg-item" style="color:var(--red)"
-                onclick="return confirm('Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios. LAS FOTOS NO SE BORRAN, quedan en su carpeta. ¿Seguro?')">
+                data-confirm="Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios. LAS FOTOS NO SE BORRAN, quedan en su carpeta. ¿Seguro?">
           🗑 Eliminar perfil y rostro…
         </button>
       </form>
@@ -6881,7 +6900,7 @@ MOLDES_TEMPLATE = """
   <span class="hint-ico" title="Aparecen en tus fotos pero no disparan ningún pie, así que esas fotos caen al modelo (lento y narrado). Tocá una para empezar un molde con esa etiqueta. Ordenadas por las que más se repiten.">ⓘ</span>
   <div style="margin-top:.4rem">
     {% for tag, n in huecos %}
-    <span class="mo-hueco" onclick="moDesdeHueco('{{ tag|e }}')">{{ tag }} <b>{{ n }}</b></span>
+    <span class="mo-hueco" data-tag="{{ tag|e }}">{{ tag }} <b>{{ n }}</b></span>
     {% endfor %}
   </div>
 </div>
@@ -7039,6 +7058,14 @@ function moAgregar(tags, textos, nsfw) {
   mog('mo-lista').appendChild(row); moContar();
   return row;
 }
+// Los chips de hueco/combinación llevan la etiqueta en un data-, no en el
+// onclick: una etiqueta tuya con apóstrofo ("dia d'campo") partía el string de
+// JS y rompía el atributo. Por delegación, así también anda lo que se agregue
+// después.
+document.addEventListener('click', e => {
+  const chip = e.target.closest('.mo-hueco[data-tag]');
+  if (chip) moDesdeHueco(chip.dataset.tag);
+});
 function moDesdeCombo(el) {    // clic en una combinación sin cubrir: la abre en el modal
   cmbAbrir();
   (el.dataset.combo || '').split(',').map(s => s.trim()).filter(Boolean).forEach(cmbAdd);
@@ -7567,7 +7594,7 @@ CORRECT_TEMPLATE = """
 </div>
 
 <form method="post" action="{{ url_for('correct_apply', name=name) }}"
-      onsubmit="return confirm('Se reemplazan TODOS los ejemplos de {{ name }} por las caras verificadas. ¿Aplicar?')">
+      data-confirm="Se reemplazan TODOS los ejemplos de {{ name }} por las caras verificadas. ¿Aplicar?">
   {% for r in data.review %}
   {% set oi = loop.index0 %}
   <div class="panel">
@@ -7749,7 +7776,7 @@ NSFW_TEMPLATE = """
     <span class="meta">· {{ state.results|length }} sospechosa(s) en {{ state.scanned }} foto(s) revisadas</span></div>
   {% if state.results %}
   <form method="post" action="{{ url_for('nsfw_move') }}"
-        onsubmit="return confirm('Se moverán las fotos tildadas a {{ nsfw_dir }} dentro de la carpeta revisada. ¿Continuar?')">
+        data-confirm="Se moverán las fotos tildadas a {{ nsfw_dir }} dentro de la carpeta revisada. ¿Continuar?">
     <div class="row">
       <button class="organize">📦 Mover las seleccionadas a {{ nsfw_dir }}</button>
       <button type="button" class="secondary" onclick="toggleAll(this)">☑ Seleccionar / deseleccionar todas</button>
@@ -8016,7 +8043,7 @@ SPLIT_TEMPLATE = """
 {% if state.results %}
 <div class="panel">
   <form method="post" action="{{ url_for('split_move') }}"
-        onsubmit="return confirm('Se moverán las fotos tildadas a {{ group_dir }} dentro de la carpeta revisada. ¿Continuar?')">
+        data-confirm="Se moverán las fotos tildadas a {{ group_dir }} dentro de la carpeta revisada. ¿Continuar?">
     <div class="row">
       <button class="organize">📦 Mover las tildadas a {{ group_dir }}</button>
       <button type="button" class="secondary" onclick="toggleAll(this)">Marcar / desmarcar todas</button>
