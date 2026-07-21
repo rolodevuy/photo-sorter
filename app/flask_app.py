@@ -2098,6 +2098,19 @@ SETTINGS_TEMPLATE = """
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
 
+    <div class="row">
+      <label>Vos sos:</label>
+      <select name="genero_duenio">
+        <option value="" {% if not genero_duenio %}selected{% endif %}>(sin definir)</option>
+        <option value="m" {% if genero_duenio == 'm' %}selected{% endif %}>hombre</option>
+        <option value="f" {% if genero_duenio == 'f' %}selected{% endif %}>mujer</option>
+      </select>
+    </div>
+    <p class="meta" style="margin:.15rem 0 .6rem">Para que los vínculos salgan bien en los pies:
+      con <code>{relacion}</code>, si en el perfil dice <b>prima</b> te va a decir «primo» o «prima»
+      según esto. Y da vuelta los que cambian: tu <b>mamá</b> te dice «hijo»/«hija», tu <b>sobrina</b>
+      te dice «tío»/«tía». Sin definir, usa el vínculo tal cual.</p>
+
     {# el pie y los comentarios corrían clavados al 4B: la config ya se leía
        (post_model) pero no había con qué elegirla. Acá está el enchufe. #}
     <div class="row">
@@ -2279,6 +2292,7 @@ def settings_page():
         diminutivos=bool(cfg.get("diminutivos")),
         # con qué modelo se escriben el pie y los comentarios (vacío = el de fábrica)
         post_model=cfg.get("post_model", ""),
+        genero_duenio=cfg.get("genero_duenio", ""),
         default_model=vlm.DEFAULT_MODEL,
         vlm_models=vlm.list_models(),
         vlm_crudos=vlm.modelos_descensurados(),
@@ -2342,6 +2356,9 @@ def settings_save():
         cfg["comment_users"] = users        # vacío = los de fábrica
     if "guardar_post" in request.form:      # el form de los comentarios
         cfg["diminutivos"] = request.form.get("diminutivos") == "1"
+    if "genero_duenio" in request.form:     # tu género: da vuelta los vínculos
+        g = request.form.get("genero_duenio", "").strip().lower()
+        cfg["genero_duenio"] = g if g in ("m", "f") else ""
     if "post_model" in request.form:        # con qué modelo se escribe el pie
         # vacío = el de fábrica. Solo se acepta un modelo que EXISTA: si no, un
         # nombre mal tipeado deja el pie roto y el error recién aparece al generar.

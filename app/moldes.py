@@ -517,7 +517,70 @@ _RELACION_DIM = {
     "jefa": "jefita", "jefe": "jefecito",
     "alumna": "alumnita", "alumno": "alumnito",
 }
+_RELACION_DIM.update({
+    "yerno": "yernito", "nuera": "nuerita",
+    "profesor": "profesorcito", "profesora": "profesorita",
+    "empleado": "empleadito", "empleada": "empleadita",
+    "pareja": "parejita",
+})
 _DIM_NORM = {_norm(k): v for k, v in _RELACION_DIM.items()}
+
+# Cómo te llama a VOS la persona de la foto: el vínculo DADO VUELTA, en TU
+# género (el del dueño de la biblioteca, que se configura en Ajustes).
+# Clave = el vínculo que tiene ella en su perfil. Valor = (si sos hombre, si sos
+# mujer). En los simétricos es la misma palabra en tu género (tu prima te dice
+# "primo"); en los asimétricos cambia la palabra: tu mamá NO te dice "papá", te
+# dice "hijo". Por eso hace falta la tabla y no alcanza con cambiar el género.
+_RECIPROCO = {
+    # simétricos
+    "hermana": ("hermano", "hermana"), "hermano": ("hermano", "hermana"),
+    "prima": ("primo", "prima"), "primo": ("primo", "prima"),
+    "novia": ("novio", "novia"), "novio": ("novio", "novia"),
+    "esposa": ("esposo", "esposa"), "esposo": ("esposo", "esposa"),
+    "pareja": ("pareja", "pareja"),
+    "amiga": ("amigo", "amiga"), "amigo": ("amigo", "amiga"),
+    "compañera": ("compañero", "compañera"), "compañero": ("compañero", "compañera"),
+    "vecina": ("vecino", "vecina"), "vecino": ("vecino", "vecina"),
+    "cuñada": ("cuñado", "cuñada"), "cuñado": ("cuñado", "cuñada"),
+    # asimétricos: cambia la palabra, no solo el género
+    "mamá": ("hijo", "hija"), "mama": ("hijo", "hija"), "madre": ("hijo", "hija"),
+    "papá": ("hijo", "hija"), "papa": ("hijo", "hija"), "padre": ("hijo", "hija"),
+    "hija": ("papá", "mamá"), "hijo": ("papá", "mamá"),
+    "tía": ("sobrino", "sobrina"), "tia": ("sobrino", "sobrina"),
+    "tío": ("sobrino", "sobrina"), "tio": ("sobrino", "sobrina"),
+    "sobrina": ("tío", "tía"), "sobrino": ("tío", "tía"),
+    "abuela": ("nieto", "nieta"), "abuelo": ("nieto", "nieta"),
+    "nieta": ("abuelo", "abuela"), "nieto": ("abuelo", "abuela"),
+    "suegra": ("yerno", "nuera"), "suegro": ("yerno", "nuera"),
+    "jefa": ("empleado", "empleada"), "jefe": ("empleado", "empleada"),
+    "profesora": ("alumno", "alumna"), "profesor": ("alumno", "alumna"),
+    "alumna": ("profesor", "profesora"), "alumno": ("profesor", "profesora"),
+}
+_RECIP_NORM = {_norm(k): v for k, v in _RECIPROCO.items()}
+
+
+def _genero_duenio():
+    """'m' | 'f' del dueño de la biblioteca (Ajustes), o '' si no lo configuró."""
+    try:
+        from app.config import load_config
+        g = (load_config().get("genero_duenio") or "").strip().lower()
+        return g if g in ("m", "f") else ""
+    except Exception:
+        return ""
+
+
+def relacion_para_duenio(relacion):
+    """El vínculo dado vuelta: cómo te llama ella A VOS, en tu género.
+
+    Si no configuraste tu género, o el vínculo no está en la tabla, devuelve el
+    vínculo tal cual: mejor eso que arriesgar un parentesco equivocado."""
+    if not relacion:
+        return None
+    par = _RECIP_NORM.get(_norm(relacion))
+    g = _genero_duenio()
+    if not par or not g:
+        return relacion
+    return par[0] if g == "m" else par[1]
 
 _VAR_RELACION = "{relacion}"
 _VAR_RELACION_DIM = "{relacionita}"
@@ -542,17 +605,20 @@ def dim_relacion(relacion):
 
 
 def _con_relacion(texto, relacion):
-    """Reemplaza {relacion} y {relacionita} por el vínculo (y su diminutivo).
+    """Reemplaza {relacion} y {relacionita} por cómo te llama a VOS esa persona
+    (el vínculo dado vuelta, en tu género), y su diminutivo.
+
     Devuelve None si el texto los pide y la persona no tiene vínculo: mejor no
     usar ese pie que escribir "con mi {relacion}" o inventar un parentesco."""
     if _VAR_RELACION not in texto and _VAR_RELACION_DIM not in texto:
         return texto
     if not relacion:
         return None
+    trato = relacion_para_duenio(relacion)      # prima -> primo (si sos hombre)
     # el diminutivo primero; igual no se pisan ({relacion} no está dentro de
     # {relacionita}, porque después de "relacion" va "ita" y no "}")
-    texto = texto.replace(_VAR_RELACION_DIM, dim_relacion(relacion))
-    return texto.replace(_VAR_RELACION, relacion)
+    texto = texto.replace(_VAR_RELACION_DIM, dim_relacion(trato))
+    return texto.replace(_VAR_RELACION, trato)
 
 
 def _semilla(clave):
