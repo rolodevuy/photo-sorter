@@ -582,8 +582,15 @@ def relacion_para_duenio(relacion):
         return relacion
     return par[0] if g == "m" else par[1]
 
+# Dos referentes distintos, por eso son cuatro variables:
+#   {relacion} / {relacionita}  -> cómo te llama a VOS  (el vínculo dado vuelta)
+#   {vinculo}  / {vinculito}    -> lo que ES ELLA para vos (el vínculo del perfil)
+# En una misma frase se usan los dos: "bailá, {relacion}. Mirá a tu {vinculito}"
+# -> "bailá, primo. Mirá a tu primita".
 _VAR_RELACION = "{relacion}"
 _VAR_RELACION_DIM = "{relacionita}"
+_VAR_VINCULO = "{vinculo}"
+_VAR_VINCULO_DIM = "{vinculito}"
 
 
 def relacion_de(tags):
@@ -610,15 +617,18 @@ def _con_relacion(texto, relacion):
 
     Devuelve None si el texto los pide y la persona no tiene vínculo: mejor no
     usar ese pie que escribir "con mi {relacion}" o inventar un parentesco."""
-    if _VAR_RELACION not in texto and _VAR_RELACION_DIM not in texto:
+    if not any(v in texto for v in (_VAR_RELACION, _VAR_RELACION_DIM,
+                                    _VAR_VINCULO, _VAR_VINCULO_DIM)):
         return texto
     if not relacion:
         return None
-    trato = relacion_para_duenio(relacion)      # prima -> primo (si sos hombre)
-    # el diminutivo primero; igual no se pisan ({relacion} no está dentro de
-    # {relacionita}, porque después de "relacion" va "ita" y no "}")
-    texto = texto.replace(_VAR_RELACION_DIM, dim_relacion(trato))
-    return texto.replace(_VAR_RELACION, trato)
+    trato = relacion_para_duenio(relacion)      # cómo te llama a VOS: prima->primo
+    # el diminutivo primero en cada par (igual no se pisan: "{relacion}" no está
+    # dentro de "{relacionita}", ni "{vinculo}" dentro de "{vinculito}")
+    texto = texto.replace(_VAR_VINCULO_DIM, dim_relacion(relacion))   # ella: primita
+    texto = texto.replace(_VAR_VINCULO, relacion)                     # ella: prima
+    texto = texto.replace(_VAR_RELACION_DIM, dim_relacion(trato))     # vos: primito
+    return texto.replace(_VAR_RELACION, trato)                        # vos: primo
 
 
 def _semilla(clave):
