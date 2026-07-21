@@ -1798,8 +1798,7 @@ KNOWN_TEMPLATE = """
       </div>
 
       <form method="post" action="{{ url_for('known_import') }}" style="margin-top:.9rem">
-        <b>📥 Aprender caras</b>
-        <span class="hint-ico" title="Aprende de cada subcarpeta y suma personas nuevas sin reetiquetar. Se puede repetir: a los ya conocidos solo les suma ejemplos. Saltea _grupo y _revisar, así solo aprende de fotos donde la persona está sola.">ⓘ</span>
+        <b>📥 Aprender caras <span class="hint-ico" title="Aprende de cada subcarpeta y suma personas nuevas sin reetiquetar. Se puede repetir: a los ya conocidos solo les suma ejemplos. Saltea _grupo y _revisar, así solo aprende de fotos donde la persona está sola.">ⓘ</span></b>
         <div class="row" style="margin:0">
           <button class="primary" {% if imp.status == 'running' %}disabled{% endif %}>
             📥 Aprender las caras de la Biblioteca
@@ -1814,8 +1813,7 @@ KNOWN_TEMPLATE = """
       <hr style="border:0;border-top:1px solid var(--line);margin:1rem 0">
 
       <form method="post" action="{{ url_for('known_import_folder') }}">
-        <b>➕ Agregar una carpeta como persona</b>
-        <span class="hint-ico" title="Elegís una carpeta y un nombre y todas las fotos de adentro se copian como esa persona, sin analizar caras. Para cuando ya sabés de quién son (ej: una carpeta «Alfredo» → todas son de Alfredo). Las originales no se tocan (se copian).">ⓘ</span>
+        <b>➕ Agregar una carpeta como persona <span class="hint-ico" title="Elegís una carpeta y un nombre y todas las fotos de adentro se copian como esa persona, sin analizar caras. Para cuando ya sabés de quién son (ej: una carpeta «Alfredo» → todas son de Alfredo). Las originales no se tocan (se copian).">ⓘ</span></b>
         <div class="row" style="margin:0">
           <input class="path" type="text" name="folder" id="imp-folder" placeholder="Carpeta con las fotos…">
           <button type="button" onclick="browseImport()">📂 Elegir carpeta…</button>
@@ -1993,8 +1991,8 @@ function bulk(accion) {
     <button class="primary" onclick="bulk('add')">＋ Agregar a las seleccionadas</button>
     <button class="secondary" onclick="bulk('remove')" title="Sacarles esta etiqueta">－ Quitar</button>
     <span class="meta" id="bulkst"></span>
+    <span class="hint-ico" title="Agregar suma la etiqueta: no pisa las que ya tengan. El filtro de arriba funciona igual, así que podés buscar y seleccionar solo los que quedaron a la vista.">ⓘ</span>
   </div>
-  <span class="hint-ico" title="Agregar suma la etiqueta: no pisa las que ya tengan. El filtro de arriba funciona igual, así que podés buscar y seleccionar solo los que quedaron a la vista.">ⓘ</span>
 </div>
 <datalist id="tagsug">{% for t in all_tags %}<option value="{{ t }}">{% endfor %}</datalist>
 <div class="grid">
@@ -2098,27 +2096,24 @@ SETTINGS_TEMPLATE = """
 <div class="panel">
   <form method="post" action="{{ url_for('settings_save') }}">
     <div class="row">
-      <label>📚 Biblioteca:</label>
+      <label>📚 Biblioteca: <span class="hint-ico" title="Es una sola y la usan todos: el organizador y el buscador mueven acá; la galería, el import, el corrector y el separador leen de acá.">ⓘ</span></label>
       <input class="path" type="text" name="library" value="{{ library }}"
              placeholder="Carpeta con una subcarpeta por persona">
       <button type="button" onclick="browse('library')">📂 Elegir carpeta…</button>
     </div>
-    <span class="hint-ico" title="Es una sola y la usan todos: el organizador y el buscador mueven acá; la galería, el import, el corrector y el separador leen de acá.">ⓘ</span>
 
     <button class="primary">💾 Guardar</button>
   </form>
 </div>
 
 <div class="panel">
-  <div class="counter">💾 Backup</div>
-  <span class="hint-ico" title="Baja un ZIP con todo tu trabajo: etiquetas, pies y comentarios, conversiones, la base de caras y los ajustes. NO incluye las fotos (esas ya las tenés). Guardalo cada tanto por las dudas: si algo se corrompe, restaurás pegando los .json de vuelta en data/.">ⓘ</span>
+  <div class="counter">💾 Backup <span class="hint-ico" title="Baja un ZIP con todo tu trabajo: etiquetas, pies y comentarios, conversiones, la base de caras y los ajustes. NO incluye las fotos (esas ya las tenés). Guardalo cada tanto por las dudas: si algo se corrompe, restaurás pegando los .json de vuelta en data/.">ⓘ</span></div>
   <a class="primary" style="display:inline-block; text-decoration:none"
      href="{{ url_for('backup') }}">💾 Descargar backup (ZIP)</a>
 </div>
 
 <div class="panel">
-  <div class="counter">🎬 Duplicados — videos</div>
-  <span class="hint-ico" title="El buscador de duplicados también revisa videos, pero solo como duplicado exacto (el mismo archivo, ej: un clip de WhatsApp re-descargado) y hasta cierto tamaño. Uno gigante tarda una eternidad leyéndolo y casi nunca está repetido, así que se saltea.">ⓘ</span>
+  <div class="counter">🎬 Duplicados — videos <span class="hint-ico" title="El buscador de duplicados también revisa videos, pero solo como duplicado exacto (el mismo archivo, ej: un clip de WhatsApp re-descargado) y hasta cierto tamaño. Uno gigante tarda una eternidad leyéndolo y casi nunca está repetido, así que se saltea.">ⓘ</span></div>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
     <div class="row">
@@ -2132,31 +2127,28 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="panel">
-  <div class="counter">💬 Comentarios y pie de foto</div>
-  <span class="hint-ico" title="Cuando abrís una foto de la galería, la IA le escribe un pie y unos comentarios como si fueran de seguidores. Acá elegís con qué onda.">ⓘ</span>
+  <div class="counter">💬 Comentarios y pie de foto <span class="hint-ico" title="El programa trae 62 pies de fábrica que quedan mezclados con los tuyos y hacen que varíe mucho antes de caer en uno propio. Con esto solo se usan los que escribiste vos, y si no hay ninguno para esa foto te avisa en vez de inventar uno estándar.">ⓘ</span> <span class="hint-ico" title="Cuando abrís una foto de la galería, la IA le escribe un pie y unos comentarios como si fueran de seguidores. Acá elegís con qué onda.">ⓘ</span></div>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
 
     <div class="row">
       <label><input type="checkbox" name="solo_moldes_propios" value="1"
              {% if solo_moldes_propios %}checked{% endif %}> Solo mis pies</label>
-      <span class="hint-ico" title="El programa trae 62 pies de fábrica que quedan mezclados con los tuyos y hacen que varíe mucho antes de caer en uno propio. Con esto solo se usan los que escribiste vos, y si no hay ninguno para esa foto te avisa en vez de inventar uno estándar.">ⓘ</span>
     </div>
 
     <div class="row">
-      <label>Vos sos:</label>
+      <label>Vos sos: <span class="hint-ico" title="Para que los vínculos salgan bien en los pies: con {relacion}, si en el perfil dice prima te va a decir «primo» o «prima» según esto. Y da vuelta los que cambian: tu mamá te dice «hijo»/«hija», tu sobrina te dice «tío»/«tía». Sin definir, usa el vínculo tal cual.">ⓘ</span></label>
       <select name="genero_duenio">
         <option value="" {% if not genero_duenio %}selected{% endif %}>(sin definir)</option>
         <option value="m" {% if genero_duenio == 'm' %}selected{% endif %}>hombre</option>
         <option value="f" {% if genero_duenio == 'f' %}selected{% endif %}>mujer</option>
       </select>
     </div>
-    <span class="hint-ico" title="Para que los vínculos salgan bien en los pies: con {relacion}, si en el perfil dice prima te va a decir «primo» o «prima» según esto. Y da vuelta los que cambian: tu mamá te dice «hijo»/«hija», tu sobrina te dice «tío»/«tía». Sin definir, usa el vínculo tal cual.">ⓘ</span>
 
     {# el pie y los comentarios corrían clavados al 4B: la config ya se leía
        (post_model) pero no había con qué elegirla. Acá está el enchufe. #}
     <div class="row">
-      <label>Modelo del pie y comentarios:</label>
+      <label>Modelo del pie y comentarios: <span class="hint-ico" title="Los de 7B escriben bastante mejor que el 4B de fábrica, pero en CPU tardan como el doble por foto. Si el pie te sale sin sentido, probá con Qwen2.5-VL-7B-NSFW-Caption: además de ser más grande, está tuneado justo para esto. Los 🔞 son sin censura (no te lavan las frases).">ⓘ</span></label>
       <select name="post_model">
         <option value="">(el de fábrica: {{ default_model }})</option>
         {% for m in vlm_models %}
@@ -2164,17 +2156,15 @@ SETTINGS_TEMPLATE = """
         {% endfor %}
       </select>
     </div>
-    <span class="hint-ico" title="Los de 7B escriben bastante mejor que el 4B de fábrica, pero en CPU tardan como el doble por foto. Si el pie te sale sin sentido, probá con Qwen2.5-VL-7B-NSFW-Caption: además de ser más grande, está tuneado justo para esto. Los 🔞 son sin censura (no te lavan las frases).">ⓘ</span>
 
     <div style="margin:.6rem 0">
-      <label>Qué tan subido: <b id="crud-lbl">{{ crudeness_labels[crudeness] }}</b></label>
+      <label>Qué tan subido: <b id="crud-lbl">{{ crudeness_labels[crudeness] }}</b> <span class="hint-ico" title="Vale para el pie y para los comentarios. De explícito para arriba, un modelo con filtros te lava las frases: elegí el abliterated en el desplegable del visor.">ⓘ</span></label>
       <input type="range" name="crudeness" min="0" max="{{ crudeness_labels|length - 1 }}"
              step="1" value="{{ crudeness }}" style="width:100%;margin:.3rem 0"
              oninput="document.getElementById('crud-lbl').textContent = {{ crudeness_labels|tojson }}[this.value]">
       <div class="row" style="justify-content:space-between;margin:0">
         {% for l in crudeness_labels %}<span class="meta">{{ l }}</span>{% endfor %}
       </div>
-      <span class="hint-ico" title="Vale para el pie y para los comentarios. De explícito para arriba, un modelo con filtros te lava las frases: elegí el abliterated en el desplegable del visor.">ⓘ</span>
     </div>
 
     <div class="row">
@@ -2196,18 +2186,16 @@ SETTINGS_TEMPLATE = """
         adultos.</span>
     </div>
     <div class="row">
-      <label>@usuarios:</label>
+      <label>@usuarios: <span class="hint-ico" title="Los nombres los pongo yo de esta lista, no los inventa la IA: un modelo chico devuelve &quot;@usuario1&quot;, &quot;@usuario2&quot; y queda feo. Vaciá el campo para volver a los de fábrica.">ⓘ</span></label>
       <input class="path" type="text" name="comment_users" value="{{ comment_users }}"
              placeholder="separados por coma">
     </div>
-    <span class="hint-ico" title="Los nombres los pongo yo de esta lista, no los inventa la IA: un modelo chico devuelve &quot;@usuario1&quot;, &quot;@usuario2&quot; y queda feo. Vaciá el campo para volver a los de fábrica.">ⓘ</span>
     <button class="primary">💾 Guardar</button>
   </form>
 </div>
 
 <div class="panel">
-  <div class="counter">📝 Textos y filtros de los posts</div>
-  <span class="hint-ico" title="Para afinar el pie y los comentarios sin tocar código. Todo lo de acá se suma a lo de fábrica; vacío = queda como está.">ⓘ</span>
+  <div class="counter">📝 Textos y filtros de los posts <span class="hint-ico" title="Para afinar el pie y los comentarios sin tocar código. Todo lo de acá se suma a lo de fábrica; vacío = queda como está.">ⓘ</span></div>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="guardar_textos" value="1">
 
@@ -2225,18 +2213,16 @@ SETTINGS_TEMPLATE = """
     </div>
 
     <div style="margin:.6rem 0; border-top:1px solid var(--line); padding-top:.6rem">
-      <label>🧩 Prompt para copiar desde una foto</label>
+      <label>🧩 Prompt para copiar desde una foto <span class="hint-ico" title="Desde el ✍ de una foto, el botón &quot;📋 Copiar prompt&quot; copia este texto reemplazando las variables. Para pegarlo en la IA que quieras y traerte los pies. · $etiquetas → las de esa foto: &quot;playa&quot;, &quot;sol&quot;, &quot;bikini&quot; · $perfil → las del perfil: &quot;mujer&quot;, &quot;adulto&quot;, &quot;hermana&quot; · $vinculo → lo que es ella para vos: prima · $relacion → cómo te llama a vos: primo (necesita tu género)">ⓘ</span></label>
       <textarea class="path" name="prompt_externo" rows="4" style="width:100%"
         placeholder='ej: Escribí 3 pies de foto en primera persona, español rioplatense, usando SOLO estas palabras: $etiquetas'>{{ prompt_externo }}</textarea>
-      <span class="hint-ico" title="Desde el ✍ de una foto, el botón &quot;📋 Copiar prompt&quot; copia este texto reemplazando las variables. Para pegarlo en la IA que quieras y traerte los pies. · $etiquetas → las de esa foto: &quot;playa&quot;, &quot;sol&quot;, &quot;bikini&quot; · $perfil → las del perfil: &quot;mujer&quot;, &quot;adulto&quot;, &quot;hermana&quot; · $vinculo → lo que es ella para vos: prima · $relacion → cómo te llama a vos: primo (necesita tu género)">ⓘ</span>
     </div>
 
     <details class="lote"><summary>Filtros por palabras (avanzado)</summary>
       <div style="margin:.5rem 0">
-        <label>🔞 Palabras que marcan MENOR (además de las de fábrica)</label>
+        <label>🔞 Palabras que marcan MENOR (además de las de fábrica) <span class="hint-ico" title="Suma a: {{ def_menor }}. Con cualquiera, la crudeza se fuerza a sano y los comentadores que desean quedan afuera. Estas no se pueden quitar, solo agregar.">ⓘ</span></label>
         <textarea class="path" name="f_menor" rows="2" style="width:100%"
           placeholder="una por línea… ej: sobrino">{{ f_menor }}</textarea>
-        <span class="hint-ico" title="Suma a: {{ def_menor }}. Con cualquiera, la crudeza se fuerza a sano y los comentadores que desean quedan afuera. Estas no se pueden quitar, solo agregar.">ⓘ</span>
       </div>
       <div style="margin:.5rem 0">
         <label>🗣 Correcciones tú→vos (una por línea, formato <code>tienes=tenés</code>)</label>
@@ -2548,11 +2534,10 @@ FINDER_TEMPLATE = """
 </div>
 {% elif state.status == 'done' %}
 <div class="panel">
-  <div class="counter">{{ state.by_person|length }} conocido(s) encontrados en {{ state.scanned }} archivo(s) revisados</div>
+  <div class="counter">{{ state.by_person|length }} conocido(s) encontrados en {{ state.scanned }} archivo(s) revisados <span class="hint-ico" title="Un archivo donde aparecen dos conocidos figura en los dos grupos: al moverlo se copia a la carpeta de cada uno y el original desaparece recién con el último.">ⓘ</span></div>
   {% if not state.by_person %}
-  <span class="hint-ico" title="Ningún conocido apareció en esa carpeta con el rigor actual. Probá subir el deslizador hacia &quot;permisivo&quot; y buscar de nuevo.">ⓘ</span>
+  <p class="meta">Ningún conocido apareció en esa carpeta con el rigor actual. Probá subir el deslizador hacia &quot;permisivo&quot; y buscar de nuevo.</p>
   {% else %}
-  <span class="hint-ico" title="Un archivo donde aparecen dos conocidos figura en los dos grupos: al moverlo se copia a la carpeta de cada uno y el original desaparece recién con el último.">ⓘ</span>
   <div class="row" style="margin-top:.5rem">
     <button type="button" class="secondary" onclick="foldAll(false)">⊟ Colapsar todos</button>
     <button type="button" class="secondary" onclick="foldAll(true)">⊞ Expandir todos</button>
@@ -2872,8 +2857,8 @@ PERSON_TEMPLATE = """
   <div style="margin-top:.5rem">
     <span class="meta">Últimos, para que veas cómo van saliendo (si vienen mal, pará):</span>
     <ul id="lote-ultimos" class="meta" style="margin:.2rem 0 0;padding-left:1.1rem"></ul>
+    <span class="hint-ico" title="Podés cerrar esta página o apagar la pantalla: sigue igual. Lo hecho queda guardado foto por foto, así que cortarlo no pierde nada.">ⓘ</span>
   </div>
-  <span class="hint-ico" title="Podés cerrar esta página o apagar la pantalla: sigue igual. Lo hecho queda guardado foto por foto, así que cortarlo no pierde nada.">ⓘ</span>
 </div>
 
 {% if pick_rel %}
@@ -3100,8 +3085,7 @@ PERSON_TEMPLATE = """
         </div>
 
         <div class="tm-sec">
-          <b style="font-size:.92rem">🖼 De las fotos — y en cuántas está cada una</b>
-          <span class="hint-ico" title="La ✕ la borra de todas las fotos que la tengan. Sirve para limpiar rápido después de etiquetar en lote con IA.">ⓘ</span>
+          <b style="font-size:.92rem">🖼 De las fotos — y en cuántas está cada una <span class="hint-ico" title="La ✕ la borra de todas las fotos que la tengan. Sirve para limpiar rápido después de etiquetar en lote con IA.">ⓘ</span></b>
           <input class="tm-in" id="tm-filtro" placeholder="🔍 filtrar…"
                  oninput="tmPintarFotos()" style="width:100%">
           <div id="tm-fotos" style="margin-top:.45rem"></div>
@@ -3359,14 +3343,13 @@ PERSON_TEMPLATE = """
        va visible acá y no escondido como una etiqueta más del gestor #}
     <form method="post" action="{{ url_for('person_vinculo', name=name) }}" class="row"
           style="margin:.25rem 0 0; gap:.4rem">
-      <label class="meta">Vínculo:</label>
+      <label class="meta">Vínculo: <span class="hint-ico" title="Define cómo te nombra en los pies: con {relacion} te dice «primo» y con {vinculito} se dice «primita». Necesita tu género en Ajustes para dar vuelta el vínculo.">ⓘ</span></label>
       <select name="vinculo" onchange="this.form.submit()" style="max-width:11rem">
         <option value="">(ninguno)</option>
         {% for v in vinculos_posibles %}
         <option value="{{ v }}" {% if v == vinculo_actual %}selected{% endif %}>{{ v }}</option>
         {% endfor %}
       </select>
-      <span class="hint-ico" title="Define cómo te nombra en los pies: con {relacion} te dice «primo» y con {vinculito} se dice «primita». Necesita tu género en Ajustes para dar vuelta el vínculo.">ⓘ</span>
     </form>
 
     <!-- Menú ⚙: acciones -->
@@ -6183,12 +6166,10 @@ PROBADOR_TEMPLATE = """
 <div class="panel" id="pb-lista-panel" style="display:none">
   <div class="pb-review">
     <div class="pb-review-tags">
-      <b>Etiquetas — comparás y corregís</b>
-      <span class="hint-ico" title="Izquierda = lo que vio la IA (no se toca) · derecha = nuestra interpretación (editala si está mal; queda como conversión para siempre) · ✕ descarta.">ⓘ</span>
+      <b>Etiquetas — comparás y corregís <span class="hint-ico" title="Izquierda = lo que vio la IA (no se toca) · derecha = nuestra interpretación (editala si está mal; queda como conversión para siempre) · ✕ descarta.">ⓘ</span></b>
       <div id="pb-empty" style="display:none; padding:.6rem .8rem; border:1px solid var(--amb);
            border-radius:8px; background:rgba(200,150,40,.08); margin:.4rem 0">
-        <b id="pb-empty-msg">⚠ La IA no devolvió etiquetas para esta foto.</b>
-        <span class="hint-ico" title="Puede ser la foto (borrosa, sin nada que describir) o que el modelo se colgó en esta. Probá de nuevo, o saltala.">ⓘ</span>
+        <b id="pb-empty-msg">⚠ La IA no devolvió etiquetas para esta foto. <span class="hint-ico" title="Puede ser la foto (borrosa, sin nada que describir) o que el modelo se colgó en esta. Probá de nuevo, o saltala.">ⓘ</span></b>
         <button class="secondary" onclick="pbReintentar()">↻ Reintentar esta foto</button>
       </div>
       <div id="pb-listwrap">
@@ -6822,7 +6803,7 @@ CONVERSIONES_TEMPLATE = """
     </div>
     {% endfor %}
   </div>
-  <span class="hint-ico" title="Todavía no hay ninguna conversión. Se van creando cuando corregís una etiqueta en el Probador.">ⓘ</span>
+  <p class="meta">Todavía no hay ninguna conversión. Se van creando cuando corregís una etiqueta en el Probador.</p>
   <div class="row" style="margin-top:.7rem">
     <button class="secondary" onclick="cvAgregar()">＋ agregar una</button>
     <button class="primary" onclick="cvGuardar()">💾 Guardar cambios</button>
@@ -6938,8 +6919,7 @@ MOLDES_TEMPLATE = """
 
 {% if huecos %}
 <div class="panel" style="border-color:var(--amb)">
-  <b>⚠ Etiquetas tuyas que todavía no tienen molde</b>
-  <span class="hint-ico" title="Aparecen en tus fotos pero no disparan ningún pie, así que esas fotos caen al modelo (lento y narrado). Tocá una para empezar un molde con esa etiqueta. Ordenadas por las que más se repiten.">ⓘ</span>
+  <b>⚠ Etiquetas tuyas que todavía no tienen molde <span class="hint-ico" title="Aparecen en tus fotos pero no disparan ningún pie, así que esas fotos caen al modelo (lento y narrado). Tocá una para empezar un molde con esa etiqueta. Ordenadas por las que más se repiten.">ⓘ</span></b>
   <div style="margin-top:.4rem">
     {% for tag, n in huecos %}
     <span class="mo-hueco" data-tag="{{ tag|e }}">{{ tag }} <b>{{ n }}</b></span>
@@ -7007,10 +6987,9 @@ MOLDES_TEMPLATE = """
 <div id="cmb-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cmbCerrar()">
   <div class="modal-box" style="width:600px">
     <div class="row" style="justify-content:space-between;margin:0 0 .5rem">
-      <b style="font-size:1.05rem">🔍 Combinación de etiquetas</b>
+      <b style="font-size:1.05rem">🔍 Combinación de etiquetas <span class="hint-ico" title="Buscá etiquetas que estén en tus fotos y agregá las que quieras (para un pie específico de una foto, metelas todas). Podés pegar varias con coma y Enter. &quot;Armar&quot; te da el JSON de esa combinación para copiar, editar y guardar.">ⓘ</span></b>
       <button class="secondary sm" onclick="cmbCerrar()" title="Cerrar">✕</button>
     </div>
-    <span class="hint-ico" title="Buscá etiquetas que estén en tus fotos y agregá las que quieras (para un pie específico de una foto, metelas todas). Podés pegar varias con coma y Enter. &quot;Armar&quot; te da el JSON de esa combinación para copiar, editar y guardar.">ⓘ</span>
     <input id="cmb-buscar" class="path" placeholder="🔍 buscar o pegar etiquetas (coma) y Enter…" autocomplete="off"
            oninput="cmbSug()" onfocus="cmbSug()" onkeydown="cmbKey(event)" style="width:100%">
     <div id="cmb-sug" style="max-height:9rem;overflow-y:auto;margin:.3rem 0"></div>
@@ -7822,8 +7801,8 @@ NSFW_TEMPLATE = """
     <div class="row">
       <button class="organize">📦 Mover las seleccionadas a {{ nsfw_dir }}</button>
       <button type="button" class="secondary" onclick="toggleAll(this)">☑ Seleccionar / deseleccionar todas</button>
+      <span class="hint-ico" title="Destildá los falsos positivos (playa, etc.) antes de mover · clic en la imagen abre el visor (zoom, arrastre, ← →).">ⓘ</span>
     </div>
-    <span class="hint-ico" title="Destildá los falsos positivos (playa, etc.) antes de mover · clic en la imagen abre el visor (zoom, arrastre, ← →).">ⓘ</span>
     <div class="nsfw-grid">
       {% for r in state.results %}
       <div class="hit">

@@ -1,0 +1,18 @@
+[web] Abrí http://127.0.0.1:5000 en el navegador (solo accesible desde esta máquina).
+ * Serving Flask app 'flask_app'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.8:5000
+Press CTRL+C to quit
+ * Restarting with stat
+127.0.0.1 - - [21/Jul/2026 19:58:11] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:11] "GET /undo/estado HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:15] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:15] "GET /estatico/base.css?v=c343cde54e HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:15] "GET /undo/estado HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:15] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [21/Jul/2026 19:58:56] "GET /probador HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:56] "GET /undo/estado HTTP/1.1" 200 -
+127.0.0.1 - - [21/Jul/2026 19:58:56] "GET /favicon.ico HTTP/1.1" 404 -
