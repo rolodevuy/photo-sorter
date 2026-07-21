@@ -2722,6 +2722,63 @@ def known_forget():
     return redirect(url_for("known_page", msg=f"Se olvidó a {name}."))
 
 
+@app.route("/person/<name>/vinculo", methods=["POST"])
+def person_vinculo(name):
+    """Fija el vínculo de la persona (hermana, prima…) como etiqueta de perfil.
+
+    Reemplaza el vínculo anterior si había, y NO toca el resto de sus etiquetas:
+    el vínculo es un campo, no una etiqueta más de la lista."""
+    nuevo = (request.form.get("vinculo") or "").strip()
+    actuales = tags_mod.get_person(name)
+    # sacar el vínculo viejo (si tenía) y poner el nuevo
+    viejo = moldes_mod.relacion_de(actuales)
+    quedan = [t for t in actuales if t != viejo] if viejo else list(actuales)
+    if nuevo:
+        quedan.append(nuevo)
+    tags_mod.set_person(name, quedan)
+    return redirect(url_for("person_page", name=name))
+
+
+@app.route("/person/<name>/renombrar", methods=["POST"])
+def person_renombrar(name):
+    """Renombra a la persona: mueve su carpeta y migra TODO lo asociado.
+
+    Sin esto, equivocarse al importar obligaba a borrar y rehacer, perdiendo las
+    etiquetas. Se valida que el destino no exista para no fusionar dos personas
+    sin querer."""
+    nuevo = (request.form.get("nuevo") or "").strip()
+    if not nuevo or nuevo == name:
+        return redirect(url_for("person_page", name=name))
+    if any(c in nuevo for c in '\\/:*?"<>|'):
+        return redirect(url_for("person_page", name=name,
+                                msg="Ese nombre tiene caracteres que no valen para una carpeta."))
+    library = get_library()
+    origen, destino = Path(library) / name, Path(library) / nuevo
+    if destino.exists():
+        return redirect(url_for("person_page", name=name,
+                                msg=f"Ya existe una carpeta «{nuevo}»: elegí otro nombre."))
+    try:
+        if origen.is_dir():
+            origen.rename(destino)
+    except OSError as e:
+        return redirect(url_for("person_page", name=name, msg=f"No se pudo mover la carpeta: {e}"))
+    # la carpeta ya se movió: migrar todo lo que cuelga del nombre
+    db = load_known()
+    if name in db:
+        db[nuevo] = db.pop(name)
+        save_known(db)
+        viejo_thumb = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+        if viejo_thumb.is_file():
+            viejo_thumb.rename(KNOWN_THUMBS / f"{safe_name(nuevo)}.jpg")
+    tags_mod.rename_person(name, nuevo)
+    posts_mod.rename_person(name, nuevo)
+    person_meta.rename(name, nuevo)
+    for rel, info in procesadas.de_persona(name).items():
+        procesadas.marcar(nuevo, rel, info.get("n", 0))
+    procesadas.olvidar(name)
+    return redirect(url_for("person_page", name=nuevo, msg=f"Ahora se llama {nuevo}."))
+
+
 PERSON_TEMPLATE = """
 <h1>{{ name }}</h1>
 <div class="row" style="justify-content:space-between">
@@ -3237,6 +3294,19 @@ PERSON_TEMPLATE = """
       <h1 style="margin:0; font-size:19px">{{ name }}</h1>
       <button class="secondary iconbtn" onclick="toggleCfg(this)" title="Configuración de {{ name }}">⚙</button>
     </div>
+    {# el vínculo maneja cómo suenan sus pies ({relacion}, {vinculito}), así que
+       va visible acá y no escondido como una etiqueta más del gestor #}
+    <form method="post" action="{{ url_for('person_vinculo', name=name) }}" class="row"
+          style="margin:.25rem 0 0; gap:.4rem">
+      <label class="meta">Vínculo:</label>
+      <select name="vinculo" onchange="this.form.submit()" style="max-width:11rem">
+        <option value="">(ninguno)</option>
+        {% for v in vinculos_posibles %}
+        <option value="{{ v }}" {% if v == vinculo_actual %}selected{% endif %}>{{ v }}</option>
+        {% endfor %}
+      </select>
+      <span class="hint-ico" title="Define cómo te nombra en los pies: con {relacion} te dice «primo» y con {vinculito} se dice «primita». Necesita tu género en Ajustes para dar vuelta el vínculo.">ⓘ</span>
+    </form>
 
     <!-- Menú ⚙: acciones -->
     <div id="pcfg" class="pcfg-menu" style="display:none">
@@ -3274,6 +3344,13 @@ PERSON_TEMPLATE = """
         {% endif %}
       </details>
       {% endif %}
+
+      <form method="post" action="{{ url_for('person_renombrar', name=name) }}" class="row"
+            style="margin:.3rem 0 0; gap:.4rem">
+        <input class="path" name="nuevo" placeholder="✎ renombrar a…" style="flex:1"
+               value="" autocomplete="off">
+        <button class="secondary" title="Mueve su carpeta y migra etiquetas, pies y rostro">Renombrar</button>
+      </form>
 
       {# destructivo: va último y separado, para no apretarlo de paso #}
       <hr class="pcfg-sep">
@@ -3329,6 +3406,14 @@ PERSON_TEMPLATE = """
          placeholder="🏷 filtrar sus fotos por etiqueta (coma para varias) + Enter…"
          list="tagsug">
   <button class="secondary">Filtrar</button>
+  {# filtro por lo que FALTA hacer: para ir tachando pendientes de a tandas #}
+  <select name="estado" onchange="this.form.submit()" title="Mostrar solo las que te falta trabajar">
+    <option value="">todas</option>
+    <option value="sin_etiquetas" {% if estado == 'sin_etiquetas' %}selected{% endif %}>sin etiquetas</option>
+    <option value="sin_ia" {% if estado == 'sin_ia' %}selected{% endif %}>sin pasar por la IA</option>
+    <option value="ia_vacia" {% if estado == 'ia_vacia' %}selected{% endif %}>la IA no trajo nada (∅)</option>
+    <option value="sin_pie" {% if estado == 'sin_pie' %}selected{% endif %}>sin pie</option>
+  </select>
   {% if solo_fav %}
   <a class="secondary on" style="padding:.35rem .7rem;border-radius:6px"
      href="{{ url_for('person_page', name=name, tags=filter_tags or None, per=per, con=filter_con or None, nsfw='1' if show_nsfw else None) }}">⭐ Solo favoritos ✕</a>
@@ -4799,6 +4884,23 @@ def person_page(name):
     solo_fav = request.args.get("fav") == "1"
     if solo_fav:
         display = [f for f in display if f["fav"]]
+    # filtro por ESTADO: para ir tachando pendientes en vez de buscarlos a ojo
+    estado = request.args.get("estado", "")
+    if estado:
+        hechas_ia = procesadas.de_persona(name)
+        posts_est = posts_mod.get_many(name, [f["rel"] for f in display])
+        def pasa(f):
+            r = f["rel"]
+            if estado == "sin_etiquetas":
+                return not tags_mod.get_photo(name, r)
+            if estado == "sin_ia":
+                return r not in hechas_ia
+            if estado == "ia_vacia":            # pasó por la IA y no trajo nada
+                return hechas_ia.get(r, {}).get("n") == 0
+            if estado == "sin_pie":
+                return not posts_est[r]["caption"]
+            return True
+        display = [f for f in display if pasa(f)]
     n_filtradas = len(display)
 
     # Paginado: sin esto, 1500 fotos son 1500 <select> con TODA la gente adentro
@@ -4872,6 +4974,9 @@ def person_page(name):
         filter_tags=filter_tags,       # pre-filtro que viene de la galería
         filter_con=filter_con,         # filtro por co-aparición (👥 también aparece X)
         solo_fav=solo_fav,             # filtro por favoritos (⭐)
+        estado=estado,                 # filtro por lo que falta hacer
+        vinculo_actual=_vinc_persona,  # el vínculo que tiene puesto hoy
+        vinculos_posibles=moldes_mod.vinculos_conocidos(),
         photos=photos,
         display=display,
         # paginado

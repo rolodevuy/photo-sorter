@@ -593,6 +593,12 @@ _VAR_VINCULO = "{vinculo}"
 _VAR_VINCULO_DIM = "{vinculito}"
 
 
+def vinculos_conocidos():
+    """Los vínculos que el sistema reconoce, ordenados. Para el selector del
+    perfil: que elijas de una lista en vez de adivinar la palabra exacta."""
+    return sorted(_RELACIONES)
+
+
 def relacion_de(tags):
     """El vínculo de la persona (hermana, novia…). None si no tiene ninguno.
 
