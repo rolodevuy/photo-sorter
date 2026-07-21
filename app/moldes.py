@@ -729,7 +729,7 @@ def variantes(clave, tags, sano=True, maximo=12):
     return fin[:maximo]
 
 
-def escribir(clave, tags, sano=True, evitar=None):
+def escribir(clave, tags, sano=True, evitar=None, pulir=None):
     """El pie para esta foto, o None si ninguna etiqueta prendió un molde.
 
     `evitar` es el pie que ya tiene puesto: se devuelve el SIGUIENTE de la lista,
@@ -741,11 +741,14 @@ def escribir(clave, tags, sano=True, evitar=None):
     vs = variantes(clave, tags, sano)
     if not vs:
         return None
-    # Comparar normalizando espacios: el pie guardado puede diferir del molde por
-    # un espacio de más y entonces no se encontraba en la lista. Antes eso caía
-    # en vs[0] SIEMPRE, así que regenerar devolvía una y otra vez el mismo pie.
+    # Comparar normalizando espacios Y con la MISMA transformación que se le
+    # aplica al pie antes de guardarlo (`pulir`: los diminutivos de Ajustes).
+    # Sin eso, el pie guardado ("playita") nunca coincidía con la variante cruda
+    # ("playa"), no se encontraba en la lista, y regenerar caía en vs[0] SIEMPRE:
+    # el mismo pie una y otra vez.
     def limpio(t):
-        return " ".join((t or "").split())
+        t = " ".join((t or "").split())
+        return pulir(t) if (pulir and t) else t
 
     actual = limpio(evitar)
     if not actual:

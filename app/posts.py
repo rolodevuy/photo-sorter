@@ -438,12 +438,17 @@ def generate_caption(name, rel, image_path, model=None,
     if usar_moldes:
         # el pie que ya tiene: se le pasa para que devuelva OTRO. Sin esto,
         # apretar "regenerar" te daba siempre exactamente el mismo.
+        # `pulir` = lo mismo que se le hace al pie ANTES de guardarlo. Va también
+        # a escribir() para que compare el pie guardado contra las variantes ya
+        # transformadas; si no, nunca coincide y regenerar devuelve siempre el
+        # primero (pasó con los diminutivos: guardaba "playita", comparaba "playa").
+        pulir_pie = con_diminutivos if diminutivos else None
         pie = moldes.escribir(_key(name, rel),
                               tags_mod.effective_photo(name, rel), sano=ident["sano"],
-                              evitar=get(name, rel)["caption"])
+                              evitar=get(name, rel)["caption"], pulir=pulir_pie)
         if pie:
-            if diminutivos:
-                pie = con_diminutivos(pie)
+            if pulir_pie:
+                pie = pulir_pie(pie)
             _put(name, rel, caption=pie)
             return pie
 
