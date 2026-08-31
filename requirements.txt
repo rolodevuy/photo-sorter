@@ -11,11 +11,11 @@ playwright>=1.60
 # chocaría con opencv-contrib-python); onnxruntime es su única dep que falta
 nudenet>=3.4
 onnxruntime>=1.20
-# Sugeridor de etiquetas (interrogator): BLIP (frase) + CLIP (tags) + Marian
-# (traduce la frase al español). Modelos ~2.8 GB, se bajan 1 vez de Hugging
-# Face; después todo local. torch en CPU:
+# sexpos.py (clasificador de acto sexual, opcional): resnet50 vía timm sobre
+# torch, en CPU. Instalar torch así:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch>=2.2
-transformers>=4.40
-sentencepiece>=0.2   # tokenizer del traductor Marian
-sacremoses>=0.1      # idem
+timm>=1.0
+# Eliminar foto (visor): manda a la Papelera de reciclaje de Windows en vez de
+# borrar directo, así un clic accidental se recupera desde la Papelera.
+send2trash>=1.8

@@ -57,6 +57,8 @@ from app import sexpos
 from app import moldes as moldes_mod
 from app import posts as posts_mod
 from app import procesadas
+from app.home_premium import build_context as prem_build_context
+from app.home_premium import HOME_TEMPLATE as PREMIUM_HOME
 from app import phrases as phrases_mod
 from app.organizer import organize
 from app.renamer import apply_rename, plan_rename
@@ -705,6 +707,7 @@ PER_DEFAULT = 50
 
 # (ícono, etiqueta, endpoint Flask, clave de página activa)
 NAV_ITEMS = [
+    ("🏠", "Inicio", "inicio", "inicio"),
     ("▦", "Rostros", "home", "home"),
     ("⧉", "Duplicados", "dupes_page", "dupes"),
     ("✎", "Carpeta", "rename_page", "rename"),
@@ -1587,6 +1590,22 @@ def _suspect_faces(members, enc):
     dists = 1.0 - vecs @ cent
     thr = max(SUSPECT_FLOOR, float(np.median(dists)) + SUSPECT_MARGIN)
     return {fid for (fid, _), dist in zip(valid, dists) if dist > thr}
+
+
+_PREMIUM_WIDE = """<style>
+  .main { max-width: 1420px !important; }
+</style>"""
+
+
+@app.route("/inicio")
+def inicio():
+    """Portada premium: biblioteca fotográfica editorial (foto del día,
+    protagonistas, recién, en-este-día, colecciones, descubrimientos)."""
+    cfg = load_config()
+    library = get_library(cfg)
+    ctx = prem_build_context(library)
+    return render_template_string(
+        shell("inicio", PREMIUM_HOME, head_extra=_PREMIUM_WIDE), **ctx)
 
 
 @app.route("/")
