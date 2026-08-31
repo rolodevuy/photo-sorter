@@ -60,6 +60,24 @@ La pestaña **"Renombrar"** cambia en masa los nombres de las imágenes de una c
 - La web solo escucha en `127.0.0.1`: nadie más en la red puede acceder.
 - Ninguna foto ni dato sale de tu computadora. El código no hace ninguna conexión a internet.
 
+## Portada premium (Inicio)
+
+La pestaña **“Inicio”** (primera del menú, ruta `/inicio`) es una tapa editorial de tu biblioteca, armada **solo con datos reales** de la app: nada de fechas, lugares ni colecciones inventados. Funciona como puerta de entrada visual mientras las demás pestañas son las herramientas.
+
+Lo que muestra, en orden:
+
+- **Portada / hero carrusel**: una selección de fotos reales (empieza por tus favoritas de `data/posts.json`; si no hay, usa fotos del archivo).
+- **Protagonistas**: las personas con más fotos en la biblioteca, con su cuenta real.
+- **Agregadas recientemente**: fotos ordenadas por su fecha real de modificación (`mtime`), con etiquetas “Hoy” / “Ayer”.
+- **En este día**: fotos cuya fecha coincide con el mes y día de hoy.
+- **Colecciones**: agrupadas por mes real y una tarjeta “Favoritas” (las marcadas como favoritas en el pie de foto).
+- **Descubrimientos**: breves curiosidades calculadas de los datos reales (quién aparece más, tu mes con más recuerdos, etc.).
+
+Los elementos abren un visor con la foto original. No agrega ni modifica nada: es de solo lectura.
+
+- Código de la interfaz y datos: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`).
+- Ruta y montaje en el menú: `app/flask_app.py` (endpoint `inicio()`).
+
 ## Archivos internos (carpeta `data/`)
 
 ```
