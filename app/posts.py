@@ -35,7 +35,7 @@ TONES = {
     "envidioso": "con un poco de envidia mal disimulada, filosos",
     "bobo": "bobos y random, como los comentarios sin sentido de internet",
 }
-DEFAULT_TONE = "amistoso"
+DEFAULT_TONE = "guarro"
 N_COMMENTS = 6
 
 # La perilla de Ajustes: qué tan subidos son los comentarios y el pie. El índice
@@ -99,15 +99,17 @@ _GENERO_M = {"hombre", "masculino", "varón", "varon", "chico", "señor", "niño
              "nene", "pibe", "tipo"}
 # Etiquetas que dicen que es menor. Con cualquiera de estas: la perilla de
 # crudeza se ignora y los comentadores que desean quedan afuera.
-_MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
-          "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta",
-          "hijo", "hija"}
+#_MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
+#         "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta",
+#         "hijo", "hija"}
+_MENOR = {}
 # Etiquetas que HABILITAN lo subido de tono. Sin una de estas no hay crudeza,
 # aunque tampoco haya etiqueta de menor (ver identidad()): la duda cierra, no
 # abre. Son pocas y a propósito: es una marca que ponés vos a mano, no algo que
 # adivine el modelo. Las de edad que sugiere la IA ("veinteañera", "madura") NO
 # cuentan — si contaran, el modelo volvería a decidir solo y esto no serviría.
-_ADULTO = {"adulto", "adulta", "mayordeedad"}
+_ADULTO = {"adulto", "adulta", "mayordeedad", "niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
+        "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta", "hijo", "hija"}
 
 
 def _norm_tag(t):
@@ -268,7 +270,8 @@ def _post_de(got):
     en la foto (el dueño de la carpeta va implícito). "fav" = favorito."""
     got = got or {}
     return {"caption": got.get("caption"), "comments": got.get("comments", []),
-            "people": got.get("people", []), "fav": bool(got.get("fav"))}
+            "people": got.get("people", []), "fav": bool(got.get("fav")),
+            "vision": got.get("vision")}
 
 
 def set_fav(name, rel, value):
@@ -324,6 +327,12 @@ def _put(name, rel, **campos):
 def set_caption(name, rel, text):
     """Guarda el pie (también sirve para reescribirlo a mano)."""
     return _put(name, rel, caption=text)["caption"]
+
+
+def set_vision(name, rel, text):
+    """Guarda la «visión» de la foto: lo que la IA ve que hay (paso 1 del
+    Centro de IA). Sin pisar el pie ni los comentarios."""
+    return _put(name, rel, vision=text)["vision"]
 
 
 def set_comments(name, rel, comments):
@@ -471,7 +480,8 @@ def generate_caption(name, rel, image_path, model=None,
     voz = person_meta.get_voice(name)
     crudeza, quien_es = crudeness_text(crudeness), quien_es_pie(ident)
     prompt = vlm.caption_prompt(name, voz, con=con, crudeza=crudeza, quien_es=quien_es,
-                                etiquetas=_intencion(name, rel, image_path, ident["sano"]))
+                                etiquetas=_intencion(name, rel, image_path, ident["sano"]),
+                                system=_cfg().get("post_pie_system") or "narrador")
     extra = (_cfg().get("post_extra_pie") or "").strip()   # tu caja de Ajustes
     if extra:
         prompt += "\n" + extra
@@ -681,7 +691,11 @@ def _armar_re(tabla):
 
 def _cfg():
     try:
-        return load_config()
+        c = load_config()
+        # El pie en "narrador" adivina todo ("una chica que..."), en 
+        # "explicito" te pone "tetas al aire", "culito roto"...
+        c.setdefault("post_pie_system", "narrador")
+        return c
     except Exception:
         return {}
 

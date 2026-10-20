@@ -1,102 +1,108 @@
 # photo-sorter
 
-Organizador de fotos por reconocimiento facial, **100% local**. Elegís una carpeta de **origen** (donde están tus fotos — no se mueven ni se modifican) y una de **destino**; el sistema detecta todos los rostros, agrupa automáticamente los de la misma persona, te pregunta en una web local "¿quién es esta persona?" y copia las fotos al destino en carpetas por nombre.
+Organizador y gestor de biblioteca de fotos con reconocimiento facial, **100% local**: agrupa los rostros de una carpeta, nombrás a cada persona, organizás a la **Biblioteca** (una carpeta por persona), y a partir de ahí tenés galerías, limpieza (duplicados, NSFW, caras separadas) y **producción de contenido** (pie de foto, comentarios, etiquetas, título/copete) generada por **modelos de IA que corren en tu máquina** (Ollama). Ninguna foto ni texto sale de la PC.
 
-## Flujo (todo desde la web)
+## De un vistazo (pestañas)
+
+| Pestaña | Rutas | Qué es |
+| --- | --- | --- |
+| **Inicio** | `/inicio` | Tapa editorial de tu biblioteca (ver abajo). |
+| **Explorar → Galería** | `/known` | Grid de personas conocidas → `/person/<nombre>` abre el visor de persona. |
+| **Explorar → Rostros** | `/` | Grid de caras sueltas (todas las fotos de la biblioteca, agrupadas). |
+| **Explorar → Persona** | `/finder` | Buscador de personas/parecidas. |
+| **Limpieza → Duplicados** | `/dupes` | Encuentra fotos repetidas (SHA-1 exacto y dHash perceptual). |
+| **Limpieza → Carpeta** | `/rename` | Renombra en masa (nomenclador). |
+| **Limpieza → NSFW** | `/nsfw` | Escaneo con NudeNet. |
+| **Limpieza → Separar caras** | `/split` | Parte una foto con mucha gente en recortes por persona. |
+| **Contenido → Pies** | `/moldes` | Editor de moldes de pie de foto (sin IA, al instante). |
+| **Contenido → Frases** | `/phrases` | Frases/descubrimientos para la portada. |
+| **Contenido → Probador** | `/probador` | Pruébale etiquetas a una sola foto, en vivo. |
+| **Contenido → Conversiones** | `/conversiones` | Diccionario de reemplazos de palabras (se usa en TODA la app). |
+| **Sistema → Ajustes** | `/settings` | Modelos, textos de la IA, biblioteca, todo. |
+
+Del menú original quedan: **Buscar duplicados**, **Renombrar**, **Formatos** e instalación en [SETUP.md](SETUP.md).
+
+## Flujo general
 
 ```
-PhotoSorter.bat  →  se abre http://127.0.0.1:5000
+PhotoSorter.bat  →  se abre http://127.0.0.1:5000  (también abre el navegador solo)
 ```
 
-1. **Elegir carpetas**: origen (tus fotos) y destino (donde se crean las carpetas por persona), con el selector de carpetas de Windows.
-2. **Analizar**: detecta rostros y agrupa las caras iguales (clustering, sin entrenamiento). Muestra barra de progreso.
-3. **Etiquetar**: cada grupo aparece con la pregunta "¿quién es esta persona?". Los grupos sin nombre se ignoran.
-4. **Organizar**: copia cada foto a `<destino>\<nombre>\`. Una foto con varias personas queda en la carpeta de cada una. **Los originales no se tocan.**
+1. **Ajustes** → elegís la **Biblioteca** (carpeta que ya tiene una subcarpeta por persona; la home, la galería y el visor leen de acá).
+2. **Analizar** desde **Rostros**: elegís una carpeta de fotos, detecta rostros (YuNet+SFace) y agrupa caras iguales (clustering, sin entrenamiento).
+3. **Etiquetar**: cada grupo aparece con "¿quién es esta persona?"; los grupos sin nombre se ignoran.
+4. **Organizar**: mueve cada foto a la **Biblioteca** (`<biblioteca>\<nombre>\`). Una foto con varias personas queda en la carpeta de cada una.
 
-## Depurar un grupo (cuando mezcló personas)
+### Reconocimiento automático (personas conocidas)
 
-A veces un grupo junta caras de personas distintas. Hay dos formas de sacar las que no van (en ambas, las caras salen del grupo y van a un grupo aparte **"Para revisar"** para una segunda pasada — no se borra ninguna foto del disco):
+- **Importar** desde una carpeta ya ordenada (una subcarpeta por persona) en el análisis.
+- **Aprende sobre la marcha**: cada grupo que nombrás se suma a `data/known_people.json`.
+- **Sugerencias** (💡): al analizar, los grupos parecidos a alguien conocido ya aparecen con el nombre escrito; confirmás con Enter o lo corregís.
+- Umbral en `app/known.py` (`MATCH_EPS`, por defecto 0.50): más bajo = más estricto.
 
-- **Una por una**: cada cara tiene una **✕ roja en la esquina**; tocala para sacar esa cara al toque.
-- **En grupos grandes** (más de 10 caras): el botón **"🔍 Revisar y depurar"** abre una ventana con **todas** las caras; marcás varias (quedan con borde rojo) y **"🗑 Quitar seleccionadas"**.
+### Caras dudosas / depurar
 
-## Personas conocidas (reconocimiento automático)
+Dentro de cada grupo, las caras que se despegan del centro se marcan con **⚠** (adaptativo, sin umbral fijo). Depurar: **✕ roja** por cara, o el botón **"🔍 Revisar y depurar"** en grupos grandes; las sacadas van a un grupo "Para revisar" — nunca se borra nada del disco.
 
-El programa recuerda a las personas que ya nombraste y las reconoce solo en los próximos análisis, así no las reetiquetás cada vez.
+## Duplicados, renombrar, NSFW, separar caras
 
-- **Importar desde una carpeta ya ordenada**: si ya tenés carpetas con caras clasificadas (una subcarpeta por persona, con su nombre), apuntá ahí y las aprende todas de una — sin rehacer nada. Toma la cara más grande de cada foto.
-- **Aprende sobre la marcha**: cada grupo que nombrás en la web se suma a la base.
-- **Sugerencias**: al analizar, los grupos que se parecen a una persona conocida aparecen con el nombre **ya escrito como sugerencia** (💡). Confirmás con Enter o lo corregís; no se aplica solo, siempre pasás por la lista de siempre.
-- **Galería**: la pestaña **"Personas conocidas"** muestra a cada persona con la cara más clara que aprendió, cuántas caras tiene y un botón para olvidarla.
+- **Duplicados** (`/dupes`): exactas (SHA-1) y parecidas (dHash). Marca cuál conservar (mayor resolución/peso); las sobrantes se **mueven** a `_duplicados\` dentro de la carpeta.
+- **Renombrar** (`/rename`): patrón `palabra_separador_0001.jpg`, con vista previa y cambio en dos pasos (no pisa nada).
+- **NSFW** (`/nsfw`): escaneo NudeNet del contenido explícito.
+- **Separar caras** (`/split`): corta cada persona de una foto grupal en su propio archivo.
+- Más por consola: `python -m app.duplicates`.
 
-## Caras dudosas
+## IA local (Ollama)
 
-Dentro de cada grupo, el programa marca con **⚠** las caras que se despegan del resto (posible intruso que se coló). El aviso aparece en el encabezado del grupo y en la ventana de depurar, con las dudosas primero. Es adaptativo: marca según cuánto se aleja cada cara del centro de su grupo, así no depende de un umbral fijo. Sirve para que no se te escape ninguna cara mal agrupada.
+Todos los generadores (pie, comentarios, etiquetas, **visión** y **copete/título**) usan modelos que corren en **Ollama** (`127.0.0.1:11434`):
 
-La base es `data/known_people.json` (vectores por persona, sin fotos). El umbral de coincidencia está en `app/known.py` (`MATCH_EPS`, por defecto 0.50): más bajo = más estricto.
+| Rol | Modelo típico | Dónde |
+| --- | --- | --- |
+| Etiquetas + Visión + Copete (mira la foto) | `Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated (Q4_K_M)` (vlm.py `TAG_MODELS` / `COPETE_MODEL`) | Visor → selector de modelo; Ajustes |
+| Pie y comentarios (texto) | `leeplenty/lumimaid-v0.2:12b` (`pie_model`/`comentarios_model`) | Ajustes |
+| Texto por defecto | `huihui_ai/qwen3.5-abliterated:9b` (`post_model`, default `:4b` en vlm.py) | Ajustes |
 
-## Buscar duplicados
+Detalles en [SETUP.md](SETUP.md#3-ia-local-ollama-modelos-de-visión-y-texto): `KEEP_ALIVE=-1` (modelo residente en VRAM), `OLLAMA_MAX_LOADED_MODELS=1`, **cola de trabajos en disco** (`app/cola.py` → `data/cola.json`) que procesa de a una tarea por vez sobre todas las fotos para cargar cada modelo una sola vez; aguanta un corte de luz y retoma.
 
-Además de ordenar por rostro, la web tiene una pestaña **"Buscar duplicados"** que encuentra fotos repetidas en la carpeta de origen:
-
-- **Exactas**: el mismo archivo aunque tenga otro nombre (comparación por contenido, SHA-1).
-- **Parecidas**: la misma imagen reescalada, recomprimida o con marca de agua (hash perceptual *dHash*).
-
-En cada grupo marca cuál conviene **conservar** (la de mayor resolución y peso). Al resolver, las sobrantes que tildes se **mueven** a una carpeta `_duplicados` dentro del origen — no se borran, así las revisás antes de eliminarlas. Por consola: `python -m app.duplicates`.
-
-## Renombrar (nomenclador)
-
-La pestaña **"Renombrar"** cambia en masa los nombres de las imágenes de una carpeta con el patrón que elijas: **palabra + separador + número** con la cantidad de dígitos que quieras (ej. `vacaciones_0001.jpg`, `IMG001.jpg`). Podés elegir el número inicial y ordenar por nombre o por fecha. Muestra una **vista previa** antes de aplicar, y renombra en dos pasos para no pisar archivos aunque el patrón nuevo coincida con nombres existentes. Trabaja solo en el primer nivel de la carpeta.
-
-## Formatos de imagen soportados
-
-`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif` (los GIF, por su primer fotograma).
-
-> **Motor de detección:** usa **YuNet** (detección) + **SFace** (reconocimiento) de OpenCV, que detectan bien caras de perfil o anguladas y son rápidos en CPU (~1 s por foto). Los modelos están en `app/models/` y corren 100% local.
-
-## Privacidad
-
-- Todo el reconocimiento corre en tu máquina (OpenCV YuNet+SFace, modelos incluidos en `app/models/`).
-- La web solo escucha en `127.0.0.1`: nadie más en la red puede acceder.
-- Ninguna foto ni dato sale de tu computadora. El código no hace ninguna conexión a internet.
+El **visor de persona** (`/person/<nombre>`) es la pieza central de contenido: cada foto tiene su pie, comentarios, etiquetas y favoritos, con un **Centro de IA** (🔮) que escribe la visión de la foto, las etiquetas sugeridas, el pie y los comentarios con el modelo elegido. En la pestaña **Pies** armás **moldes** (sin IA, instantáneos, en rioplatense y primera persona) que se disparan cuando la foto tiene todas sus etiquetas; las que no tienen molde caen al modelo lento.
 
 ## Portada premium (Inicio)
 
-La pestaña **“Inicio”** (primera del menú, ruta `/inicio`) es una tapa editorial de tu biblioteca, armada **solo con datos reales** de la app: nada de fechas, lugares ni colecciones inventados. Funciona como puerta de entrada visual mientras las demás pestañas son las herramientas.
+La pestaña **"Inicio"** (ruta `/inicio`) es una tapa editorial armada **solo con datos reales** de la app: nada de fechas, lugares ni colecciones inventados.
 
-Lo que muestra, en orden:
+- **Hero carrusel**: empieza por las favoritas (`data/posts.json`); si no hay, usa fotos del archivo.
+- **Protagonistas**: personas con más fotos, con su cuenta real.
+- **Agregadas recientemente**: por fecha real de modificación (`mtime`), con etiquetas "Hoy"/"Ayer".
+- **En este día**, **Colecciones** (por mes real + tarjeta "Favoritas") y **Descubrimientos** (curiosidades calculadas de los datos).
+- Carga con **skeletons de carga** (shimmer) y el hero en `eager`; es de solo lectura.
 
-- **Portada / hero carrusel**: una selección de fotos reales (empieza por tus favoritas de `data/posts.json`; si no hay, usa fotos del archivo).
-- **Protagonistas**: las personas con más fotos en la biblioteca, con su cuenta real.
-- **Agregadas recientemente**: fotos ordenadas por su fecha real de modificación (`mtime`), con etiquetas “Hoy” / “Ayer”.
-- **En este día**: fotos cuya fecha coincide con el mes y día de hoy.
-- **Colecciones**: agrupadas por mes real y una tarjeta “Favoritas” (las marcadas como favoritas en el pie de foto).
-- **Descubrimientos**: breves curiosidades calculadas de los datos reales (quién aparece más, tu mes con más recuerdos, etc.).
+Código: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`); ruta: `app/flask_app.py` (`inicio()`).
 
-Los elementos abren un visor con la foto original. No agrega ni modifica nada: es de solo lectura.
+## Mapa del proyecto
 
-- Código de la interfaz y datos: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`).
-- Ruta y montaje en el menú: `app/flask_app.py` (endpoint `inicio()`).
+- **`app/flask_app.py`** (~450 KB): toda la web sobre Flask — rutas, plantillas, CSS y JS en un solo archivo. Nada se sirve con caché vieja: CSS/JS llevan hash `?v=` (para ver cambios: cerrá lanzador y **Ctrl+F5**).
+- **Visión + texto (Ollama)**: `app/vlm.py` (VLM de etiquetado/visión, sistema de prompts), `app/narracion_ingles.py` (la narración que lee la IA), `app/posts.py` (pie/comentarios/copete + favoritos), `app/moldes.py` (editor de pies), `app/phrases.py`, `app/texto.py`, `app/cola.py`.
+- **Análisis / biblioteca**: `app/analyze.py` (clustering), `app/facedet.py` (YuNet+SFace, modelos en `app/models/`), `app/known.py` (personas conocidas), `app/organizer.py`, `app/limpieza.py`, `app/corrector.py`, `app/renamer.py`, `app/splitter.py`, `app/notfaces.py`, `app/procesadas.py`, `app/respaldo.py`.
+- **Escáneres**: `app/duplicates.py` (SHA-1/dHash), `app/nsfw.py` (NudeNet), `app/similar.py`, `app/sexpos.py` (acto, resnet50), `app/finder.py` (buscador de personas).
+- **Interface extra**: `app/home_premium.py` (portada), `app/tags.py`, `app/stats.py`, `app/person_meta.py`.
+- **Datos**: `data/` (ver árbol en SETUP.md). Los `.json` se escriben foto a foto, nunca se pierde lo hecho.
+- **Arranque**: `PhotoSorter.bat` (mata el puerto 5000 fantasma y lanza `venv\Scripts\python -m app.flask_app`; `PORT=5000`, `host=0.0.0.0`).
 
-## Archivos internos (carpeta `data/`)
+## Formatos de imagen
 
-```
-data/
-├── config.json        # carpetas de origen y destino elegidas
-├── faces/             # miniaturas de rostros (para la web)
-├── clusters.json      # grupos de rostros del último análisis
-└── labels.json        # nombres puestos en la web
-```
+`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif` (GIF por su primer fotograma). La extensión equivocada no importa: el formato se detecta por contenido. Detección: **YuNet** (detección) + **SFace** (reconocimiento) de OpenCV, rápidos en CPU (~1 s por foto), modelos en `app/models/`.
 
-## Formatos soportados
-
-`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp` y `.gif`. Los GIF se analizan por su **primer fotograma** (si están animados, se ignora el resto). Archivos con la extensión equivocada (p. ej. un PNG guardado como `.jpg`) igual se leen bien: el formato se detecta por el contenido, no por el nombre.
-
-## Ajustes
+## Ajustes finos
 
 En `app/analyze.py`, la constante `EPS` (por defecto `0.45`) controla qué tan parecidos deben ser dos rostros para caer en el mismo grupo:
 
-- **Bajarla** (ej. `0.40`) → grupos más estrictos: menos mezclas, pero una misma persona puede partirse en varios grupos (podés ponerle el mismo nombre a todos y se unifican al organizar).
-- **Subirla** (ej. `0.50`) → más permisivo: riesgo de mezclar personas parecidas.
+- **Bajarla** (`0.40`) → más estricto: menos mezclas, pero una persona puede partirse en varios grupos (mismo nombre a todos → se unifican al organizar).
+- **Subirla** (`0.50`) → más permisivo: riesgo de mezclar personas parecidas.
 
-Ver [SETUP.md](SETUP.md) para la instalación paso a paso.
+## Privacidad
+
+- Reconocimiento, escaneos y generación corren 100% locales (OpenCV + Ollama).
+- La web escucha en **`0.0.0.0:5000`** (accesible desde tu red local). Si no querés eso, cambiá el `host` en `app/flask_app.py` a `127.0.0.1`.
+- Ninguna foto ni texto sale de tu máquina; los modelos de Ollama se bajan una única vez y después andan sin conexión.
+
+Ver [SETUP.md](SETUP.md) para la instalación paso a paso y los respaldos.

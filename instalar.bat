@@ -13,15 +13,16 @@ if not exist venv (
     python -m venv venv || goto :error
 )
 
-echo Instalando dependencias (puede tardar unos minutos)...
+echo Instalando dependencias (puede tardar unos minutos, sobre todo torch)...
 venv\Scripts\python -m pip install --upgrade pip || goto :error
-venv\Scripts\pip install opencv-contrib-python numpy scikit-learn Pillow Flask || goto :error
+venv\Scripts\pip install -r requirements.txt || goto :error
 
 echo.
 echo ============================================
 echo  Listo! Instalacion completa.
-echo  Hace doble clic en "Photo Sorter" (escritorio)
-echo  y elegi las carpetas desde la web.
+echo  Hace doble clic en "Photo Sorter" (escritorio).
+echo  Para la IA (pie, etiquetas, vision, copete)
+echo  hace falta Ollama con los modelos: ver SETUP.md.
 echo ============================================
 pause
 exit /b 0

@@ -7,6 +7,7 @@ fechas por mtime, favoritas del pie, y agregaciones por mes. Nada inventado.
 """
 import random
 import datetime
+import time
 import os
 import hashlib
 
@@ -16,6 +17,43 @@ from . import posts as posts_mod
 _MESES_ES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 _DIA_ES = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+
+# Cache de la portada: armar el contexto (conteo sobre todas las fotos, meses,
+# protagonistas, etc.) cuesta; con muchas fotos se siente lento en cada entrada.
+# Se mantiene 30 minutos y se invalida antes si el mtime de las carpetas de
+# personas cambia (fotos que entran/salen) — ver _root_mtime.
+_HOME_CACHE = {}
+
+
+def _root_mtime(library):
+    """mtime máximo de las carpetas de personas (solo nivel superior: barato,
+    no recorre las miles de fotos). 0 si no hay biblioteca / falla."""
+    try:
+        mx = 0.0
+        with os.scandir(library) as it:
+            for e in it:
+                try:
+                    if e.is_dir():
+                        mx = max(mx, e.stat().st_mtime)
+                except OSError:
+                    pass
+        return mx
+    except OSError:
+        return 0.0
+
+
+def build_context_cached(library, ttl=1800):
+    """build_context con caché: ttl en segundos (default 30 min) y re-cálculo
+    automático si cambiaron fotos (mtime de carpetas) desde el último armado."""
+    now = time.time()
+    newest = _root_mtime(library or "")
+    ent = _HOME_CACHE.get(library)
+    if ent and (now - ent["ts"]) < ttl and newest <= ent["newest"]:
+        return ent["ctx"]
+    ctx = build_context(library)
+    _HOME_CACHE[library] = {"ts": now, "newest": newest or _root_mtime(library or ""),
+                            "ctx": ctx}
+    return ctx
 
 
 def _fecha_corta(ts):
@@ -82,7 +120,19 @@ def build_context(library):
         return f"/person_photo/{name}/{_nfs(rel)}"
 
     def _thumb(name, rel):
-        return f"/person_thumb/{name}/{_nfs(rel)}"
+        # miniatura de la home: centrada en la cara de la persona (con caída a
+        # su foto de perfil si hay más de una persona, y a miniatura clásica)
+        return f"/person_hero_thumb/{name}/{_nfs(rel)}"
+
+    def _hero(name, rel):
+        # imagen ancha del carrusel: banda al aspect del banner con la cara de
+        # la persona cerca del tercio superior (no un recorte cuadrado)
+        return f"/person_hero_wide/{name}/{_nfs(rel)}"
+
+    def _fit(name, rel):
+        # recorte al ancho del mosaico (Recién): centrado en la cara pero con
+        # la foto "entera" en el ancho; el aspect exacto se elige en el template
+        return f"/person_hero_fit/{name}/{_nfs(rel)}"
 
     def _perfil(name):
         return f"/person/{name}"
@@ -105,18 +155,37 @@ def build_context(library):
         sem = hashlib.sha1(f"fotodia:{hoy.strftime('%Y%m%d')}".encode()).hexdigest()
         idx = int(sem, 16) % len(archivo)
         y, m, d, name, rel, mt = archivo[idx]
-        foto_dia = {"url": _full(name, rel), "url_full": _full(name, rel),
+        foto_dia = {"url": _fit(name, rel) + "?a=1.33", "url_full": _full(name, rel),
                     "name": name, "caption": _cap(name, rel) or None}
     ctx["foto_dia"] = foto_dia
 
-    # Hero: favoritas reales + respaldo SFW
+    # Hero: favoritas reales + respaldo SFW. Se filtran las que ya no existen
+    # o que están en _nsfw/_revisar: si no, el slide queda vacío (404) y esa
+    # foto "no aparece" en la home.
     favs = [k.split("/", 1) for k, v in posts.items()
             if (v or {}).get("fav") and "/" in k and k.count("/") >= 1]
+    if library:
+        lib0 = library
+        favs = [(n, r) for n, r in favs
+                if "/_nsfw/" not in "/" + r + "/"
+                and "/_revisar/" not in "/" + r + "/"
+                and os.path.isfile(os.path.join(lib0, n, r.replace("/", os.sep)))]
     hero_items = []
+    excl = foto_dia["name"] if foto_dia else None
+    r = random.Random()
     if favs:
-        rnd = random.Random()
-        rnd.shuffle(favs)
-        for name, rel in favs[:5]:
+        # una sola foto por persona: el hero no repite perfil. Y se evita el
+        # mismo de la Foto del día mientras alcancen los candidatos.
+        r.shuffle(favs)
+        seen_n = set()
+        for name, rel in favs:
+            if len(hero_items) >= 5:
+                break
+            if name in seen_n:
+                continue
+            if excl and name == excl and len(seen_n) >= 4:
+                continue
+            seen_n.add(name)
             mt = 0
             try:
                 mt = os.path.getmtime(os.path.join(library or "", name, rel.replace("/", os.sep)))
@@ -124,15 +193,16 @@ def build_context(library):
                 pass
             hero_items.append({"name": name, "rel": rel, "mt": mt})
     else:
-        seen = set()
+        seen_n = set()
         no_hero = 0
-        r = random.Random()
-        while no_hero < 40 and len(hero_items) < 5 and archivo:
+        while no_hero < 60 and len(hero_items) < 5 and archivo:
             no_hero += 1
             y, m, d, name, rel, mt = r.choice(archivo)
-            if (name, rel) in seen:
+            if name in seen_n:
                 continue
-            seen.add((name, rel))
+            if excl and name == excl:
+                continue
+            seen_n.add(name)
             hero_items.append({"name": name, "rel": rel, "mt": mt})
     for it in hero_items:
         rel = it["rel"]
@@ -147,7 +217,7 @@ def build_context(library):
             it["chips"].append("Favorita")
         it["meta"] = it["name"]
         it["perfil"] = _perfil(it["name"])
-        it["url"] = _thumb(it["name"], rel)
+        it["url"] = _hero(it["name"], rel)
         it["url_full"] = _full(it["name"], rel)
     ctx["hero_items"] = hero_items
 
@@ -176,11 +246,11 @@ def build_context(library):
         if name in deps:
             continue
         deps.add(name)
-        recien.append({"name": name, "thumb": _thumb(name, rel), "mt": mt,
+        recien.append({"name": name, "thumb": _fit(name, rel), "mt": mt,
                        "url_full": _full(name, rel), "fecha": _fecha_corta(mt),
                        "perfil": _perfil(name)})
     recien.sort(key=lambda x: x["mt"], reverse=True)
-    ctx["recien"] = recien[:9]
+    ctx["recien"] = recien[:12]
 
     # En este dia (mtime mes+dia = hoy)
     hoy = datetime.date.today()
@@ -213,7 +283,12 @@ def build_context(library):
                      "img": _thumb(ff[0], ff[1]), "url": "/known"}
     ctx["colecciones"] = {"meses": meses_items, "favoritas": favoritas}
 
-    # Descubrimientos (curiosidades reales)
+    # Descubrimientos (curiosidades reales, en carrusel)
+    anio_tot = {}
+    dia_tot = {}
+    for y, m, d, name, rel, mt in archivo:
+        anio_tot[y] = anio_tot.get(y, 0) + 1
+        dia_tot[(y, m, d)] = dia_tot.get((y, m, d), 0) + 1
     desc = []
     if protagonistas:
         top = protagonistas[0]
@@ -230,7 +305,68 @@ def build_context(library):
     if en_este_dia:
         desc.append({"emoji": "\U0001F550", "url": "/known",
                      "texto": f"Hay {len(en_este_dia)} recuerdo(s) marcados para el dia de hoy."})
+    if anio_tot:
+        top_anio = max(anio_tot, key=anio_tot.get)
+        desc.append({"emoji": "\U0001F3C6", "url": "/known",
+                     "texto": f"{top_anio} fue tu gran año: {anio_tot[top_anio]} recuerdos guardados."})
+    f_persona = {}
+    for nm, rl in favs:
+        f_persona[nm] = f_persona.get(nm, 0) + 1
+    if f_persona:
+        top_fav = max(f_persona, key=f_persona.get)
+        if top_fav == (protagonistas[0]["name"] if protagonistas else None):
+            desc.append({"emoji": "\U0001F49B", "url": _perfil(top_fav),
+                         "texto": f"Tu favorita absoluta es {top_fav}: {f_persona[top_fav]} fichas con ⭐."})
+        else:
+            desc.append({"emoji": "\U0001F49B", "url": _perfil(top_fav),
+                         "texto": f"Le sacás más favoritas a {top_fav}: {f_persona[top_fav]} marcadas."})
+    if dia_tot:
+        (dy, dm, dd), n = max(dia_tot.items(), key=lambda kv: kv[1])
+        desc.append({"emoji": "\U0001F92F", "url": "/known",
+                     "texto": f"El {dd} de {_MESES_ES[dm]} {dy} guardaste {n} fotos: tu récord en un solo día."})
     ctx["descubrimientos"] = desc
+
+    # Módulo "Tu archivo en años" (debajo de la Foto del día)
+    try:
+        top6 = sorted(anio_tot.items(), key=lambda kv: -kv[1])[:6]
+        mx = top6[0][1] if top6 else 1
+        ctx["anios"] = [{"anio": str(y), "n": n, "pct": int(n * 100 / mx)}
+                        for y, n in sorted(top6)]
+    except Exception:
+        ctx["anios"] = []
+
+    # Copetes: titulares de noticia que vas generando con el botón 📰 del visor.
+    # Salen en la portada como "tus titulares" (los más recientes).
+    copetes_lista = []
+    try:
+        from app import copetes as copetes_mod
+        cc = [{"k": k2, "texto": (v2.get("copete") or "").strip(), "ts": v2.get("ts") or 0}
+              for k2, v2 in copetes_mod.get_all().items()
+              if (v2.get("copete") or "").strip()]
+        cc.sort(key=lambda x: -x["ts"])
+    except Exception:
+        cc = []
+    nombres = {p["name"] for p in gente}
+    vistos = set()
+    for item_c in cc:
+        k2 = item_c["k"]
+        if "/" not in k2:
+            continue
+        nm, rel = k2.split("/", 1)
+        if nm not in nombres or (nm, rel) in vistos:
+            continue
+        vistos.add((nm, rel))
+        copetes_lista.append({"name": nm, "texto": item_c["texto"][:110],
+                              "thumb": _thumb(nm, rel), "full": _full(nm, rel),
+                              "perfil": _perfil(nm),
+                              "cuando": _fecha_corta(item_c["ts"]) if item_c["ts"] else "hace un rato"})
+        if len(copetes_lista) >= 6:
+            break
+    ctx["copetes"] = copetes_lista
+
+    # En un vistazo (junto a la Foto del día): números reales de la biblioteca
+    ctx["stats"] = {"fotos": sum(conteo.values()), "personas": len(conteo),
+                    "favoritas": len(favs), "copetes": len(cc)}
 
     return ctx
 
@@ -242,8 +378,8 @@ HOME_TEMPLATE = r"""
      aire, tipografía cuidada, tarjetas grandes. Paleta oscura de la app con
      acentos cálidos para las marcas editoriales. */
 
-  .ph-head { display:flex; align-items:center; gap:1.4rem; padding:0 0 1.6rem;
-    border-bottom:1px solid var(--bd); margin-bottom:2.6rem; flex-wrap:wrap; }
+  .ph-head { display:flex; align-items:center; justify-content:flex-end; gap:1.4rem;
+    padding:0 0 1rem; margin-bottom:2rem; flex-wrap:wrap; }
   .ph-brand { display:flex; align-items:center; gap:.75rem; }
   .ph-mark { width:44px; height:44px; border-radius:12px; overflow:hidden; flex:none;
     border:1px solid var(--bd); background:var(--panel2); display:flex;
@@ -312,10 +448,11 @@ HOME_TEMPLATE = r"""
 
   /* FOTO DEL DÍA + protagonistas */
   .ph-dia-num { display:flex; align-items:center; gap:2.6rem; }
+  .ph-dia-col { flex:0 0 46%; min-width:0; }
   .ph-dia-card { position:relative; border-radius:16px; overflow:hidden; border:1px solid var(--bd);
-    flex:0 0 46%; aspect-ratio:4/3; box-shadow:0 14px 34px rgba(0,0,0,.3); cursor:pointer; min-width:0; }
+    width:100%; aspect-ratio:4/3; box-shadow:0 14px 34px rgba(0,0,0,.3); cursor:pointer; min-width:0; }
   .ph-dia-card img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block;
-    transition:transform .5s ease; }
+    object-position:top; transition:transform .5s ease; }
   .ph-dia-card:hover img { transform:scale(1.03); }
   .ph-dia-card .ov { position:absolute; inset:0; background:linear-gradient(180deg,rgba(0,0,0,0) 50%,rgba(0,0,0,.7) 100%); }
   .ph-dia-card .dia-c { position:absolute; left:1rem; bottom:1rem; color:#fff; }
@@ -325,6 +462,22 @@ HOME_TEMPLATE = r"""
   .ph-dia-card .dia-t { font-size:1.2rem; font-weight:700; letter-spacing:-.01em; }
   .ph-dia-card .dia-m { font-size:.82rem; color:#d7dbe3; margin-top:.2rem; }
   .ph-dia-lado { flex:1; min-width:0; }
+  .ph-dia-stats { display:flex; gap:.5rem; margin-top:.7rem; flex-wrap:wrap; }
+  .ph-dia-stats span { font-size:.8rem; color:var(--mut); background:var(--panel);
+    border:1px solid var(--bd); border-radius:999px; padding:.3rem .75rem; white-space:nowrap; }
+
+  /* Tu archivo en años: barras debajo de la Foto del día */
+  .ph-anios { margin-top:1.4rem; background:var(--panel); border:1px solid var(--bd);
+    border-radius:14px; padding:1rem 1.1rem; }
+  .ph-anios .an-k { font-size:.68rem; font-weight:800; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--acc2); margin-bottom:.85rem; }
+  .an-row { display:flex; align-items:center; gap:.7rem; margin-bottom:.5rem; font-size:.82rem; }
+  .an-row:last-child { margin-bottom:0; }
+  .an-y { flex:none; width:3.4rem; color:var(--mut); font-weight:650; }
+  .an-bar { flex:1; height:8px; border-radius:4px; background:var(--panel2); overflow:hidden; }
+  .an-bar i { display:block; height:100%; width:var(--pp); border-radius:4px;
+    background:linear-gradient(90deg,var(--acc1),var(--acc2)); }
+  .an-n { flex:none; width:3rem; text-align:right; color:var(--tx); font-variant-numeric:tabular-nums; }
   .ph-prota { display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:1.1rem 1rem; margin-top:1.2rem; }
   .ph-prot { display:flex; flex-direction:column; align-items:center; text-align:center; text-decoration:none; color:inherit; }
   .ph-prot .pp-img { width:100%; aspect-ratio:1/1; border-radius:14px; overflow:hidden; border:1px solid var(--bd);
@@ -351,6 +504,39 @@ HOME_TEMPLATE = r"""
     opacity:0; transform:translateY(3px); transition:opacity .25s, transform .25s; }
   .ph-rc:hover .rc-m { opacity:1; transform:none; }
 
+  /* Copetes (titulares de noticia) */
+  .ph-copetes { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:.8rem; }
+  .ph-cop { display:flex; gap:.7rem; align-items:center; padding:.55rem .6rem;
+    background:var(--panel); border:1px solid var(--bd); border-radius:12px;
+    cursor:pointer; transition:border-color .2s, background .2s; }
+  .ph-cop:hover { border-color:var(--acc2); background:var(--panel2); }
+  .pc-img { flex:none; }
+  .pc-img img { display:block; width:52px; height:52px; border-radius:9px; object-fit:cover;
+    border:1px solid var(--bd); }
+  .pc-txt { display:flex; flex-direction:column; gap:.1rem; min-width:0; }
+  .pc-n { font-size:.7rem; font-weight:700; color:var(--acc2); text-transform:uppercase;
+    letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pc-c { font-size:.85rem; line-height:1.3; color:var(--tx); }
+
+  /* destacado elegido por vos (🏠 del visor) */
+  #ph-home-copete { align-items:center; gap:.8rem; margin:0 0 1rem; padding:.6rem .8rem;
+    background:linear-gradient(90deg, var(--acc2), var(--acc1)); color:#fff;
+    border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
+  #ph-home-copete .hc-tag { flex:none; font-size:.68rem; font-weight:800; text-transform:uppercase;
+    letter-spacing:.12em; background:rgba(0,0,0,.25); padding:.25rem .5rem; border-radius:6px; }
+  #ph-home-copete .hc-img { flex:none; }
+  #ph-home-copete .hc-img img { display:block; width:56px; height:56px; border-radius:10px;
+    object-fit:cover; border:2px solid rgba(255,255,255,.5); }
+  #ph-home-copete .hc-body { flex:1; min-width:0; text-align:left; background:none; border:none;
+    cursor:pointer; color:inherit; padding:0; display:flex; flex-direction:column; gap:.1rem; }
+  #ph-home-copete .hc-t { font-size:.95rem; font-weight:700; line-height:1.25;
+    overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2;
+    -webkit-box-orient:vertical; }
+  #ph-home-copete .hc-m { font-size:.74rem; opacity:.9; }
+  #ph-home-copete .hc-meta { flex:none; }
+  #ph-home-copete .hc-meta a { color:#fff; font-size:.78rem; font-weight:650; }
+  @media (max-width:640px) { #ph-home-copete .hc-meta { display:none; } }
+
   /* En este día */
   .ph-dia-en { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.9rem; }
   .ph-en { position:relative; border-radius:14px; overflow:hidden; border:1px solid var(--bd);
@@ -373,15 +559,58 @@ HOME_TEMPLATE = r"""
   .ph-col .ph-col-n { font-size:1.05rem; font-weight:700; letter-spacing:-.01em; }
   .ph-col .ph-col-m { font-size:.78rem; color:#d7dbe3; margin-top:.15rem; }
 
-  /* Descubrimientos */
-  .ph-desc { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:.9rem; }
-  .ph-desc-item { display:flex; align-items:center; gap:.85rem; background:linear-gradient(180deg,var(--panel),var(--panel2));
-    border:1px solid var(--bd); border-radius:14px; padding:1rem 1.1rem; text-decoration:none; color:var(--tx);
+  /* Descubrimientos: carrusel de curiosidades (pasan solas) */
+  .ph-carr { position:relative; margin-top:1.3rem; }
+  .ph-desc-item { display:none; align-items:center; gap:.85rem; background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--bd); border-radius:14px; padding:1.1rem 3.2rem; text-decoration:none; color:var(--tx);
     transition:border-color .18s, transform .18s; }
+  .ph-desc-item.on { display:flex; animation:carrin .4s ease; }
+  @keyframes carrin { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
   .ph-desc-item:hover { border-color:var(--acc2); transform:translateY(-2px); }
-  .ph-desc-item .di-em { flex:none; width:40px; height:40px; border-radius:12px; background:rgba(88,166,255,.12);
+  .ph-desc-item .di-em { flex:none; width:42px; height:42px; border-radius:12px; background:rgba(88,166,255,.12);
     display:flex; align-items:center; justify-content:center; font-size:1.3rem; }
-  .ph-desc-item .di-t { font-size:.9rem; line-height:1.35; font-weight:550; }
+  .ph-desc-item .di-t { font-size:.98rem; line-height:1.4; font-weight:550; }
+  .carr-btn { position:absolute; top:50%; transform:translateY(-50%); z-index:2; width:2.2rem; height:2.2rem;
+    border-radius:50%; border:1px solid var(--bd); background:var(--panel); color:var(--tx);
+    font-size:1.15rem; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    transition:background .18s, border-color .18s; }
+  .carr-btn:hover { background:var(--panel2); border-color:var(--acc2); }
+  .carr-prev { left:.4rem; } .carr-next { right:.4rem; }
+  .ph-carr-dots { display:flex; justify-content:center; gap:.4rem; margin-top:.9rem; }
+  .carr-dot { width:18px; height:4px; border-radius:2px; border:0; padding:0; cursor:pointer;
+    background:var(--bd); transition:width .2s, background .2s; }
+  .carr-dot.on { width:28px; background:var(--acc2); }
+
+  /* Lightbox de la home: foto en grande con pie y link al perfil */
+  #gmodal { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(6,9,14,.88); z-index:1200; padding:1.5rem; cursor:zoom-out;
+    -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
+  #gmodal-caja { position:relative; max-width:min(1400px,96vw); cursor:default; }
+  #gmodal-x { position:absolute; top:-1rem; right:-1rem; width:2.2rem; height:2.2rem;
+    border-radius:50%; background:var(--panel2); border:1px solid var(--bd); color:var(--tx);
+    display:flex; align-items:center; justify-content:center; font-size:1rem; cursor:pointer; }
+  #gmodal-x:hover { color:var(--red); border-color:var(--red); }
+  #gmodal-img { display:block; max-width:96vw; max-height:82vh; border-radius:12px;
+    box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  #gmodal-pie { display:flex; align-items:center; justify-content:space-between; gap:1rem;
+    margin-top:.9rem; color:var(--mut); font-size:.9rem; flex-wrap:wrap; }
+  #gmodal-meta { min-width:0; }
+  #gmodal-perfil { color:var(--acc2); font-weight:650; text-decoration:none; white-space:nowrap; }
+  #gmodal-perfil:hover { text-decoration:underline; }
+
+  /* skeleton: mientras no llegó la foto, la caja muestra una banda que brilla
+     (parece que entra cargando). El <img> es opaco y va ARRIBA de la banda, así
+     que al cargar la tapa solo (sin JS). Si la foto falla, el placeholder emoji
+     queda arriba igual. */
+  @keyframes pshimmer { to { background-position-x: -200%; } }
+  .hero-slide::before, .ph-dia-card::before, .pp-img::before, .pc-img::before,
+  .ph-rc::before, .ph-en::before, .ph-col::before {
+    content:""; position:absolute; inset:0; z-index:0; pointer-events:none;
+    background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.07) 50%, transparent 70%);
+    background-size:200% 100%;
+    animation: pshimmer 1.5s linear infinite;
+  }
+  .pc-img { position:relative; }
 
   @media (max-width:900px) {
     .ph-dia-num { flex-direction:column; align-items:stretch; gap:1.6rem; }
@@ -395,25 +624,7 @@ HOME_TEMPLATE = r"""
 
 <h1 style="display:none">Inicio</h1>
 
-<header class="ph-head">
-  <div class="ph-brand">
-    <span class="ph-mark">📷</span>
-    <span class="ph-word"><span class="ph-name">photo-sorter</span>
-      <span class="ph-sub">Tu archivo fotográfico</span></span>
-  </div>
-  <nav class="ph-nav">
-    <a href="{{ url_for('known_page') }}">Biblioteca</a>
-    <a href="{{ url_for('known_page') }}">Colecciones</a>
-    <a href="{{ url_for('known_page') }}">Personas</a>
-  </nav>
-  <div class="ph-right">
-    <form class="ph-search" action="{{ url_for('finder_page') }}" method="get">
-      <span class="tic">🔍</span>
-      <input name="q" placeholder="Buscar fotos, personas, lugares, fechas..." aria-label="Buscar">
-    </form>
-    <a class="ph-av" href="{{ url_for('settings_page') }}" title="Perfil">👤</a>
-  </div>
-</header>
+{# el avatar y el buscador viven en la fila de pestañas (shell) #}
 
 {% if not library %}
 <div class="panel">
@@ -424,14 +635,17 @@ HOME_TEMPLATE = r"""
 
 {% elif gente %}
 
+{# destacado elegido por vos (botón 🏠 del visor): se llena desde localStorage #}
+<div id="ph-home-copete" style="display:none"></div>
+
 {# HERO #}
 {% if hero_items %}
 <div class="ph-hero" id="hero">
   <div class="hero-slides" id="hero-slides">
     {% for it in hero_items %}
-    <div class="hero-slide"
-         onclick="abrirFoto('{{ it.url_full }}','{{ it.titulo }}','{{ it.meta }}','{{ it.perfil }}')">
-      <img src="{{ it.url }}" alt="" loading="lazy"
+    <div class="hero-slide ph-foto"
+         data-url="{{ it.url_full }}" data-tit="{{ it.titulo }}" data-meta="{{ it.meta }}" data-perfil="{{ it.perfil }}">
+      <img src="{{ it.url }}" alt="" loading="eager" fetchpriority="high"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
       <div class="hero-nofoto" style="display:none">📷</div>
       <div class="ov"></div>
@@ -458,17 +672,39 @@ HOME_TEMPLATE = r"""
 <section class="ph-sec">
   <div class="ph-dia-num">
     {% if foto_dia %}
-    <div class="ph-dia-card"
-         onclick="abrirFoto('{{ foto_dia.url_full }}','{{ foto_dia.name }} · {% if foto_dia.caption %}{{ foto_dia.caption[:70]|e }}{% else %}Foto del día{% endif %}','{{ url_for('person_page', name=foto_dia.name) }}')">
-      <img src="{{ foto_dia.url }}" alt="" loading="lazy"
-           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-      <div class="hero-nofoto" style="display:none">📷</div>
-      <div class="ov"></div>
-      <div class="dia-c">
-        <span class="dia-tag">Foto del día</span>
-        <div class="dia-t">{% if foto_dia.caption %}{{ foto_dia.caption[:48] }}{% else %}{{ foto_dia.name }}{% endif %}</div>
-        <div class="dia-m">{{ foto_dia.name }} · tocar para verla</div>
+    <div class="ph-dia-col">
+      <div class="ph-dia-card ph-foto"
+           data-url="{{ foto_dia.url_full }}" data-tit="{{ foto_dia.name }}{% if foto_dia.caption %} · {{ foto_dia.caption[:70]|e }}{% endif %}" data-meta="Foto del día" data-perfil="{{ url_for('person_page', name=foto_dia.name) }}">
+        <img src="{{ foto_dia.url }}" alt="" loading="lazy"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="hero-nofoto" style="display:none">📷</div>
+        <div class="ov"></div>
+        <div class="dia-c">
+          <span class="dia-tag">Foto del día</span>
+          <div class="dia-t">{% if foto_dia.caption %}{{ foto_dia.caption[:48] }}{% else %}{{ foto_dia.name }}{% endif %}</div>
+          <div class="dia-m">{{ foto_dia.name }} · tocar para verla</div>
+        </div>
       </div>
+      {% if stats %}
+      <div class="ph-dia-stats">
+        <span>📷 {{ "{:,}".format(stats.fotos).replace(",", ".") }} fotos</span>
+        <span>👥 {{ stats.personas }} personas</span>
+        <span>⭐ {{ stats.favoritas }} favoritas</span>
+        <span>📰 {{ stats.copetes }} titulares</span>
+      </div>
+      {% endif %}
+      {% if anios %}
+      <div class="ph-anios">
+        <div class="an-k">Tu archivo en años</div>
+        {% for a in anios %}
+        <div class="an-row" style="--pp:{{ a.pct }}%">
+          <span class="an-y">{{ a.anio }}</span>
+          <span class="an-bar"><i></i></span>
+          <span class="an-n">{{ a.n }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
     {% endif %}
     <div class="ph-dia-lado">
@@ -495,17 +731,43 @@ HOME_TEMPLATE = r"""
   </div>
 </section>
 
+{# COPETES: tus titulares de noticia (botón 📰 del visor de cada foto) #}
+{% if copetes %}
+<section class="ph-sec">
+  <div class="sec-kick">Tus titulares</div>
+  <h2 class="sec-title">Copetes de tu biblioteca</h2>
+  <p class="sub">Los generás con el botón 📰 del visor de cada foto; tocalos para ver la foto.</p>
+  <div class="ph-copetes" style="margin-top:1.3rem">
+    {% for c in copetes %}
+    <div class="ph-cop ph-foto" role="button" tabindex="0"
+         data-url="{{ c.full }}" data-tit="{{ c.name }}" data-meta="copete · {{ c.cuando }}" data-perfil="{{ c.perfil }}">
+      <span class="pc-img">
+        <img src="{{ c.thumb }}" alt="" loading="lazy"
+             onerror="this.nextElementSibling.style.display='flex';">
+        <span class="hero-nofoto" style="display:none">📰</span>
+      </span>
+      <span class="pc-txt">
+        <span class="pc-n">{{ c.name }} · {{ c.cuando }}</span>
+        <span class="pc-c">“{{ c.texto }}”</span>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {# RECIÉN AGREGADAS #}
 {% if recien %}
 <section class="ph-sec">
   <div class="sec-kick">Lo más nuevo</div>
   <h2 class="sec-title">Agregadas recientemente</h2>
   <div class="ph-recien" style="margin-top:1.3rem">
-    {% for f in recien[:9] %}
-    {% set cls = 'grid-r2' if loop.index == 1 else ('grid-c2' if loop.index in (2,5) else 'grid-c1') %}
-    <div class="ph-rc {{ cls }}" role="button" tabindex="0"
-         onclick="abrirFoto('{{ f.url_full }}','{{ f.name }}','recién agregada · {{ f.fecha }}','{{ f.perfil }}')">
-      <img src="{{ f.thumb }}" alt="" loading="lazy"
+    {% for f in recien[:12] %}
+    {% set cls = 'grid-r2' if loop.index == 1 else ('grid-c2' if loop.index in (2,5,8) else 'grid-c1') %}
+    {% set aopt = '2.6' if cls == 'grid-c2' else '1.35' %}
+    <div class="ph-rc {{ cls }} ph-foto" role="button" tabindex="0"
+         data-url="{{ f.url_full }}" data-tit="{{ f.name }}" data-meta="recién agregada · {{ f.fecha }}" data-perfil="{{ f.perfil }}">
+      <img src="{{ f.thumb }}?a={{ aopt }}" alt="" loading="lazy"
            onerror="this.nextElementSibling.style.display='flex';">
       <span class="hero-nofoto" style="display:none">📷</span>
       <div class="ov"></div>
@@ -524,8 +786,8 @@ HOME_TEMPLATE = r"""
   <h2 class="sec-title">En este día</h2>
   <div class="ph-dia-en" style="margin-top:1.3rem">
     {% for e in en_este_dia %}
-    <div class="ph-en" role="button" tabindex="0"
-         onclick="abrirFoto('{{ e.url_full }}','{{ e.name }}','{{ e.etiqueta }}','{{ e.perfil }}')">
+    <div class="ph-en ph-foto" role="button" tabindex="0"
+         data-url="{{ e.url_full }}" data-tit="{{ e.name }}" data-meta="{{ e.etiqueta }}" data-perfil="{{ e.perfil }}">
       <img src="{{ e.thumb }}" alt="" loading="lazy"
            onerror="this.nextElementSibling.style.display='flex';">
       <span class="hero-nofoto" style="display:none">📷</span>
@@ -568,19 +830,23 @@ HOME_TEMPLATE = r"""
 </section>
 {% endif %}
 
-{# DESCUBRIMIENTOS #}
+{# DESCUBRIMIENTOS: carrusel de curiosidades, pasan solas #}
 {% if descubrimientos %}
 <section class="ph-sec">
   <div class="sec-kick">Pequeñas curiosidades</div>
   <h2 class="sec-title">Descubrimientos</h2>
-  <div class="ph-desc" style="margin-top:1.3rem">
+  <p class="sub">Datos reales de tu biblioteca; pasan solos, tocalos para verlos.</p>
+  <div class="ph-carr" id="desc-carr">
     {% for d in descubrimientos %}
     <a class="ph-desc-item" href="{{ d.url }}">
       <span class="di-em">{{ d.emoji }}</span>
       <span class="di-t">{{ d.texto }}</span>
     </a>
     {% endfor %}
+    <button class="carr-btn carr-prev" onclick="descGo(-1)" aria-label="Anterior">‹</button>
+    <button class="carr-btn carr-next" onclick="descGo(1)" aria-label="Siguiente">›</button>
   </div>
+  <div class="ph-carr-dots" id="desc-dots"></div>
 </section>
 {% endif %}
 
@@ -608,6 +874,35 @@ HOME_TEMPLATE = r"""
   window.heroGo = go;
   var h = document.getElementById('hero');
   if (h) { h.addEventListener('mouseenter', function() { clearInterval(timer); }); h.addEventListener('mouseleave', restart); }
+  restart();
+})();
+
+/* carrusel de curiosidades: pasa solo cada ~4,5 s, con flechas y puntos */
+(function() {
+  var track = document.getElementById('desc-carr');
+  if (!track) return;
+  var items = Array.prototype.slice.call(track.querySelectorAll('.ph-desc-item'));
+  if (!items.length) return;
+  if (items.length === 1) { items[0].classList.add('on'); return; }
+  var i = 0, timer = null;
+  var dots = document.getElementById('desc-dots');
+  function paint() {
+    items.forEach(function(el, k) { el.classList.toggle('on', k === i); });
+    Array.prototype.forEach.call(dots.children, function(d, k) { d.classList.toggle('on', k === i); });
+  }
+  function go(d) { i = (i + d + items.length) % items.length; paint(); }
+  function restart() { clearInterval(timer); timer = setInterval(function() { go(1); }, 4500); }
+  window.descGo = go;
+  items.forEach(function(_, k) {
+    var b = document.createElement('button');
+    b.className = 'carr-dot' + (k === 0 ? ' on' : '');
+    b.setAttribute('aria-label', 'Curiosidad ' + (k + 1));
+    b.onclick = function() { i = k; paint(); restart(); };
+    dots.appendChild(b);
+  });
+  paint();
+  track.addEventListener('mouseenter', function() { clearInterval(timer); });
+  track.addEventListener('mouseleave', restart);
   restart();
 })();
 </script>
@@ -639,11 +934,49 @@ function abrirFoto(url, titulo, meta, perfil) {
   GM.abrir(url, (titulo ? titulo + ' · ' : '') + (meta || ''), perfil, titulo);
 }
 function gcerrar(ev) {
-  if (ev && ev.target && ev.target.id !== 'gmodal') return;
+  if (ev) {
+    var t = ev.target && ev.target.id;
+    if (t !== 'gmodal' && t !== 'gmodal-x') return;
+  }
   document.getElementById('gmodal').style.display = 'none';
   document.getElementById('gmodal-img').src = '';
 }
 document.addEventListener('keydown', function(e) { if (e.key === 'Escape') gcerrar(); });
+
+// tarjetas de foto de la home -> lightbox (data-* evita que un título con
+// comillas rompa el JS inline)
+[].forEach.call(document.querySelectorAll('.ph-foto'), function(el) {
+  el.addEventListener('click', function() {
+    abrirFoto(el.dataset.url, el.dataset.tit, el.dataset.meta, el.dataset.perfil);
+  });
+});
+
+// destacado "elegida para la portada": lo fijaste con el botón 🏠 del visor de
+// una foto; vive SOLO en tu navegador (localStorage). Se muestra como un aviso
+// arriba del hero con la foto y el copete.
+(function() {
+  var caja = document.getElementById('ph-home-copete');
+  if (!caja) return;
+  try {
+    var raw = localStorage.getItem('home_copete');
+    if (!raw) return;
+    var d = JSON.parse(raw);
+    if (!d || !d.name || !d.rel || !d.texto) return;
+    var url = '/person_thumb/' + encodeURIComponent(d.name) + '/' + d.rel.replace(/\//g, '%2F');
+    var full = '/person_photo/' + encodeURIComponent(d.name) + '/' + d.rel.replace(/\//g, '%2F');
+    var perfil = '/person/' + encodeURIComponent(d.name);
+    caja.style.display = 'flex';
+    caja.innerHTML = '<span class="hc-tag">Última hora</span>' +
+      '<span class="hc-img"><img src="' + url + '" alt="" loading="lazy"></span>' +
+      '<button type="button" class="hc-body" onclick="abrirFoto(\'' + full + '\',\'' +
+        (d.texto || '').replace(/'/g, "\\'") + '\',\'destacado de '+d.name.replace(/'/g, "\\'")+
+        '\',\'' + perfil + '\')">' +
+        '<span class="hc-t">“' + (d.texto || '').replace(/</g,'&lt;') + '”</span>' +
+        '<span class="hc-m">' + d.name.replace(/</g,'&lt;') + ' · tu copete elegido</span>' +
+      '</button>' +
+      '<span class="hc-meta"><a href="' + perfil + '">del perfil →</a></span>';
+  } catch (e) {}
+})();
 </script>
 
 """

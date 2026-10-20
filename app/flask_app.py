@@ -17,8 +17,10 @@ import hashlib
 import json
 import math
 import os
+import sys
 import threading
 import time
+import traceback
 import unicodedata
 import webbrowser
 from pathlib import Path
@@ -45,8 +47,9 @@ from app.finder import (EPS_DEFAULT, EPS_MAX, EPS_MIN, find_known, find_person,
                         move_to_person)
 from app.known import (add_faces, enroll_from_folder, forget_person,
                        import_folder_as_person, known_summary, library_people,
-                       load_known, move_photo, person_photos, save_face_crops,
-                       save_known, safe_name, save_uploaded_photos, set_cover)
+                       library_photo_counts, load_known, move_photo,
+                       person_photos, save_face_crops, save_known, safe_name,
+                       save_uploaded_photos, set_cover)
 from app.notfaces import add_not_faces, clear_not_faces, count_not_faces
 from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
                       SCORE_MIN_LO, move_to_nsfw, scan_nsfw)
@@ -56,8 +59,10 @@ from app import interrogator, vlm
 from app import sexpos
 from app import moldes as moldes_mod
 from app import posts as posts_mod
+from app import copetes as copetes_mod
 from app import procesadas
 from app.home_premium import build_context as prem_build_context
+from app.home_premium import build_context_cached as prem_build_cached
 from app.home_premium import HOME_TEMPLATE as PREMIUM_HOME
 from app import phrases as phrases_mod
 from app.organizer import organize
@@ -200,12 +205,43 @@ BASE_CSS = """
   .sidebar a .ic { width:1.4rem; text-align:center; font-size:1.1rem; }
   .sidebar a.active { background:var(--panel2); color:var(--tx);
                       box-shadow:inset 3px 0 0 var(--acc); }
+  .sidebar a.sec { font-weight:700; font-size:1rem; color:var(--tx); }
+  .sidebar a.sec:not(.active) { color:var(--mut); }
+  /* pestañas de la sección activa, arriba del contenido */
+  .tabbar { display:flex; align-items:center; gap:.3rem; margin-bottom:1.1rem;
+    flex-wrap:wrap; }
+  .tabbar > .ic, .tabbar > span.tbl { font-size:.7rem; font-weight:700;
+    letter-spacing:.09em; text-transform:uppercase; color:var(--mut);
+    margin-right:.55rem; opacity:.85; }
+  .tabbar a { display:inline-flex; align-items:center; gap:.5rem; padding:.42rem .9rem;
+    border-radius:999px; color:var(--mut); font-size:.92rem; font-weight:600;
+    text-decoration:none; background:transparent; border:1px solid transparent;
+    transition:color .15s, background .15s, border-color .15s; }
+  .tabbar a:hover { background:var(--panel2); color:var(--tx); }
+  .tabbar a.active { background:var(--panel2); color:var(--tx); border-color:var(--bd);
+    box-shadow:inset 3px 0 0 var(--acc); }
+  .tabbar a .ic { width:1.2rem; text-align:center; font-size:1rem; }
+  .tabbar .tbsearch { margin-left:auto; display:flex; align-items:center; gap:.4rem;
+    background:var(--panel); border:1px solid var(--bd); border-radius:999px;
+    padding:.32rem .9rem; }
+  .tabbar .tbsearch .tic { color:var(--mut); font-size:.95rem; }
+  .tabbar .tbsearch input { background:transparent; border:0; outline:0; color:var(--tx);
+    font-size:.9rem; width:185px; }
+  .tabbar .tbsearch input::placeholder { color:var(--mut); }
+  .tabbar a.tbav { width:38px; height:38px; border-radius:50%; flex:none;
+    background:var(--panel); border:1px solid var(--bd); color:var(--tx);
+    font-size:1.05rem; display:flex; align-items:center; justify-content:center;
+    text-decoration:none; margin-left:.35rem; transition:border-color .15s, transform .15s; }
+  .tabbar a.tbav:hover { border-color:var(--acc2); transform:scale(1.06); }
   .main { flex:1; padding:2rem 2.6rem; max-width:1040px; min-width:0; }
   @media (max-width:720px) {
     .app { flex-direction:column; }
     .sidebar { width:auto; height:auto; position:static; display:flex;
                flex-wrap:wrap; gap:2px; }
     .sidebar .brand { width:100%; padding-bottom:.4rem; }
+    .sidebar a.sec { width:auto; }
+    .tabbar .tbsearch { width:100%; margin-left:0; }
+    .tabbar .tbsearch input { flex:1; width:auto; }
     .main { padding:1.2rem; }
   }
 
@@ -369,6 +405,8 @@ BASE_CSS = """
   .pcfg-item { display:block; width:100%; text-align:left; padding:9px 8px; border-radius:8px;
     color:var(--tx); background:none; border:0; font-size:.9rem; cursor:pointer; }
   .pcfg-item:hover { background:#262d3a; text-decoration:none; }
+  .p-bio { color:var(--mut); font-size:.9rem; line-height:1.45; margin:.25rem 0 0;
+    max-width:52ch; overflow-wrap:break-word; }
   @media (max-width:640px) { .pcard { grid-template-columns:1fr; }
     .pcard-cover { border-right:0; border-bottom:1px solid var(--line); } }
   /* carrusel de favoritos dentro de la card */
@@ -559,7 +597,12 @@ BASE_CSS = """
   .chip.mini { font-size:.72rem; padding:.12rem .45rem; }
   /* modal de "etiquetar persona" */
   .modal-ov { position:fixed; inset:0; z-index:60; background:var(--ov);
-    display:flex; align-items:center; justify-content:center; }
+    display:flex; align-items:center; justify-content:center; overflow-y:auto; }
+  /* overflow-y:auto: si la ventana queda chica, el overlay scrollea y ningún
+     modal esconde contenido (la rueda no se queda "trabada") */
+  /* el gestor de etiquetas se apila sobre el Centro de IA (que también es un
+     .modal-ov): se abre desde el paso 2 sin obligarte a cerrar el creador */
+  #lb-tag-modal { z-index:70; }
   .modal-box { background:var(--panel2); border:1px solid var(--bd); border-radius:12px;
     box-shadow:0 12px 32px rgba(0,0,0,.5); padding:14px; width:360px; max-width:92vw;
     max-height:80vh; display:flex; flex-direction:column; }
@@ -653,15 +696,15 @@ BASE_CSS = """
   .suglist .sugadd2 { background:none; border:0; border-left:1px solid var(--bd);
     color:var(--acc2); cursor:pointer; font-size:1.05rem; padding:0 .8rem; }
   .suglist .sugadd2:hover { background:#262d3a; }
-  /* preview de etiquetas editable (abajo de comentarios) */
-  #lb.lb-post .tagmini { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
+  /* preview de etiquetas editable (abajo de comentarios y paso 2 del Centro de IA) */
+  #lb.lb-post .tagmini, #lb-ia-modal .tagmini { background:var(--bg); border:1px solid var(--bd); border-radius:6px;
     color:var(--tx); font-size:.78rem; padding:.12rem .4rem; width:6.5rem; }
-  #lb.lb-post .chip .chiptxt { cursor:text; }
-  #lb.lb-post .lb-tagprev .chip.inherited { opacity:.6; }
+  #lb.lb-post .chip .chiptxt, #lb-ia-modal .chip .chiptxt { cursor:text; }
+  #lb.lb-post .lb-tagprev .chip.inherited, #lb-ia-modal .lb-tagprev .chip.inherited { opacity:.6; }
   /* "mostrar todas / menos" para las etiquetas propias cuando son muchas */
-  #lb.lb-post .ownmore { background:none; border:0; color:var(--acc2); cursor:pointer;
+  #lb.lb-post .ownmore, #lb-ia-modal .ownmore { background:none; border:0; color:var(--acc2); cursor:pointer;
     font-size:.75rem; padding:.15rem .45rem; align-self:center; }
-  #lb.lb-post .ownmore:hover { text-decoration:underline; }
+  #lb.lb-post .ownmore:hover, #lb-ia-modal .ownmore:hover { text-decoration:underline; }
   /* etiquetas al fondo, discretas: un link chico, no un botón grande, para que
      el pie y los comentarios se lleven toda la atención */
   #lb.lb-post .ptags-min { margin-top:.8rem; padding-top:.6rem;
@@ -670,6 +713,52 @@ BASE_CSS = """
   #lb.lb-post .linklike { background:none; border:0; color:var(--mut); cursor:pointer;
     font-size:.82rem; padding:0; }
   #lb.lb-post .linklike:hover { color:var(--acc2); text-decoration:underline; }
+  /* Centro de IA: acordeón de pasos encadenados (Visión → Etiquetas → Pie →
+     Comentarios → Copete). Cada paso es un <details>; el abierto muestra su
+     cuerpo con el texto y el botoncito ✨ compacto. */
+  .pia { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:.4rem;
+    overflow-y:auto; padding:2px 8px 16px 4px; }
+  /* crece hasta llenar el modal y scrollea adentro: los botones ✨ del paso
+     abierto nunca quedan cortados por el borde del modal (el padding inferior
+     garantiza aire para el último paso aunque el flex se quede corto) */
+  .pia-step { background:var(--panel); border:1px solid var(--panel2);
+    border-radius:10px; overflow:hidden; flex:0 0 auto; }
+  /* flex:0 0 auto: los pasos no se aplastan para entrar (si faltara alto,
+     scrollea el .pia con su barra; antes flex-shrink los encogía y los
+     botones del último paso quedaban cortados sin forma de llegar) */
+  .pia-step[open] { border-color:var(--bd); }
+  .pia-step summary { display:flex; align-items:center;
+    justify-content:space-between; gap:.6rem; padding:.55rem .8rem; cursor:pointer;
+    font-size:.86rem; font-weight:600; color:var(--fg); list-style:none;
+    user-select:none; }
+  .pia-step summary::-webkit-details-marker { display:none; }
+  .pia-step summary span.meta { font-weight:400; font-size:.75rem; }
+  .pia-step summary::before { content:'▸'; color:var(--mut);
+    font-size:.7rem; transition:transform .15s; }
+  .pia-step[open] summary::before { transform:rotate(90deg); }
+  .pia-body { padding:.5rem .8rem .7rem; border-top:1px solid var(--line);
+    display:flex; flex-direction:column; gap:.45rem; min-width:0; }
+  .pia-body p { margin:0; line-height:1.5; white-space:pre-wrap;
+    font-size:.88rem; }
+  .pia-actions { display:flex; align-items:center; gap:.45rem;
+    flex-wrap:wrap; }
+  .pia-tags { border-top:0; }
+  /* el botón que abre el Centro de IA, al pie de la columna del post */
+  .cat-button { width:100%; padding:.6rem; margin-top:.4rem; font-weight:600; }
+  /* modal propio del Centro de IA */
+  .iamodal { width:min(720px,96vw); overflow:hidden; }
+  .iamodal .capfab { flex:none; width:34px; height:34px; min-width:0; padding:0;
+    display:flex; align-items:center; justify-content:center; font-size:15px; }
+  .iamodal .capin { width:100%; margin-top:.4rem; min-height:5rem; resize:vertical;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:.4rem; font:inherit; font-size:.85rem; }
+  #lb-ia-modal .com { padding:.3rem 0; font-size:.88rem; line-height:1.4;
+    border-bottom:1px solid var(--line); }
+  #lb-ia-modal .com b { color:var(--fg); }
+  #lb-ia-modal .empty { color:var(--dim); font-style:italic; }
+  #lb-ia-modal .linklike { background:none; border:0; color:var(--mut);
+    cursor:pointer; font-size:.82rem; padding:0; }
+  #lb-ia-modal .linklike:hover { color:var(--acc2); text-decoration:underline; }
   /* sugerencia nueva/dudosa (no está en tu vocabulario): marcada, no borrada */
   #lb.lb-post .sugchip.sug-nueva { border-color:var(--amb); }
   #lb.lb-post .sugchip.sug-nueva .sugadd { color:var(--amb); }
@@ -680,8 +769,8 @@ BASE_CSS = """
   #lb.lb-post .sm.on { border-color:var(--accent); color:var(--accent); }
   /* los botones que disparan a la IA: grandes, porque son los que hay que
      encontrar y porque hay que ver clarito que quedaron apretados */
-  #lb.lb-post .act { padding:.4rem .8rem; font-weight:600; min-width:11rem; }
-  #lb.lb-post .act.trabajando { opacity:1; border-color:var(--accent); color:var(--accent);
+  #lb.lb-post .act, #lb-ia-modal .act, #lb-tag-modal .act { padding:.4rem .8rem; font-weight:600; min-width:11rem; }
+  #lb.lb-post .act.trabajando, #lb-ia-modal .act.trabajando, #lb-tag-modal .act.trabajando { opacity:1; border-color:var(--accent); color:var(--accent);
     font-variant-numeric:tabular-nums; }
   /* las flechas no se pueden ir sobre la columna del post */
   #lb.lb-post #lb-next { right:calc(380px + 18px); }
@@ -705,34 +794,89 @@ CSS_VER = hashlib.sha1(BASE_CSS.encode("utf-8")).hexdigest()[:10]
 PER_OPTIONS = [10, 20, 50, 100]
 PER_DEFAULT = 50
 
-# (ícono, etiqueta, endpoint Flask, clave de página activa)
-NAV_ITEMS = [
-    ("🏠", "Inicio", "inicio", "inicio"),
-    ("▦", "Rostros", "home", "home"),
-    ("⧉", "Duplicados", "dupes_page", "dupes"),
-    ("✎", "Carpeta", "rename_page", "rename"),
-    ("☻", "Galería", "known_page", "known"),
-    ("⌕", "Persona", "finder_page", "finder"),
-    ("⚠", "NSFW", "nsfw_page", "nsfw"),
-    ("⚇", "Separar caras", "split_page", "split"),
-    ("✎", "Frases", "phrases_page", "phrases"),
-    ("🧪", "Probador", "probador", "probador"),
-    ("✍", "Pies", "moldes_page", "moldes"),
-    ("🔁", "Conversiones", "conversiones_page", "conversiones"),
-    ("⚙", "Ajustes", "settings_page", "settings"),
+# Secciones del menú: el sidebar muestra SOLO los títulos; cada uno abre su
+# sección y las opciones aparecen como pestañas arriba del contenido.
+# (título, ícono de sección, [(ícono, etiqueta, endpoint Flask, clave activa)])
+NAV_SECTIONS = [
+    ("Inicio", "🏠", [
+        ("🏠", "Inicio", "inicio", "inicio"),
+    ]),
+    ("Explorar", "🔍", [
+        ("☻", "Galería", "known_page", "known"),
+        ("▦", "Rostros", "home", "home"),
+        ("⌕", "Persona", "finder_page", "finder"),
+    ]),
+    ("Limpieza", "🧹", [
+        ("⧉", "Duplicados", "dupes_page", "dupes"),
+        ("✎", "Carpeta", "rename_page", "rename"),
+        ("⚠", "NSFW", "nsfw_page", "nsfw"),
+        ("⚇", "Separar caras", "split_page", "split"),
+    ]),
+    ("Contenido", "🖊", [
+        ("✍", "Pies", "moldes_page", "moldes"),
+        ("✎", "Frases", "phrases_page", "phrases"),
+        ("🧪", "Probador", "probador", "probador"),
+        ("🔁", "Conversiones", "conversiones_page", "conversiones"),
+    ]),
+    ("Sistema", "⚙", [
+        ("⚙", "Ajustes", "settings_page", "settings"),
+    ]),
 ]
+
+# clave de página activa -> (título de sección, clave de pestaña activa)
+_ACTIVE_TO_SECTION = {key: (title, key) for title, _ic, tabs in NAV_SECTIONS
+                      for _i, _l, _ep, key in tabs}
+
+
+def _seccion_de(active):
+    return _ACTIVE_TO_SECTION.get(active)
 
 
 def _nav_html(active):
-    """Barra lateral común; resalta la página activa (clave `active`)."""
+    """Barra lateral: solo los TÍTULOS de sección. Entrás a la sección y las
+    opciones son las pestañas (ver _tabbar_html)."""
     links = []
-    for icon, label, endpoint, key in NAV_ITEMS:
-        cls = "active" if key == active else ""
-        links.append(
-            f'<a class="{cls}" href="{url_for(endpoint)}">'
-            f'<span class="ic">{icon}</span>{label}</a>')
+    for title, icon, tabs in NAV_SECTIONS:
+        keys = {k for _i, _l, _ep, k in tabs}
+        cls = "active" if active in keys else ""
+        href = url_for(tabs[0][2])
+        links.append(f'<a class="sec {cls}" href="{href}">'
+                     f'<span class="ic">{icon}</span>{title}</a>')
     return ('<nav class="sidebar"><div class="brand">photo-sorter'
             '<small>reconocimiento local</small></div>' + "".join(links) + "</nav>")
+
+
+def _tab_search_html():
+    """Búsqueda rápida al final de la fila de pestañas (va en todas las
+    secciones; en Inicio, que no tiene pestañas, queda sola a la derecha)."""
+    return ('<form class="tbsearch" action="' + url_for("finder_page") + '" method="get">'
+            '<span class="tic">🔍</span>'
+            '<input name="q" placeholder="Buscar foto o persona" aria-label="Buscar">'
+            '</form>')
+
+
+def _tabbar_html(active):
+    """Pestañas de la sección activa (arriba del contenido de cada página).
+    Con una sola pestaña (Inicio, Sistema) no se dibujan pills: sería una
+    pestaña suelta sin sentido; queda solo el buscador al final."""
+    info = _seccion_de(active)
+    if not info:
+        return ""
+    title, sub = info
+    tabs = next(t for t in NAV_SECTIONS if t[0] == title)[2]
+    parts = ['<div class="tabbar">']
+    if len(tabs) > 1:
+        parts.append(f'<span class="tbl">{title}</span>')
+        for tab_icon, label, endpoint, key in tabs:
+            if not key:
+                continue
+            cls = "active" if key == sub else ""
+            parts.append(f'<a class="{cls}" href="{url_for(endpoint)}">'
+                         f'<span class="ic">{tab_icon}</span>{label}</a>')
+    parts.append(_tab_search_html())
+    parts.append('<a class="tbav" href="' + url_for("settings_page") + '" title="Perfil">👤</a>')
+    parts.append('</div>')
+    return "".join(parts)
 
 
 # Autocompletar de etiquetas, compartido por TODAS las páginas (va en el shell,
@@ -878,7 +1022,7 @@ def shell(active, inner, head_extra=""):
         '<link rel="stylesheet" href="/estatico/base.css?v=' + CSS_VER + '">'
         "</head><body>"
         '<div class="app">' + _nav_html(active) + '<main class="main">'
-        + inner +
+        + _tabbar_html(active) + inner +
         "</main></div>" + UNDO_FAB + CONFIRM_JS + "</body></html>")
 
 
@@ -1603,7 +1747,7 @@ def inicio():
     protagonistas, recién, en-este-día, colecciones, descubrimientos)."""
     cfg = load_config()
     library = get_library(cfg)
-    ctx = prem_build_context(library)
+    ctx = prem_build_cached(library)
     return render_template_string(
         shell("inicio", PREMIUM_HOME, head_extra=_PREMIUM_WIDE), **ctx)
 
@@ -2024,7 +2168,7 @@ function bulk(accion) {
       {% else %}
         <div class="noimg">👤</div>
       {% endif %}
-      <span class="badge-faces">{% if p.faces %}{{ p.count }} caras{% else %}importada{% endif %}</span>
+      <span class="badge-faces">{{ p.fotos }} fotos</span>
       {% if p.corrected %}<span class="badge-ok" title="Corregido {{ p.corrected }}">✓</span>{% endif %}
       <label class="selbox" style="display:none" title="Seleccionar a {{ p.name }}">
         <input type="checkbox" class="selchk" value="{{ p.name }}" onchange="selCount()">
@@ -2062,9 +2206,11 @@ function bulk(accion) {
 def known_page():
     people = known_summary(get_library())
     tagsets = tags_mod.people_tagsets()
+    cuentas = library_photo_counts(get_library())
     for p in people:   # "corregido hace X" + etiquetas (suyas + de sus fotos)
         p["corrected"] = person_meta.humanize(person_meta.get(p["name"])["corrected"])
         p["tags"] = tagsets.get(p["name"], [])
+        p["fotos"] = cuentas.get(p["name"], 0)
     return render_template_string(
         shell("known", KNOWN_TEMPLATE, head_extra=REFRESH_IMPORT),
         people=people, notfaces=count_not_faces(),
@@ -2844,6 +2990,19 @@ def person_renombrar(name):
     return redirect(url_for("person_page", name=nuevo, msg=f"Ahora se llama {nuevo}."))
 
 
+@app.route("/person/<name>/perfil", methods=["POST"])
+def person_perfil(name):
+    """Configuración del perfil (modal ⚙): bio + voz, en una sola escritura."""
+    try:
+        bio, voice = person_meta.set_profile(
+            name,
+            request.form.get("bio", ""),
+            request.form.get("voice", ""))
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "bio": bio, "voice": voice}
+
+
 PERSON_TEMPLATE = """
 <h1>{{ name }}</h1>
 <div class="row" style="justify-content:space-between">
@@ -3356,77 +3515,104 @@ PERSON_TEMPLATE = """
   <div class="pcard-main">
     <div class="row" style="justify-content:space-between; align-items:center; margin:0">
       <h1 style="margin:0; font-size:19px">{{ name }}</h1>
-      <button class="secondary iconbtn" onclick="toggleCfg(this)" title="Configuración de {{ name }}">⚙</button>
+      <button class="secondary iconbtn" onclick="pcfgAbrir()" title="Configuración de {{ name }}">⚙</button>
     </div>
-    {# el vínculo maneja cómo suenan sus pies ({relacion}, {vinculito}), así que
-       va visible acá y no escondido como una etiqueta más del gestor #}
-    <form method="post" action="{{ url_for('person_vinculo', name=name) }}" class="row"
-          style="margin:.25rem 0 0; gap:.4rem">
-      <label class="meta">Vínculo: <span class="hint-ico" title="Define cómo te nombra en los pies: con {relacion} te dice «primo» y con {vinculito} se dice «primita». Necesita tu género en Ajustes para dar vuelta el vínculo.">ⓘ</span></label>
-      <select name="vinculo" onchange="this.form.submit()" style="max-width:11rem">
-        <option value="">(ninguno)</option>
-        {% for v in vinculos_posibles %}
-        <option value="{{ v }}" {% if v == vinculo_actual %}selected{% endif %}>{{ v }}</option>
-        {% endfor %}
-      </select>
-    </form>
+    {% if bio %}<div class="p-bio">{{ bio }}</div>{% endif %}
 
-    <!-- Menú ⚙: acciones -->
-    <div id="pcfg" class="pcfg-menu" style="display:none">
-      <button class="pcfg-item" onclick="document.getElementById('pupload').click()"
-              title="Todas las fotos que elijas se guardan como de {{ name }}, sin analizar caras.">🖼 Subir fotos (todas de {{ name }})…</button>
-      <input type="file" id="pupload" accept="image/*" multiple style="display:none" onchange="subirFotos(this)">
-      <span class="meta" id="pupload-st" style="display:block;margin:.15rem 0 .2rem"></span>
-      <hr class="pcfg-sep">
-      {% if display %}
-      <button class="pcfg-item" onclick="cfgTagSel()">🏷 Etiquetar con IA…</button>
-      {% endif %}
-      <button class="pcfg-item" onclick="abrirTagMgr()">🗂 Gestor de etiquetas…</button>
-      <a class="pcfg-item" href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta</a>
-      <a class="pcfg-item" href="{{ url_for('person_export', name=name) }}">📦 Exportar perfil (.zip)</a>
-      {% if photos %}
-      <form method="post" action="{{ url_for('correct_start', name=name) }}" style="margin:0">
-        <button class="pcfg-item" title="Revisa la carpeta y deja a {{ name }} solo con caras verificadas.">🧹 Corregir entrenamiento</button>
-      </form>
-      <details class="lote" style="margin-top:.2rem">
-        <summary class="pcfg-item" style="cursor:pointer">✨ Escribir los posts de todas sus fotos…</summary>
-        {% if lote and lote.name == name and lote.status == 'running' %}
-          <p class="meta">Corriendo. Podés cerrar esta página: sigue igual.</p>
-        {% else %}
-        <form method="post" action="{{ url_for('post_lote', name=name) }}">
-          <div class="row" style="margin-top:.4rem">
-            <select name="que" id="lote-que" onchange="loteEta()">
-              <option value="pie">Solo el pie</option>
-              <option value="comentarios">Solo los comentarios</option>
-              <option value="ambos">Pie y comentarios</option>
+    <!-- Modal ⚙: todas las opciones del perfil, en un solo panel scrollable -->
+    <div id="pcfg" class="modal-ov" style="display:none" onclick="if(event.target===this) pcfgCerrar()">
+      <div class="modal-box" style="width:680px">
+        <div class="row" style="justify-content:space-between;margin:0 0 .6rem">
+          <b style="font-size:1.05rem">⚙ Configuración de {{ name }}</b>
+          <button class="secondary sm" onclick="pcfgCerrar()" title="Cerrar">✕</button>
+        </div>
+        <div style="max-height:68vh; overflow-y:auto; padding-right:.2rem">
+
+          <form id="pcfg-perfil">
+            <b>📝 Bio <span class="hint-ico" title="El párrafo que se ve en su perfil, abajo del nombre: quién es, desde cuándo la conocés…">ⓘ</span></b>
+            <textarea name="bio" rows="3" style="width:100%; margin-top:.3rem"
+                      placeholder="Quién es {{ name }} (un párrafo corto)…">{{ bio }}</textarea>
+            <b style="display:block; margin-top:.7rem">🎙 Voz <span class="hint-ico" title="Cómo habla {{ name }} en los pies de foto que escribe la IA. Si la dejás vacía usa la voz genérica: una cruda y directa, otra tímida…">ⓘ</span></b>
+            <textarea name="voice" rows="3" style="width:100%; margin-top:.3rem"
+                      placeholder="Ej: «habla con ironía, frases cortas, usa lunfardo»…">{{ voice }}</textarea>
+            <div class="row" style="margin:.5rem 0 0; gap:.4rem">
+              <button class="primary" type="button" onclick="pcfgGuardar()">💾 Guardar bio y voz</button>
+              <span class="meta" id="pcfg-st"></span>
+            </div>
+          </form>
+          <hr class="pcfg-sep">
+
+          {# el vínculo maneja cómo suenan sus pies ({relacion}, {vinculito}), así que
+             va acá y no escondido como una etiqueta más del gestor #}
+          <form method="post" action="{{ url_for('person_vinculo', name=name) }}" class="row"
+                style="margin:0; gap:.4rem">
+            <label class="meta">🔗 Vínculo: <span class="hint-ico" title="Define cómo te nombra en los pies: con {relacion} te dice «primo» y con {vinculito} se dice «primita». Necesita tu género en Ajustes para dar vuelta el vínculo.">ⓘ</span></label>
+            <select name="vinculo" onchange="this.form.submit()" style="flex:1">
+              <option value="">(ninguno)</option>
+              {% for v in vinculos_posibles %}
+              <option value="{{ v }}" {% if v == vinculo_actual %}selected{% endif %}>{{ v }}</option>
+              {% endfor %}
             </select>
-            <button class="primary" onclick="return confirm('Van ' + document.getElementById('lote-falta').textContent + ' de laburo. ¿Arranco?')">▶ Arrancar</button>
-          </div>
-          <p class="meta">{{ n_sin_post }} de {{ display_total }} sin hacer · tarda <b id="lote-falta">…</b></p>
-        </form>
-        {% endif %}
-      </details>
-      {% endif %}
+          </form>
+          <hr class="pcfg-sep">
 
-      <form method="post" action="{{ url_for('person_renombrar', name=name) }}" class="row"
-            style="margin:.3rem 0 0; gap:.4rem">
-        <input class="path" name="nuevo" placeholder="✎ renombrar a…" style="flex:1"
-               value="" autocomplete="off">
-        <button class="secondary" title="Mueve su carpeta y migra etiquetas, pies y rostro">Renombrar</button>
-      </form>
+          <button class="pcfg-item" onclick="document.getElementById('pupload').click()"
+                  title="Todas las fotos que elijas se guardan como de {{ name }}, sin analizar caras.">🖼 Subir fotos (todas de {{ name }})…</button>
+          <input type="file" id="pupload" accept="image/*" multiple style="display:none" onchange="subirFotos(this)">
+          <span class="meta" id="pupload-st" style="display:block;margin:.15rem 0 .2rem"></span>
+          <hr class="pcfg-sep">
+          {% if display %}
+          <button class="pcfg-item" onclick="cfgTagSel()">🏷 Etiquetar con IA…</button>
+          {% endif %}
+          <button class="pcfg-item" onclick="abrirTagMgr()">🗂 Gestor de etiquetas…</button>
+          <a class="pcfg-item" href="{{ url_for('finder_page', name=name) }}">🔍 Buscar sus fotos en otra carpeta</a>
+          <a class="pcfg-item" href="{{ url_for('person_export', name=name) }}">📦 Exportar perfil (.zip)</a>
+          {% if photos %}
+          <form method="post" action="{{ url_for('correct_start', name=name) }}" style="margin:0">
+            <button class="pcfg-item" title="Revisa la carpeta y deja a {{ name }} solo con caras verificadas.">🧹 Corregir entrenamiento</button>
+          </form>
+          <details class="lote" style="margin-top:.2rem">
+            <summary class="pcfg-item" style="cursor:pointer">✨ Escribir los posts de todas sus fotos…</summary>
+            {% if lote and lote.name == name and lote.status == 'running' %}
+              <p class="meta">Corriendo. Podés cerrar esta página: sigue igual.</p>
+            {% else %}
+            <form method="post" action="{{ url_for('post_lote', name=name) }}">
+              <div class="row" style="margin-top:.4rem">
+                <select name="que" id="lote-que" onchange="loteEta()">
+                  <option value="pie">Solo el pie</option>
+                  <option value="comentarios">Solo los comentarios</option>
+                  <option value="ambos">Pie y comentarios</option>
+                </select>
+                <button class="primary" onclick="return confirm('Van ' + document.getElementById('lote-falta').textContent + ' de laburo. ¿Arranco?')">▶ Arrancar</button>
+              </div>
+              <p class="meta">{{ n_sin_post }} de {{ display_total }} sin hacer · tarda <b id="lote-falta">…</b></p>
+            </form>
+            {% endif %}
+          </details>
+          {% endif %}
+          <hr class="pcfg-sep">
 
-      {# destructivo: va último y separado, para no apretarlo de paso #}
-      <hr class="pcfg-sep">
-      <form method="post" action="{{ url_for('known_forget') }}" style="margin:0">
-        <input type="hidden" name="name" value="{{ name }}">
-        {# OJO: nada de \\n en el confirm. Esto es un string de Python, así que
-           \\n se convierte en un salto de línea REAL dentro del onclick y parte
-           el string de JS al medio: rompe el atributo y todo lo que sigue. #}
-        <button class="pcfg-item" style="color:var(--red)"
-                data-confirm="Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios. LAS FOTOS NO SE BORRAN, quedan en su carpeta. ¿Seguro?">
-          🗑 Eliminar perfil y rostro…
-        </button>
-      </form>
+          <form method="post" action="{{ url_for('person_renombrar', name=name) }}" class="row"
+                style="margin:0; gap:.4rem">
+            <input class="path" name="nuevo" placeholder="✎ renombrar a…" style="flex:1"
+                   value="" autocomplete="off">
+            <button class="secondary" title="Mueve su carpeta y migra etiquetas, pies y rostro">Renombrar</button>
+          </form>
+
+          {# destructivo: va último y separado, para no apretarlo de paso #}
+          <hr class="pcfg-sep">
+          <form method="post" action="{{ url_for('known_forget') }}" style="margin:0">
+            <input type="hidden" name="name" value="{{ name }}">
+            {# OJO: nada de \\n en el confirm. Esto es un string de Python, así que
+               \\n se convierte en un salto de línea REAL dentro del onclick y parte
+               el string de JS al medio: rompe el atributo y todo lo que sigue. #}
+            <button class="pcfg-item" style="color:var(--red)"
+                    data-confirm="Eliminar el perfil de {{ name }}: se borran su rostro aprendido, sus etiquetas, sus pies y comentarios. LAS FOTOS NO SE BORRAN, quedan en su carpeta. ¿Seguro?">
+              🗑 Eliminar perfil y rostro…
+            </button>
+          </form>
+        </div>
+      </div>
     </div>
 
     {# Las etiquetas de la persona salieron del hero: se manejan en ⚙ → Gestor de
@@ -3600,6 +3786,7 @@ window.LB_PHOTOS = [
   {% for f in display %}{url:"{{ url_for('person_photo', name=name, rel=f.rel) }}",name:"{{ f.rel|e }}",rel:{{ f.rel|tojson }},video:{{ f.video|tojson }}},{% endfor %}
 ];
 window.POSTS = {{ posts|tojson }};             // {rel: {caption, comments, people}}
+window.COPETES = {{ copetes|tojson }};         // {rel: copete} ya generados
 window.VLM_MODELS = {{ vlm_models|tojson }};
 window.HAS_COVER = {{ has_thumb|tojson }};
 window.COVER_URL_THUMB = "{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}";
@@ -3742,7 +3929,7 @@ setInterval(loteMirar, 3000);
 // --- etiquetador automático: selecciono fotos (o ninguna = todas sin
 // etiquetas propias) y la IA les pone etiquetas sola, foto por foto ---
 function cfgTagSel() {
-  document.getElementById('pcfg').style.display = 'none';
+  pcfgCerrar();
   if (!tagSelOn) toggleTagSel();
   document.getElementById('tagselbar').scrollIntoView({behavior: 'smooth', block: 'center'});
 }
@@ -3817,27 +4004,47 @@ function tagLoteMirar() {
 tagLoteMirar();
 setInterval(tagLoteMirar, 3000);
 
-// --- menú de configuración de la persona (⚙) ---
-function toggleCfg(btn) {
+// --- modal de configuración de la persona (⚙) ---
+function pcfgAbrir() {
   const m = document.getElementById('pcfg');
-  const abrir = m.style.display === 'none';
-  if (abrir) {
-    const b = btn.getBoundingClientRect();
-    m.style.display = 'block';
-    let left = b.right - m.offsetWidth;
-    if (left < 8) left = 8;
-    m.style.top = (b.bottom + 6) + 'px';
-    m.style.left = left + 'px';
-  } else {
-    m.style.display = 'none';
-  }
+  if (m) m.style.display = 'flex';   // flex, no block: .modal-ov centra con flexbox
 }
-// cerrar el menú al hacer clic afuera
-document.addEventListener('click', e => {
+function pcfgCerrar() {
   const m = document.getElementById('pcfg');
-  if (!m || m.style.display === 'none') return;
-  if (!m.contains(e.target) && !e.target.closest('.iconbtn')) m.style.display = 'none';
+  if (m) m.style.display = 'none';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('pcfg');
+    if (m && m.style.display !== 'none') pcfgCerrar();
+  }
 });
+// guardar bio + voz del modal (AJAX: actualiza el perfil sin recargar)
+const PCFG_URL = "{{ url_for('person_perfil', name=name) }}";
+function pcfgGuardar() {
+  const st = document.getElementById('pcfg-st');
+  const fd = new URLSearchParams();
+  fd.set('bio', document.querySelector('#pcfg-perfil textarea[name=bio]').value);
+  fd.set('voice', document.querySelector('#pcfg-perfil textarea[name=voice]').value);
+  st.textContent = ' guardando…';
+  fetch(PCFG_URL, {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: fd})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { st.textContent = ' ✗ ' + d.error; return; }
+      st.textContent = ' ✓ guardado';
+      setTimeout(() => st.textContent = '', 2000);
+      // reflejar la bio nueva bajo el nombre sin recargar
+      const bio = document.querySelector('.p-bio');
+      if (d.bio) {
+        if (bio) bio.textContent = d.bio;
+        else {
+          const el = document.createElement('div');
+          el.className = 'p-bio'; el.textContent = d.bio;
+          document.querySelector('.pcard-main .row').insertAdjacentElement('afterend', el);
+        }
+      } else if (bio) bio.remove();
+    }).catch(e => { st.textContent = ' ' + e; });
+}
 
 // --- subir fotos directo al perfil (todas quedan como de esta persona) ---
 const SUBIR_URL = "{{ url_for('person_subir', name=name) }}";
@@ -3999,6 +4206,10 @@ POST_LIGHTBOX = """
           <div id="lb-tag-preview" class="lb-tagprev"></div>
           <button class="linklike" id="lb-tag-toggle" onclick="openTagModal()">🏷 Editar / Sugerir con IA</button>
         </div>
+
+        <!-- atajo a la columna de la derecha: abre el Centro de IA en su propio
+             modal (Visión → Etiquetas → Pie → Comentarios → Copete) -->
+        <button class="primary cat-button" type="button" onclick="openIA()">✨ Crear contenido</button>
       </div>
 
       <!-- acciones de ESTA foto (antes estaban en cada tarjeta de la grilla).
@@ -4096,19 +4307,129 @@ POST_LIGHTBOX = """
     </div>
   </div>
 </div>
+
+<!-- modal: Centro de IA — acordeón de pasos encadenados para el contenido de
+     la foto. Se abre con "✨ Crear contenido" (abajo de pie/comentarios):
+     1) Visión = la IA mira y anota qué hay. Con eso 2) Etiquetas, 3) Pie,
+     4) Comentarios. 5) Copete = SOLO titular para la portada: no va como texto
+     del pie ni en el cuerpo de la foto. -->
+<div id="lb-ia-modal" class="modal-ov" style="display:none"
+     onclick="if(event.target===this) closeIA()">
+  <div class="modal-box iamodal">
+    <div class="row" style="justify-content:space-between;margin:0 0 .4rem">
+      <b style="font-size:1.05rem">🧠 Centro de IA ·
+        <span class="meta" id="ia-who"></span></b>
+      <button class="secondary sm" onclick="closeIA()" title="Cerrar">✕</button>
+    </div>
+    <div class="pia" id="lb-pia">
+      <!-- 1 · Visión -->
+      <details class="pia-step" id="pia-vision" open>
+        <summary><span>1 · 🔎 Visión</span><span class="meta">qué hay en la foto</span></summary>
+        <div class="pia-body">
+          <p id="ia-vision" class="empty">La IA todavía no miró la foto: tocar ✨.</p>
+          <div id="ia-vision-sk" style="display:none">
+            <div class="sk sk-linea" style="width:96%"></div>
+            <div class="sk sk-linea" style="width:80%"></div>
+          </div>
+          <div class="pia-actions">
+            <button class="primary capfab" id="ia-vision-btn" onclick="genVisionIA()"
+                    title="Mirar la foto y anotar qué hay (paso 1 del Centro de IA)">✨</button>
+            <span class="meta" id="ia-vision-st"></span>
+          </div>
+        </div>
+      </details>
+      <!-- 2 · Etiquetas -->
+      <details class="pia-step" id="pia-tags">
+        <summary><span>2 · 🏷 Etiquetas</span></summary>
+        <div class="pia-body pia-tags">
+          <div id="ia-tag-preview" class="lb-tagprev"></div>
+          <div class="pia-actions">
+            <button class="primary act" id="ia-sug" onclick="sugIA()">🔮 Sugerir con IA</button>
+            <span class="meta" id="ia-sug-st"></span>
+          </div>
+          <span class="meta" id="ia-sug-count" style="display:block;margin-top:0"></span>
+          <div class="suglist" id="ia-sugtags"></div>
+          <div id="ia-sug-sk" style="display:none;margin-top:.4rem">
+            {% for w in [92, 78, 85, 70, 88, 62] %}<div class="sk sk-linea" style="width:{{ w }}%;height:1.6rem"></div>{% endfor %}
+          </div>
+          <button class="linklike" id="ia-tag-toggle" onclick="openTagModal()"
+                  title="Etiquetas heredadas del perfil, tus favoritas y gestor completo">🛠 Más opciones (gestor completo)</button>
+        </div>
+      </details>
+      <!-- 3 · Pie -->
+      <details class="pia-step" id="pia-pie">
+        <summary><span>3 · ✍ Pie de foto</span></summary>
+        <div class="pia-body">
+          <p id="ia-cap" class="empty">Todavía no tiene pie de foto.</p>
+          <div id="ia-cap-sk" style="display:none">
+            <div class="sk sk-linea" style="width:96%"></div>
+            <div class="sk sk-linea" style="width:88%"></div>
+            <div class="sk sk-linea" style="width:60%"></div>
+          </div>
+          <div class="pia-actions">
+            <button class="primary capfab" id="ia-cap-btn" onclick="genCaptionIA()"
+                    title="Escribir el pie con IA">✨</button>
+            <span class="meta" id="ia-cap-st"></span>
+          </div>
+        </div>
+      </details>
+      <!-- 4 · Comentarios -->
+      <details class="pia-step" id="pia-coms">
+        <summary><span>4 · 💬 Comentarios</span></summary>
+        <div class="pia-body">
+          <div id="ia-coms"></div>
+          <div id="ia-com-sk" style="display:none">
+            {% for w in [70, 85, 62, 78, 55, 80] %}
+            <div style="padding:.35rem 0;border-bottom:1px solid var(--line)">
+              <span class="sk" style="display:inline-block;height:.7rem;width:3.5rem"></span>
+              <span class="sk" style="display:inline-block;height:.7rem;width:{{ w }}%;margin-left:.3rem"></span>
+            </div>
+            {% endfor %}
+          </div>
+          <div class="pia-actions">
+            <button class="primary capfab" id="ia-com-btn" onclick="genCommentsIA()"
+                    title="Generar comentarios con IA">✨</button>
+            <span class="meta" id="ia-com-st"></span>
+          </div>
+        </div>
+      </details>
+      <!-- 5 · Copete (solo portada) -->
+      <details class="pia-step" id="pia-cop">
+        <summary><span>5 · 📰 Copete</span><span class="meta">solo portada</span></summary>
+        <div class="pia-body">
+          <p id="ia-cop" class="empty">Todavía no tiene copete.</p>
+          <div id="ia-cop-sk" style="display:none">
+            <div class="sk sk-linea" style="width:96%"></div>
+            <div class="sk sk-linea" style="width:70%"></div>
+          </div>
+          <div class="pia-actions">
+            <button class="primary capfab" id="ia-cop-btn" onclick="genCopeteIA()"
+                    title="Inventar un titular de noticia con IA (mira la foto)">📰</button>
+            <button class="secondary capfab" id="ia-cop-home" onclick="usarCopeteHomeIA()"
+                    title="Poner este copete como destacado de la portada">🏠</button>
+            <span class="meta" id="ia-cop-st"></span>
+          </div>
+        </div>
+      </details>
+    </div>
+    <span class="meta" style="display:block;margin-top:.6rem">Con el modelo
+      <b id="ia-model-note"></b> · lo que ya escribiste (<span class="meta">pie, comentarios, etiquetas</span>) queda igual.
+    </span>
+  </div>
+</div>
+
 <script>
 (function() {
   const P = window.LB_PHOTOS || [], POSTS = window.POSTS || {};
   const lb = document.getElementById('lb'), img = document.getElementById('lb-img');
   const $ = id => document.getElementById(id);
   let idx = 0, scale = 1, tx = 0, ty = 0, drag = false, sx = 0, sy = 0;
-  let sugeridas = new Set();   // etiquetas ya sugeridas por IA (para "sugerir más")
-  let sugStop = false;         // el usuario apretó Parar (corta el auto-continuo)
-  let sugCorriendo = false;    // hay una corrida de sugerencias en curso
   let ownExpanded = false;     // ¿mostrar TODAS las etiquetas propias o colapsadas?
   const OWN_LIMIT = 3;         // cuántas propias se ven antes del "mostrar todas"
                               // (no importan a la vista; están igual para la IA)
   const CAP_URL = "{{ url_for('post_caption', name=name) }}";
+  const VISION_URL = "{{ url_for('post_vision', name=name) }}";
+  const COPETE_URL = "{{ url_for('post_copete', name=name) }}";
   const CAPED_URL = "{{ url_for('post_caption_edit', name=name) }}";
   const COM_URL = "{{ url_for('post_comments', name=name) }}";
   const COMX_URL = "{{ url_for('post_comments_clear', name=name) }}";
@@ -4124,7 +4445,26 @@ POST_LIGHTBOX = """
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams(body)}).then(r => r.json());
   const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[], people:[]}); }
+  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[], people:[], vision:null, copete:null}); }
+  function copeteDe(r) { return (window.COPETES[r] || '').trim() || null; }
+
+  // --- acordeón del Centro de IA: estado por foto ---
+  // Al abrir una foto nueva se despliegan los pasos que ya tienen contenido; al
+  // regenerar en la MISMA foto no se toca lo que el usuario dejó abierto/cerrado
+  // (antes se forzaba "Visión abierto" y se reabría solo al crear el pie).
+  let piaLast = null;        // para qué foto es el estado ({rel} cuando se abrió)
+  function marcaPia() {
+    const r = rel();
+    if (piaLast === r) return;                 // misma foto: respetá lo que dejó
+    piaLast = r;
+    const d = slot(r), cop = d.copete || copeteDe(r);
+    const abrir = id => { const el = $(id); if (el) el.open = true; };
+    abrir('pia-vision');                        // Visión siempre: es la entrada
+    if ((PHOTO_TAGS[r] || []).length > 0) abrir('pia-tags');
+    if (d.caption) abrir('pia-pie');
+    if ((d.comments || []).length > 0) abrir('pia-coms');
+    if (cop) abrir('pia-cop');
+  }
 
   // --- zoom y arrastre (igual que el visor pelado) ---
   function apply() { img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; }
@@ -4142,6 +4482,31 @@ POST_LIGHTBOX = """
     $('lb-cap-btn').title = d.caption ? 'Reescribir el pie con IA' : 'Escribir el pie con IA';
     $('lb-cap-edit').style.display = d.caption ? '' : 'none';
     cancelCap();
+    // modal Centro de IA: visión, pie, comentarios y copete se repintan con los
+    // mismos datos (lo que se genera vale para la columna y para el modal)
+    $('ia-vision').textContent = d.vision || 'La IA todavía no miró la foto: tocar ✨.';
+    $('ia-vision').className = d.vision ? '' : 'empty';
+    $('ia-vision-st').textContent = '';
+    $('ia-vision-btn').title = d.vision ? 'Volver a mirar la foto' : 'Mirar la foto y anotar qué hay (paso 1 del Centro de IA)';
+    $('ia-cap').textContent = d.caption || 'Todavía no tiene pie de foto.';
+    $('ia-cap').className = d.caption ? '' : 'empty';
+    $('ia-cap-st').textContent = '';
+    // copete: el guardado de la foto, o el que se acaba de pedir
+    const cop = d.copete || copeteDe(rel());
+    $('ia-cop').textContent = cop || 'Todavía no tiene copete.';
+    $('ia-cop').className = cop ? '' : 'empty';
+    $('ia-cop-home').style.visibility = cop ? '' : 'hidden';
+    $('ia-cop-st').textContent = '';
+    const ib = $('ia-coms');
+    ib.innerHTML = d.comments.length ? '' : '<span class="meta empty">Sin comentarios.</span>';
+    d.comments.forEach(c => {
+      const el = document.createElement('div'); el.className = 'com';
+      el.innerHTML = '<b>@' + esc(c.user) + '</b> ' + esc(c.text);
+      ib.appendChild(el);
+    });
+    $('ia-com-st').textContent = '';
+    if ($('ia-who')) $('ia-who').textContent = PERSON;
+    if ($('ia-model-note')) $('ia-model-note').textContent = $('lb-model').value;
     const box = $('lb-coms');
     box.innerHTML = d.comments.length ? '' : '<span class="meta empty">Sin comentarios.</span>';
     d.comments.forEach(c => {
@@ -4155,20 +4520,21 @@ POST_LIGHTBOX = """
     $('lb-cap-st').textContent = ''; $('lb-com-st').textContent = '';
     $('lb-sug-st').textContent = ''; $('lb-sugtags').innerHTML = '';
     if ($('lb-sug-count')) $('lb-sug-count').textContent = '';
-    sugeridas = new Set();                       // arranca de cero en cada foto
+    $('ia-sug-st').textContent = ''; $('ia-sugtags').innerHTML = '';
+    if ($('ia-sug-count')) $('ia-sug-count').textContent = '';
     ownExpanded = false;                         // etiquetas propias colapsadas
     _tagPrevExp = false;                          // preview de etiquetas colapsado
-    sugStop = true;                              // corta cualquier auto-continuo en curso
-    if ($('lb-sug')) {
-      $('lb-sug').textContent = '🔮 Sugerir con IA';
-      $('lb-sug').classList.remove('trabajando');
-    }
+    sugestLB.reset(); sugestIA.reset();           // corta cualquier auto-continuo en curso
     renderPeople();
     renderFav();
     renderTags();
     $('lb-move-rel').value = rel();   // el "mover a" siempre apunta a ESTA foto
     // el botón NSFW no va si la foto YA es nsfw
     $('lb-nsfw-btn').style.display = rel().split('/').includes('_nsfw') ? 'none' : '';
+    // el acordeón del Centro de IA: al CAMBIAR de foto abre los pasos que tienen
+    // contenido (Visión siempre, es la entrada del flujo). Al regenerar en la
+    // MISMA foto respeta lo que el usuario dejó abierto/cerrado.
+    marcaPia();
   }
 
   // portada desde el visor: abre el EDITOR con esta foto (recorte a mano) en vez
@@ -4360,6 +4726,14 @@ POST_LIGHTBOX = """
     // sug NO esconde lb-sugtags: las etiquetas caen en vivo ahí mientras trabaja
     sug: {btn: 'lb-sug', st: 'lb-sug-st', sk: 'lb-sug-sk',
           ver: [], texto: 'mirando la foto…', segundos: 35},
+    copIA: {btn: 'ia-cop-btn', st: 'ia-cop-st', sk: 'ia-cop-sk',
+          ver: ['ia-cop', 'ia-cop-home'], texto: 'inventando el titular…', segundos: 45},
+    visIA: {btn: 'ia-vision-btn', st: 'ia-vision-st', sk: 'ia-vision-sk',
+          ver: ['ia-vision'], texto: 'mirando la foto…', segundos: 40},
+    capIA: {btn: 'ia-cap-btn', st: 'ia-cap-st', sk: 'ia-cap-sk',
+          ver: ['ia-cap'], texto: 'escribiendo el pie…', segundos: 90},
+    comIA: {btn: 'ia-com-btn', st: 'ia-com-st', sk: 'ia-com-sk',
+          ver: ['ia-coms'], texto: 'escribiendo…', segundos: 60},
   };
   function trabajando(clave, on) {
     const t = TRABAJOS[clave], b = $(t.btn), st = $(t.st);
@@ -4393,6 +4767,45 @@ POST_LIGHTBOX = """
       if (r === rel()) render();     // ya pasaste de foto: guardalo igual
     }).catch(e => { trabajando('cap', false); $('lb-cap-st').textContent = ' ' + e; });
   }
+
+  // --- Centro de IA (modal "✨ Crear contenido") ---
+  // Motor genérico: dispara la IA, marca el paso del acordeón como trabajando y
+  // guarda SIEMPRE en la foto. render() repinta las dos vistas (columna + modal).
+  function genIA(clave, url, guardar) {
+    const r = rel();
+    if (!window.VLM_MODELS.length) {
+      $(TRABAJOS[clave].st).textContent = ' Ollama no está corriendo.'; return;
+    }
+    trabajando(clave, true);
+    post_(url, {rel: r, model: $('lb-model').value}).then(d => {
+      trabajando(clave, false);
+      $(TRABAJOS[clave].st).textContent = d.ok ? ' ✓' : ' ' + d.error;
+      if (!d.ok) return;
+      const p = slot(r);
+      guardar(p, d, r);
+      if (r === rel()) render();     // ya pasaste de foto: guardalo igual
+    }).catch(e => { trabajando(clave, false); $(TRABAJOS[clave].st).textContent = ' ' + e; });
+  }
+  function genVisionIA()  { genIA('visIA', VISION_URL,  (p, d) => { p.vision = d.vision; }); }
+  function genCaptionIA() { genIA('capIA', CAP_URL,     (p, d) => { p.caption = d.caption; }); }
+  function genCommentsIA(){ genIA('comIA', COM_URL,     (p, d) => { p.comments = d.comments; }); }
+  function genCopeteIA()  { genIA('copIA', COPETE_URL,  (p, d, r) => { p.copete = d.copete;
+                                                                        window.COPETES[r] = d.copete; }); }
+
+  // "usar en la portada": el destacado vive SOLO en el navegador (localStorage),
+  // así lo compartís con nadie; la home lo lee de ahí.
+  function usarCopeteHomeIA() {
+    const r = rel();
+    const texto = (slot(r).copete || copeteDe(r) || '').trim();
+    if (!texto) { $('ia-cop-st').textContent = ' Generá un copete primero (📰).'; return; }
+    try {
+      localStorage.setItem('home_copete',
+        JSON.stringify({name: PERSON, rel: r, texto: texto, ts: Date.now()}));
+      $('ia-cop-st').textContent = ' ✓ elegido para la portada';
+    } catch (e) { $('ia-cop-st').textContent = ' ' + e; }
+  }
+  function openIA()  { $('ia-who').textContent = PERSON; $('lb-ia-modal').style.display = 'flex'; }
+  function closeIA() { $('lb-ia-modal').style.display = 'none'; }
 
   // --- armar un molde de pie con las etiquetas de ESTA foto ---
   function abrirMoldeFoto() {
@@ -4555,8 +4968,8 @@ POST_LIGHTBOX = """
   let _tagPrevExp = false;                 // "ver más" del preview (se resetea por foto)
   // Preview editable: chips PROPIAS con × (borrar) y clic para editar, un input
   // para agregar rápido, y las HEREDADAS de la persona apagadas (solo lectura).
-  function renderTagPreview() {
-    const box = $('lb-tag-preview'); if (!box) return;
+  function pintarTagPrev(box) {
+    if (!box) return;
     box.innerHTML = '';
     const own = ownTags();
     (_tagPrevExp ? own : own.slice(0, 3)).forEach(t => {
@@ -4588,6 +5001,10 @@ POST_LIGHTBOX = """
       box.appendChild(c);
     });
   }
+  function renderTagPreview() {
+    pintarTagPrev($('lb-tag-preview'));      // panel lateral del post
+    pintarTagPrev($('ia-tag-preview'));      // paso 2 del Centro de IA
+  }
   function cpEditar(viejo, chip) {         // editar una etiqueta propia en el lugar
     const inp = document.createElement('input');
     inp.className = 'tagmini'; inp.value = viejo; inp.spellcheck = false;
@@ -4612,45 +5029,148 @@ POST_LIGHTBOX = """
     $('lb-tag-modal').style.display = 'flex';
   }
   function closeTagModal() { $('lb-tag-modal').style.display = 'none'; }
-  // agrega una sugerencia: un chip con "+ tag" (clic = agregar) y un ✕
-  // (clic = descartar). Descartada o agregada, la etiqueta queda en `sugeridas`,
-  // así el próximo "Sugerir" NO la vuelve a traer. nueva=true la marca en ámbar.
-  function addSugBtn(tag, nueva, acto) {
-    // si tenés una favorita que dice lo mismo, se usa TU palabra (no la de la IA)
-    const dijoIA = tag;
-    const mia = favParecida(tag);
-    if (mia) { tag = mia; nueva = false; }
-    const chip = document.createElement('span');
-    chip.className = 'sugchip' + (nueva ? ' sug-nueva' : '') + (acto ? ' sug-acto' : '');
-    // marcador ⭐/🎯/⚠/+ · input EDITABLE (podés retocarla antes de agregarla)
-    const mark = document.createElement('span');
-    mark.className = 'sugmark';
-    mark.textContent = mia ? '⭐' : (acto ? '🎯' : (nueva ? '⚠' : '+'));
-    mark.title = mia ? ('Tu favorita (la IA había dicho «' + dijoIA + '»)')
-              : (acto ? 'Detectado por el clasificador de actos (más confiable que el VLM)'
-              : (nueva ? 'Palabra rara: fijate que no sea invento del modelo' : 'Sugerencia'));
-    const inp = document.createElement('input');
-    inp.className = 'suginput'; inp.value = tag; inp.spellcheck = false;
-    const agregar = () => {
-      const v = inp.value.trim();
-      if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v]));
-      chip.remove(); actualizarSugCount();
-    };
-    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); agregar(); } };
-    const add = document.createElement('button');
-    add.className = 'sugadd2'; add.textContent = '＋'; add.title = 'Agregar';
-    add.onclick = agregar;
-    const x = document.createElement('button');
-    x.className = 'sugx'; x.textContent = '✕';
-    x.title = 'Descartar (no volver a sugerirla)';
-    x.onclick = () => { chip.remove(); actualizarSugCount(); };  // queda en sugeridas
-    chip.appendChild(mark); chip.appendChild(inp); chip.appendChild(add); chip.appendChild(x);
-    $('lb-sugtags').appendChild(chip);
+  // --- sugerir etiquetas con IA ---
+  // Hay DOS botones que disparan lo mismo: el del gestor/panel lateral (🔮 `lb-sug`)
+  // y el del paso 2 del Centro de IA (🔮 `ia-sug`). Cada uno vive en su propio
+  // contenedor para que no se pisen las sugerencias; comparten toda la lógica.
+  function crearSugestador(b) {
+    // b = {btn, st, sk, tags, count}: ids de los elementos de su panel
+    const btn = () => $(b.btn), st = () => $(b.st), sk = () => $(b.sk),
+          tags = () => $(b.tags), count = () => $(b.count);
+    let sugeridas = new Set();   // ya sugeridas por IA ("no repetir" ni descartadas)
+    let sugStop = false;         // el usuario apretó Parar o cambió de foto
+    let sugCorriendo = false;    // hay una corrida en curso en ESTE panel
+    // agrega una sugerencia: un chip con "+ tag" (clic = agregar) y un ✕
+    // (clic = descartar). Descartada o agregada, queda en `sugeridas`, así el
+    // próximo "Sugerir" NO la vuelve a traer. nueva=true la marca en ámbar.
+    function addSugBtn(tag, nueva, acto) {
+      // si tenés una favorita que dice lo mismo, se usa TU palabra (no la de la IA)
+      const dijoIA = tag;
+      const mia = favParecida(tag);
+      if (mia) { tag = mia; nueva = false; }
+      const chip = document.createElement('span');
+      chip.className = 'sugchip' + (nueva ? ' sug-nueva' : '') + (acto ? ' sug-acto' : '');
+      // marcador ⭐/🎯/⚠/+ · input EDITABLE (podés retocarla antes de agregarla)
+      const mark = document.createElement('span');
+      mark.className = 'sugmark';
+      mark.textContent = mia ? '⭐' : (acto ? '🎯' : (nueva ? '⚠' : '+'));
+      mark.title = mia ? ('Tu favorita (la IA había dicho «' + dijoIA + '»)')
+                : (acto ? 'Detectado por el clasificador de actos (más confiable que el VLM)'
+                : (nueva ? 'Palabra rara: fijate que no sea invento del modelo' : 'Sugerencia'));
+      const inp = document.createElement('input');
+      inp.className = 'suginput'; inp.value = tag; inp.spellcheck = false;
+      const agregar = () => {
+        const v = inp.value.trim();
+        if (v && !ownTags().includes(v)) saveOwn(ownTags().concat([v]));
+        chip.remove(); actualizarSugCount();
+      };
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); agregar(); } };
+      const add = document.createElement('button');
+      add.className = 'sugadd2'; add.textContent = '＋'; add.title = 'Agregar';
+      add.onclick = agregar;
+      const x = document.createElement('button');
+      x.className = 'sugx'; x.textContent = '✕';
+      x.title = 'Descartar (no volver a sugerirla)';
+      x.onclick = () => { chip.remove(); actualizarSugCount(); };  // queda en sugeridas
+      chip.appendChild(mark); chip.appendChild(inp); chip.appendChild(add); chip.appendChild(x);
+      tags().appendChild(chip);
+    }
+    function actualizarSugCount() {
+      const n = tags().querySelectorAll('.sugchip').length;
+      count().textContent = n ? `${n} sugerencia(s) · + agregar · ✕ descartar` : '';
+    }
+    // UNA pasada de streaming: pide etiquetas (excluyendo lo ya visto), las
+    // APPENDEA a la lista en vivo, y devuelve cuántas NUEVAS trajo. El server
+    // sube la temp y le pide "escarbar" cuando `evitar` no viene vacío.
+    async function unaPasada() {
+      const r = rel();
+      // se le pide que NO repita lo que ya tiene la foto NI lo que ya es general
+      // del perfil (si "ojos azules" es general, no tiene sentido sugerirla de nuevo)
+      const evitar = [...new Set([...sugeridas, ...ownTags(), ...PERSON_TAGS])];
+      let nuevas = 0;
+      try {
+        // mando el modelo elegido en el gestor (el server cae a tag_model() si no)
+        const modelo = ($('lb-tagmodel') || {}).value || '';
+        const resp = await fetch(SUG_STREAM_URL, {method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({rel: r, evitar: evitar.join(','), vlm_model: modelo})});
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          if (r !== rel() || sugStop) { reader.cancel(); break; }
+          buf += dec.decode(value, {stream: true});
+          let nl;
+          while ((nl = buf.indexOf('\\n')) >= 0) {
+            const linea = buf.slice(0, nl); buf = buf.slice(nl + 1);
+            if (!linea.trim()) continue;
+            let d; try { d = JSON.parse(linea); } catch (e) { continue; }
+            if (d.error) { st().textContent = ' ' + d.error; continue; }
+            const tag = d.tag;
+            // el acto (🎯) nunca se filtra por parecido: es anclado y va sí o sí
+            if (!tag || sugeridas.has(tag) || ownTags().includes(tag)
+                || PERSON_TAGS.includes(tag)) continue;
+            if (!d.acto && parecida(tag, sugeridas)) { sugeridas.add(tag); continue; }  // parecida: la recuerdo pero no la muestro
+            sk().style.display = 'none';
+            sugeridas.add(tag);
+            nuevas++;
+            addSugBtn(tag, d.nueva, d.acto);
+            actualizarSugCount();
+          }
+        }
+      } catch (e) {
+        st().textContent = ' ' + e;
+      }
+      return nuevas;
+    }
+    // AUTO-CONTINUO: apretás una vez y sigue pidiendo tanda tras tanda EN VIVO,
+    // acumulando, para que leas lo que va cayendo sin apretar "más". Para cuando:
+    // apretás Parar (segundo click), 2 rondas seguidas sin nada nuevo, o el tope.
+    // El mismo botón hace de "Sugerir" y de "Parar".
+    const SUG_MAX_RONDAS = 5;   // pocas: más allá, el modelo empieza a inventar
+    async function correr() {
+      if (!window.VLM_MODELS.length) {
+        st().textContent = ' Ollama no está corriendo.'; return;
+      }
+      if (sugCorriendo) { sugStop = true; return; }   // segundo click = Parar
+      const startRel = rel();
+      sugCorriendo = true; sugStop = false;
+      sugeridas = new Set(); tags().innerHTML = ''; actualizarSugCount();  // fresco
+      sk().style.display = '';
+      btn().textContent = '⏹ Parar';
+      btn().classList.add('trabajando');
+      let dry = 0, rondas = 0;
+      while (!sugStop && rel() === startRel && rondas < SUG_MAX_RONDAS && dry < 2) {
+        const n = await unaPasada();
+        rondas++;
+        dry = n === 0 ? dry + 1 : 0;
+        st().textContent = ` ${sugeridas.size} etiquetas · buscando más…`;
+      }
+      sk().style.display = 'none';
+      sugCorriendo = false;
+      if (rel() === startRel) {                       // no cambiaste de foto
+        btn().textContent = '🔮 Sugerir con IA';
+        btn().classList.remove('trabajando');
+        st().textContent = sugeridas.size ? ` ${sugeridas.size} etiquetas`
+                                          : ' no encontró nada';
+      }
+    }
+    function reset() {          // cambió la foto: cortá cualquier corrida en curso
+      sugeridas = new Set();
+      sugStop = true;
+      if (btn()) { btn().textContent = '🔮 Sugerir con IA'; btn().classList.remove('trabajando'); }
+      if (sk()) sk().style.display = 'none';
+      if (st()) st().textContent = '';
+    }
+    return {correr, reset};
   }
-  function actualizarSugCount() {
-    const n = $('lb-sugtags').querySelectorAll('.sugchip').length;
-    $('lb-sug-count').textContent = n ? `${n} sugerencia(s) · + agregar · ✕ descartar` : '';
-  }
+  const sugestLB = crearSugestador({btn: 'lb-sug', st: 'lb-sug-st', sk: 'lb-sug-sk',
+                                    tags: 'lb-sugtags', count: 'lb-sug-count'});
+  const sugestIA = crearSugestador({btn: 'ia-sug', st: 'ia-sug-st', sk: 'ia-sug-sk',
+                                    tags: 'ia-sugtags', count: 'ia-sug-count'});
+
   // ¿la etiqueta es PARECIDA a alguna ya vista/agregada/descartada? Compara por
   // palabras significativas (sin "de/en/la…", plural≈singular): si las de una son
   // subconjunto de las de la otra, es la misma idea. Así "aretes plateado" tapa a
@@ -4678,10 +5198,10 @@ POST_LIGHTBOX = """
     }
     return null;
   }
-  function parecida(tag) {
+  function parecida(tag, vistas) {   // `vistas` = las ya sugeridas de ESTE panel
     const a = new Set(_palabras(tag));
     if (!a.size) return false;
-    for (const s of [...sugeridas, ...ownTags(), ...PERSON_TAGS]) {
+    for (const s of [...vistas, ...ownTags(), ...PERSON_TAGS]) {
       const b = new Set(_palabras(s));
       if (!b.size) continue;
       const [chico, grande] = a.size <= b.size ? [a, b] : [b, a];
@@ -4691,90 +5211,14 @@ POST_LIGHTBOX = """
     }
     return false;
   }
-  // UNA pasada de streaming: pide etiquetas (excluyendo lo ya visto), las APPENDEA
-  // a la lista en vivo, y devuelve cuántas NUEVAS trajo. El server sube la temp y
-  // le pide "escarbar" cuando `evitar` no viene vacío.
-  async function _unaPasada() {
-    const r = rel();
-    // se le pide que NO repita lo que ya tiene la foto NI lo que ya es general
-    // del perfil (si "ojos azules" es general, no tiene sentido sugerirla de nuevo)
-    const evitar = [...new Set([...sugeridas, ...ownTags(), ...PERSON_TAGS])];
-    let nuevas = 0;
-    try {
-      // mando el modelo elegido en el modal (el server cae a tag_model() si no)
-      const modelo = ($('lb-tagmodel') || {}).value || '';
-      const resp = await fetch(SUG_STREAM_URL, {method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({rel: r, evitar: evitar.join(','), vlm_model: modelo})});
-      const reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-        if (r !== rel() || sugStop) { reader.cancel(); break; }
-        buf += dec.decode(value, {stream: true});
-        let nl;
-        while ((nl = buf.indexOf('\\n')) >= 0) {
-          const linea = buf.slice(0, nl); buf = buf.slice(nl + 1);
-          if (!linea.trim()) continue;
-          let d; try { d = JSON.parse(linea); } catch (e) { continue; }
-          if (d.error) { $('lb-sug-st').textContent = ' ' + d.error; continue; }
-          const tag = d.tag;
-          // el acto (🎯) nunca se filtra por parecido: es anclado y va sí o sí
-          if (!tag || sugeridas.has(tag) || ownTags().includes(tag)
-              || PERSON_TAGS.includes(tag)) continue;
-          if (!d.acto && parecida(tag)) { sugeridas.add(tag); continue; }  // parecida: la recuerdo pero no la muestro
-          $('lb-sug-sk').style.display = 'none';
-          sugeridas.add(tag);
-          nuevas++;
-          addSugBtn(tag, d.nueva, d.acto);
-          actualizarSugCount();
-        }
-      }
-    } catch (e) {
-      $('lb-sug-st').textContent = ' ' + e;
-    }
-    return nuevas;
-  }
-
-  // AUTO-CONTINUO: apretás una vez y sigue pidiendo tanda tras tanda EN VIVO,
-  // acumulando, para que leas lo que va cayendo sin apretar "más". Para cuando:
-  // apretás Parar (segundo click), 2 rondas seguidas sin nada nuevo, o el tope.
-  // El mismo botón hace de "Sugerir" y de "Parar".
-  const SUG_MAX_RONDAS = 5;   // pocas: más allá, el modelo empieza a inventar
-  async function suggestTags() {
-    if (!window.VLM_MODELS.length) {
-      $('lb-sug-st').textContent = ' Ollama no está corriendo.'; return;
-    }
-    if (sugCorriendo) { sugStop = true; return; }   // segundo click = Parar
-    const startRel = rel();
-    sugCorriendo = true; sugStop = false;
-    sugeridas = new Set(); $('lb-sugtags').innerHTML = ''; actualizarSugCount();  // fresco
-    $('lb-sug-sk').style.display = '';
-    $('lb-sug').textContent = '⏹ Parar';
-    $('lb-sug').classList.add('trabajando');
-    let dry = 0, rondas = 0;
-    while (!sugStop && rel() === startRel && rondas < SUG_MAX_RONDAS && dry < 2) {
-      const n = await _unaPasada();
-      rondas++;
-      dry = n === 0 ? dry + 1 : 0;
-      $('lb-sug-st').textContent = ` ${sugeridas.size} etiquetas · buscando más…`;
-    }
-    $('lb-sug-sk').style.display = 'none';
-    sugCorriendo = false;
-    if (rel() === startRel) {                       // no cambiaste de foto
-      $('lb-sug').textContent = '🔮 Sugerir con IA';
-      $('lb-sug').classList.remove('trabajando');
-      $('lb-sug-st').textContent = sugeridas.size ? ` ${sugeridas.size} etiquetas`
-                                                  : ' no encontró nada';
-    }
-  }
 
   Object.assign(window, {genCaption, editCap, genComments, clearComments,
-                         openTagModal, closeTagModal, suggestTags,
+                         openTagModal, closeTagModal,
+                         suggestTags: sugestLB.correr, sugIA: sugestIA.correr,
                          abrirMoldeFoto, cerrarMoldeFoto, copiarMoldeFoto, guardarMoldeFoto,
-                         copiarPromptFoto});
+                         copiarPromptFoto,
+                         genVisionIA, genCaptionIA, genCommentsIA, genCopeteIA,
+                         usarCopeteHomeIA, openIA, closeIA});
 
   lb.addEventListener('wheel', e => {
     if (!e.target.closest('.stage')) return;    // la columna del post scrollea normal
@@ -5011,6 +5455,8 @@ def person_page(name):
         # el pie y los comentarios ya guardados de cada foto: el modal los
         # muestra al instante, sin esperar al modelo
         posts=posts_mod.get_many(name, [f["rel"] for f in display]),
+        # copetes (titulares de noticia) ya generados por foto: {rel: texto}
+        copetes=dict(copetes_mod.por_persona(name)),
         # favoritos de la persona (para el carrusel de la card)
         favs=[r for r in normal + nsfw_list if todos_posts.get(r, {}).get("fav")],
         # para el lote: cuántas le faltan de TODAS las suyas (no de esta página)
@@ -5063,6 +5509,7 @@ def person_page(name):
         corrected_ago=person_meta.humanize(meta["corrected"]),
         searched_ago=person_meta.humanize(meta["searched"]),
         voice=meta["voice"],
+        bio=meta["bio"],
         pick_rel=pick_rel,
         pick_count=pick_count,
         pick_v=int(time.time()),
@@ -5136,6 +5583,207 @@ def person_thumb(name, rel):
             im.save(cache, quality=82)
         except Exception:
             return send_from_directory(Path(library) / name, rel)  # ilegible: el original
+    return send_from_directory(GALLERY_THUMBS, key)
+
+
+def _recorte_cuadrado(im, box):
+    """Cuadrado (el lado más grande permite que quepa) alrededor de un box de
+    cara, o del centro de la imagen si box es None. Imagen PIL RGB -> PIL."""
+    w, h = im.size
+    if box:
+        top, right, bottom, left = box
+        cx = (left + right) / 2
+        cy = (top + bottom) / 2
+        side = max(right - left, bottom - top) * 1.35
+        side = min(side, w, h)
+    else:
+        cx, cy = w / 2, h / 2
+        side = min(w, h)
+    x0, y0 = cx - side / 2, cy - side / 2
+    if x0 < 0:
+        x0 = 0
+    if y0 < 0:
+        y0 = 0
+    if x0 + side > w:
+        x0 = w - side
+    if y0 + side > h:
+        y0 = h - side
+    crop = im.crop((x0, y0, x0 + side, y0 + side))
+    crop.thumbnail((360, 360))
+    return crop
+
+
+def _cara_thumb(im, name):
+    """Miniatura 360 centrada en la cara de <name> dentro de <im> (PIL RGB).
+
+    Una sola cara -> recorte alrededor de esa cara. Más de una cara (foto
+    grupal) -> la foto de perfil de la persona (KNOWN_THUMBS/<name>.jpg) si
+    existe (en la home manda el perfil), y si no, un cuadrado del centro de la
+    foto. Sin caras -> None (el llamador cae a la miniatura clásica)."""
+    im = im.copy()
+    im.thumbnail((512, 512))
+    from app import facedet
+    import numpy as _np
+    faces = facedet.detect_and_encode(_np.array(im))
+    if len(faces) > 1:
+        cover = KNOWN_THUMBS / f"{safe_name(name)}.jpg"
+        if cover.is_file():
+            with Image.open(cover) as c:
+                cb = c.convert("RGB").copy()
+                cb.thumbnail((360, 360))
+                return cb
+        return _recorte_cuadrado(im, None)
+    if len(faces) == 1:
+        return _recorte_cuadrado(im, faces[0][0])
+    return None
+
+
+@app.route("/person_hero_thumb/<name>/<path:rel>")
+def person_hero_thumb(name, rel):
+    """Miniatura de la HOME centrada en la cara de la persona.
+
+    Detrás de /person_thumb (que recorta el centro de la foto) agrega el
+    recorte por rostro: la foto de la home muestra a esta persona, no un
+    costado de la imagen. Regla: con una sola cara se centra ahí; con más de
+    una (foto grupal) se usa la foto de perfil de la persona; si no hay caras o
+    algo falla, cae a la miniatura clásica. Cacheada una vez por foto."""
+    library = get_library()
+    src = Path(library) / name / rel if library else None
+    if not src or not src.is_file():
+        abort(404)
+    key = "hero_" + hashlib.sha1(f"{name}/{rel}".encode("utf-8")).hexdigest() + ".jpg"
+    cache = GALLERY_THUMBS / key
+    if not cache.is_file() or cache.stat().st_mtime < src.stat().st_mtime:
+        GALLERY_THUMBS.mkdir(parents=True, exist_ok=True)
+        out = None
+        try:
+            if src.suffix.lower() in VIDEO_EXTENSIONS:
+                im = _video_frame_pil(src)
+                if im is not None:
+                    out = _cara_thumb(im.convert("RGB"), name)
+            else:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                out = _cara_thumb(im, name)
+        except Exception:
+            out = None
+        if out is None:
+            try:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                im.thumbnail((360, 360))
+                out = im
+            except Exception:
+                return send_from_directory(Path(library) / name, rel)
+        out.save(cache, quality=82)
+    return send_from_directory(GALLERY_THUMBS, key)
+
+
+def _wide_hero(im, aspect=2.6, face_y=0.34):
+    """Banda ancha (aspect) de la foto para el banner del hero, con la cara de
+    la persona a ~face_y del alto (por defecto 1/3, arriba del pie/título).
+    Sin cara o con varias (foto grupal) usa una banda central: así el hero
+    nunca queda dominado por un rostro gigante ni borroso de la portada.
+    Devuelve PIL RGB."""
+    im = im.copy()
+    im.thumbnail((1280, 1280))
+    from app import facedet
+    import numpy as _np
+    faces = facedet.detect_and_encode(_np.array(im))
+    box = faces[0][0] if len(faces) == 1 else None
+    w, h = im.size
+    crop_w = min(w, int(h * aspect))
+    crop_h = int(crop_w / aspect)
+    if box:
+        top, right, bottom, left = box
+        cx = (left + right) / 2
+        cy = (top + bottom) / 2
+        y_top = cy - crop_h * face_y
+    else:
+        cx, cy = w / 2, h / 2
+        y_top = cy - crop_h / 2
+    x0 = max(0, int(min(w - crop_w, cx - crop_w / 2)))
+    y0 = max(0, int(min(h - crop_h, y_top)))
+    crop = im.crop((x0, y0, x0 + crop_w, y0 + crop_h))
+    if crop.width < 1280:
+        crop = crop.resize((1280, max(1, int(1280 / aspect))), Image.LANCZOS)
+    return crop
+
+
+@app.route("/person_hero_wide/<name>/<path:rel>")
+def person_hero_wide(name, rel):
+    """Imagen ANCHA del hero de la home: banda con el aspect del banner (2.6/1),
+    con la cara de la persona cerca del tercio superior. Se usa SOLO en el
+    carrusel del hero (donde un crop cuadrado de cara se ve horrible); las
+    tarjetas siguen con person_hero_thumb. Cacheada por foto."""
+    library = get_library()
+    src = Path(library) / name / rel if library else None
+    if not src or not src.is_file():
+        abort(404)
+    key = "herow_" + hashlib.sha1(f"{name}/{rel}".encode("utf-8")).hexdigest() + ".jpg"
+    cache = GALLERY_THUMBS / key
+    if not cache.is_file() or cache.stat().st_mtime < src.stat().st_mtime:
+        GALLERY_THUMBS.mkdir(parents=True, exist_ok=True)
+        out = None
+        try:
+            if src.suffix.lower() in VIDEO_EXTENSIONS:
+                im = _video_frame_pil(src)
+                if im is not None:
+                    out = _wide_hero(im.convert("RGB"))
+            else:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                out = _wide_hero(im)
+        except Exception:
+            out = None
+        if out is None:
+            try:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                im.thumbnail((360, 360))
+                out = im
+            except Exception:
+                return send_from_directory(Path(library) / name, rel)
+        out.save(cache, quality=82)
+    return send_from_directory(GALLERY_THUMBS, key)
+
+
+@app.route("/person_hero_fit/<name>/<path:rel>")
+def person_hero_fit(name, rel):
+    """Recorte de la home que "entra al ancho" (mosaico Agregadas recientemente):
+    banda centrada en la cara al aspect pedido (a=1..2.6, default 1.35) con el
+    rostro al centro del alto — se ve la foto entera a lo ancho, sin que la
+    cara explote. Cacheada por foto y aspect."""
+    a = 1.35
+    try:
+        a = float(request.args.get("a", 1.35))
+        a = min(2.6, max(1.0, a))
+    except (TypeError, ValueError):
+        pass
+    library = get_library()
+    src = Path(library) / name / rel if library else None
+    if not src or not src.is_file():
+        abort(404)
+    atag = str(round(a, 2))
+    key = f"herof_{atag}_" + hashlib.sha1(f"{name}/{rel}".encode("utf-8")).hexdigest() + ".jpg"
+    cache = GALLERY_THUMBS / key
+    if not cache.is_file() or cache.stat().st_mtime < src.stat().st_mtime:
+        GALLERY_THUMBS.mkdir(parents=True, exist_ok=True)
+        out = None
+        try:
+            if src.suffix.lower() in VIDEO_EXTENSIONS:
+                im = _video_frame_pil(src)
+                if im is not None:
+                    out = _wide_hero(im.convert("RGB"), aspect=a, face_y=0.5)
+            else:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                out = _wide_hero(im, aspect=a, face_y=0.5)
+        except Exception:
+            out = None
+        if out is None:
+            try:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                im.thumbnail((360, 360))
+                out = im
+            except Exception:
+                return send_from_directory(Path(library) / name, rel)
+        out.save(cache, quality=82)
     return send_from_directory(GALLERY_THUMBS, key)
 
 
@@ -5693,6 +6341,92 @@ def post_caption(name):
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "caption": text}
+
+
+# Copete: un titular de noticia "tipo diario" para una foto, inventado por la IA
+# que MIRA la foto (situación, ropa, contexto). El usuario lo pide con el
+# botón 📰 del visor y queda guardado en data/copetes.json.
+# El `post_model` de Ajustes es un modelo de TEXTO genérico (no mira la foto):
+# para el copete se usa el VLM de visión abliterated de 7B, el mismo que
+# escribe etiquetas y narración — mucho más específico que el genérico.
+COPETE_MODEL = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M"
+COPETE_SYSTEM = """Sos un titularista de diario canchero. Mirás la foto con ganas
+de titular, no de describir: elegís EL detalle que llama la atención (la pose,
+la ropa, el gesto, el lugar, lo que está haciendo) y lo contás como noticia
+CORTA y con gancho, en español, presente, de 4 a 8 palabras, en una sola línea.
+Que pegue a ESTA foto, no un elogio genérico que le serviría a cualquiera. Sin
+signos de exclamación, sin comillas, sin puntos intermedios ni al final, sin
+subtítulos ni segunda frase, sin frases de relleno. Solo lo que se ve: no
+inventes nada."""
+COPETE_PROMPT = "Escribí el titular de diario de esta foto, en una sola línea, de 4 a 8 palabras, presente y con gancho."
+
+
+def _copete_titular(t):
+    """Deja el texto como titular corto: una sola línea, sin puntuación de
+    cierre ni comillas, cortada a ~80 caracteres en un límite de palabra."""
+    t = (t or "").strip().strip('"“”‘’').strip()
+    t = t.split("\n")[0].strip()
+    i = t.find(". ")
+    if 0 < i < 70:
+        t = t[:i].strip()
+    t = t.rstrip(".").strip()
+    if len(t) > 80:
+        t = t[:80].rsplit(" ", 1)[0].rstrip(" .,").strip()
+    return t
+
+
+@app.route("/post/<name>/copete", methods=["POST"])
+def post_copete(name):
+    """Inventa un copete (titular de noticia) para la foto y lo guarda.
+
+    Igual que el pie: LENTO en CPU (el modelo mira la foto), a pedido y queda
+    guardado en data/copetes.json para no repetirlo."""
+    rel = request.form.get("rel", "")
+    path = _photo_path(name, rel)
+    if not path:
+        return {"ok": False, "error": "Esa foto ya no está."}
+    cfg = load_config()
+    try:
+        texto = vlm.describe(
+            str(path),
+            model=request.form.get("model") or cfg.get("copete_model") or COPETE_MODEL,
+            prompt=COPETE_PROMPT, system=COPETE_SYSTEM,
+            num_predict=60, temperature=0.9)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    texto = _copete_titular(texto)
+    texto = copetes_mod.set_copete(name, rel, texto)
+    return {"ok": True, "copete": texto}
+
+
+# Visión (paso 1 del Centro de IA): la IA "mira" la foto y anota qué hay.
+# Ese texto alimenta conceptualmente a etiquetas, pie y comentarios.
+VISION_SYSTEM = """Sos el ojo de una fototeca. Mirás la foto y anotás lo que se
+ve REALMENTE: la persona, la pose, la ropa, el lugar, la luz, el gesto, objetos,
+tatuajes, peinado. En español, como una ficha objetiva de 2-4 líneas, sin opinar
+y sin inventar lo que no está."""
+VISION_PROMPT = "Describí objetivamente lo que se ve en esta foto: persona, pose, ropa, lugar, gesto."
+
+
+@app.route("/post/<name>/vision", methods=["POST"])
+def post_vision(name):
+    """La «visión» de la foto: la IA mira y anota qué hay. Es el paso 1 del
+    Centro de IA; se guarda en posts.json como "vision"."""
+    rel = request.form.get("rel", "")
+    path = _photo_path(name, rel)
+    if not path:
+        return {"ok": False, "error": "Esa foto ya no está."}
+    cfg = load_config()
+    try:
+        texto = vlm.describe(
+            str(path),
+            model=request.form.get("model") or cfg.get("post_model") or None,
+            prompt=VISION_PROMPT, system=VISION_SYSTEM,
+            num_predict=180, temperature=0.4)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    texto = posts_mod.set_vision(name, rel, texto)
+    return {"ok": True, "vision": texto}
 
 
 @app.route("/post/<name>/fav", methods=["POST"])
@@ -6702,13 +7436,16 @@ def probador_etiquetar():
         if not path or not path.is_file():
             return {"ok": False, "error": "Esa foto ya no está."}
         try:
+            # vlm.suggest_tags_pairs devuelve una lista de {orig, final} (dos columnas)
+            # si el modelo se colga en medio, el _acto_pares rescata lo que queda
             pares = vlm.suggest_tags_pairs(str(path), model=model, quien=name,
                                            crudo=crudo, evitar=evitar)
+            # _acto_pares añade el 🎯 de acto porntech al inicio (si es NSFW y adulto)
             pares = _acto_pares(str(path), crudo, name, pares, evitar) + pares
             # queda anotado que ESTA foto ya pasó por el modelo, aunque haya
             # vuelto con 0 etiquetas (ese caso antes se perdía y la repetías)
             procesadas.marcar(name, rel, len(pares))
-            return {"ok": True, "pares": pares}
+            return {"ok": True, "pares": pares or []}
         except Exception as e:
             return {"ok": False, "error": str(e)}
     f = request.files.get("foto")
@@ -8606,6 +9343,65 @@ def _limpiar_huerfanos():
         print(f"[limpieza] no se pudo: {e}")
 
 
+def _modelos_para_calentar():
+    """Los modelos que la app usa (fiado de configuración + constantes), sin
+    repetidos. El precarga (vlm.calentar) deja el último residente en la GPU,
+    así que se ordena para que el VLM (etiquetas/narración/copetes) quede
+    arriba cuando la VRAM (16 GB) obligue a elegir uno grande a la vez."""
+    modelos = []
+    try:
+        cfg = load_config()
+        for k in ("pie_model", "comentarios_model", "narracion_model",
+                  "post_model", "copete_model"):
+            m = (cfg.get(k) or "").strip()
+            if m:
+                modelos.append(m)
+    except Exception:
+        pass
+    modelos.append(COPETE_MODEL)
+    try:
+        modelos.append(vlm.tag_model())
+    except Exception:
+        pass
+    return modelos
+
+
+def _precalentar_modelos():
+    """Carga en la GPU los modelos de IA al arrancar, en un hilo de fondo, para
+    que el primer «crear contenido» no pague la carga de 7-13s por foto."""
+    def job():
+        try:
+            calentados = vlm.calentar(_modelos_para_calentar())
+            if calentados:
+                print(f"[ia] Modelos cargados en GPU: {', '.join(calentados)}")
+        except Exception as e:
+            print(f"[ia] Precarga de modelos falló (no es grave): {e}")
+    threading.Thread(target=job, daemon=True).start()
+
+
+def _log_crash(etype, value, tb):
+    """Si el servidor se corta con una excepción, dejar el traceback completo en
+    data/crash.log para poder cazarla a la próxima (ej. el cierre al generar el
+    pie de una foto). No corta el comportamiento normal: la consola igual muestra
+    el error."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(DATA_DIR / "crash.log", "a", encoding="utf-8") as f:
+            f.write(f"\n--- se cortó el servidor · {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            traceback.print_exception(etype, value, tb, file=f)
+    except Exception:
+        pass
+    sys.__excepthook__(etype, value, tb)
+
+
+def _thread_crash(args):
+    _log_crash(args.exc_type, args.exc_value, args.exc_traceback)
+
+
+sys.excepthook = _log_crash
+threading.excepthook = _thread_crash
+
+
 def main():
     # El reloader corre DOS procesos (el vigía y el servidor de verdad), y los
     # dos pasan por acá: sin esta guarda se abrían dos pestañas. El navegador
@@ -8622,8 +9418,12 @@ def main():
         # borraran etiquetas reales sin que el usuario tocara nada. "Que vacíe si
         # vacío" era la acción MANUAL de vaciar, no un barrido automático. La
         # limpieza queda solo a pedido (botón).
-        print(f"[web] Abrí http://127.0.0.1:{PORT} en el navegador (solo accesible desde esta máquina).")
-        threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
+        print(f"[web] Abrí http://127.0.0.1:{PORT}/inicio en el navegador (solo accesible desde esta máquina).")
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}/inicio")).start()
+    else:
+        # El servidor de verdad (proceso del reloader), una vez por corrida:
+        # deja los modelos de IA precargados en la GPU.
+        _precalentar_modelos()
     # use_reloader=True: si se edita el código, el servidor se reinicia SOLO (cómodo
     # cuando Claude toca algo). El fantasma que eso puede dejar al cerrar la ventana
     # lo limpia _matar_fantasma_en_puerto en el próximo arranque.

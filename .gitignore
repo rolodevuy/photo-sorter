@@ -19,3 +19,10 @@ Thumbs.db
 # Log del servidor local
 flask.log
 *.log
+
+# Scratch / pruebas temporales
+temp_*.py
+app/temp_*.py
+
+# Copias de seguridad locales
+backups/

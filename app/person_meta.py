@@ -3,7 +3,11 @@ vez que se la buscó en una carpeta. Para saber de un vistazo si ya trabajaste
 un perfil o si hace mucho que no lo tocás.
 
 data/person_meta.json = {nombre: {"corrected": "2026-07-13 10:30",
-                                   "searched": "2026-07-13 11:00"}}
+                                   "searched": "2026-07-13 11:00",
+                                   "voice": "…", "bio": "…"}}
+
+Además guarda la voz (cómo habla en los pies de foto) y la bio del perfil,
+ambas editables desde el modal de configuración de la persona.
 """
 
 import json
@@ -51,10 +55,10 @@ def stamp_many(names, event):
 
 
 def get(name):
-    """{"corrected": str|None, "searched": str|None, "voice": str} de una persona."""
+    """{"corrected", "searched", "voice", "bio"} de una persona."""
     d = _load().get(name, {})
     return {"corrected": d.get("corrected"), "searched": d.get("searched"),
-            "voice": d.get("voice", "")}
+            "voice": d.get("voice", ""), "bio": d.get("bio", "")}
 
 
 def get_voice(name):
@@ -77,6 +81,29 @@ def set_voice(name, text):
     return text
 
 
+def get_bio(name):
+    """La bio del perfil (el párrafo que se ve bajo el nombre). Vacío si no tiene."""
+    return (_load().get(name, {}) or {}).get("bio", "")
+
+
+def set_profile(name, bio="", voice=""):
+    """Guarda juntas la bio y la voz (el modal de configuración las edita de una
+    sola vez, una sola escritura). Vacías se borran. Devuelve (bio, voice)."""
+    data = _load()
+    d = data.setdefault(name, {})
+    bio, voice = (bio or "").strip(), (voice or "").strip()
+    if bio:
+        d["bio"] = bio
+    else:
+        d.pop("bio", None)
+    if voice:
+        d["voice"] = voice
+    else:
+        d.pop("voice", None)
+    _save(data)
+    return bio, voice
+
+
 def set_cover_src(name, rel, left, top, side):
     """Recuerda de qué foto y con qué recorte salió la portada, para que el editor
     abra directo en esa foto (y en ese recorte) en vez de pedir elegir de nuevo."""
@@ -94,7 +121,7 @@ def get_cover_src(name):
 
 
 def rename(old, new):
-    """La persona cambió de nombre: su meta (y su voz) la siguen."""
+    """La persona cambió de nombre: su meta (voz, bio, fechas) la sigue."""
     data = _load()
     if old in data:
         data[new] = data.pop(old)

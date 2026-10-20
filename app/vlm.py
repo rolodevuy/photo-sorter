@@ -27,10 +27,20 @@ from PIL import Image, ImageOps
 
 HOST = "http://127.0.0.1:11434"
 TIMEOUT = 300          # en CPU una foto puede tardar bastante (carga en frío + tokens)
+# Cuánto dejamos el modelo cargado en VRAM tras cada uso. -1 = para siempre
+# (hasta que se apague Ollama). Con 30m, Ollama lo descargaba a los 30 minutos y
+# CADA vuelta (pie, copete, etiqueta) pagaba la carga otra vez. Con -1, una vez
+# cargado queda vivo; el arranque de la app precarga los modelos (vlm.calentar).
+# OJO: tiene que ser NÚMERO (-1), no string "-1": las versiones nuevas de Ollama
+# parsean el campo como duración Go y un string sin unidad devuelve
+# 400 "time: missing unit" en /api/chat y en /api/generate con imagen.
+KEEP_ALIVE = -1
 # Abliterado (sin censura) y de 2025: describe mejor y más rápido que llava, que
 # además lava las frases de contenido explícito. El desplegable de la web deja
 # elegir otro; este es el que se usa si no eligen.
-DEFAULT_MODEL = "huihui_ai/qwen3.5-abliterated:4b"
+DEFAULT_MODEL = (
+    "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M",
+)
 
 # Modelos para ETIQUETAR, en orden de preferencia: primero el q8 (menos
 # comprimido, ve mejor, no confunde color de pelo/piel), después el q4 (más
@@ -41,7 +51,6 @@ TAG_MODELS = [
     # mejor para este caso: no rebota lo explícito. En Q4; si querés más precisión
     # de visión hay Q8 del mismo repo.
     "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M",
-    "qwen2.5vl:7b-q8_0", "qwen2.5vl:7b",
 ]
 
 
@@ -99,7 +108,7 @@ VOSEO_REGLA = (
     "\"me mola\", \"vosotros\" y \"os\".")
 
 SYSTEM_PIE = """Escribís el pie de una foto tuya, como el que pondrías en una
-red social.
+red social xxx.
 
 SOS VOS quien habla, en PRIMERA PERSONA. Nunca describas la foto desde afuera ni
 hables de vos en tercera persona: nada de "en la foto se ve", "una chica que...",
@@ -116,7 +125,7 @@ listo. Es mejor un pie de cinco palabras que uno inventado.
 Una o dos frases. Corto. Un párrafo, nunca listas ni títulos ni markdown.
 
 Crudo y directo: las cosas por su nombre, sin eufemismos ni vueltas.
-""" + VOSEO_REGLA + """
+ """ + VOSEO_REGLA + """
 
 NO enumerás: ni la ropa, ni el cuerpo, ni el pelo, ni la cara, ni la luz, ni el
 fondo. No es un inventario, es un pie de foto. Si algo no se ve, no lo escribas.
@@ -233,17 +242,22 @@ no se ve. Si no hay nadie, escribís sola la palabra "nadie"."""
 PROMPT_IS_SPANISH = True
 
 
-def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiquetas=()):
+def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiquetas=(),
+                    system="narrador"):
     """El prompt del pie. Corto a propósito: el estilo va en SYSTEM_PIE.
-
+    
     Sabemos de quién es la foto porque está en su carpeta, así que el pie lo
     escribe ELLA: se lo decimos y no lo adivina. `voz` es cómo habla esa persona
     (se configura en su perfil); vacío = la voz genérica. `con` son los otros
     conocidos que el reconocimiento facial encontró en la foto: así el pie puede
     decir "comiendo con Alberto" en vez de "comiendo con alguien". `crudeza` es
-    la perilla de Ajustes (ver posts.CRUDENESS)."""
+    la perilla de Ajustes (ver posts.CRUDENESS).
+    
+    `system`: qué style le pedís que use. "narrador" (el default, que adivina),
+    "explicito" (el que te pone "tetas al aire", "culito roto"...)."""
+    
     quien = quien or "la persona de la foto"
-    p = [f"Sos {quien}. Esta es una foto tuya."]
+    p = ((system + " ") if system else "") + f"Sos {quien}. Esta es una foto tuya."
     if quien_es:
         # el pie va en primera persona: sin esto sale "estoy cansado" cuando es
         # una mujer, o al revés
@@ -271,8 +285,7 @@ def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiqueta
     p.append("Escribí el pie: dónde estás y qué estás haciendo. Corto, una o dos "
              "frases. Si no estás haciendo nada, decilo en pocas palabras y no "
              "inventes.")
-    return "\n".join(p)
-
+    return (p[0][1:] if p[0].startswith("narrador", "explicito", "sano") else p[0]) + "\n\n" + "\n".join(p)
 
 def _post(path, payload):
     req = urllib.request.Request(
@@ -280,6 +293,34 @@ def _post(path, payload):
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def calentar(modelos):
+    """Precarga en la GPU los modelos que la app usa, sin esperar a que se pidan.
+
+    Manda a Ollama una generación trivial por modelo con keep_alive=-1: el que
+    quepa queda residente en VRAM y el que no, igual queda "caliente" para la
+    próxima vez (Ollama lo recarga mucho más rápido que en frío cada vez que se
+    evita por falta de memoria, de todos modos el de arriba gana la VRAM).
+    No traba la app: llama el arranque desde un hilo de fondo. Devuelve la lista
+    de los modelos que estaban disponibles y se calentaron."""
+    hechos = []
+    try:
+        instalados = set(list_models())
+    except Exception:
+        return hechos
+    for m in dict.fromkeys(modelos or []):
+        if not m or m not in instalados:
+            continue
+        try:
+            _post("/api/generate",
+                  {"model": m, "prompt": "hola", "stream": False, "think": False,
+                   "options": {"num_predict": 1, "temperature": 0},
+                   "keep_alive": KEEP_ALIVE})
+            hechos.append(m)
+        except Exception:
+            continue
+    return hechos
 
 
 def generar_texto(prompt, model=DEFAULT_MODEL, system="", num_predict=200,
@@ -293,6 +334,8 @@ def generar_texto(prompt, model=DEFAULT_MODEL, system="", num_predict=200,
     payload = {"model": model, "prompt": prompt, "stream": False, "think": False,
                "options": {"temperature": temperature, "num_predict": num_predict,
                            "repeat_penalty": 1.2}}
+    if KEEP_ALIVE:
+        payload["keep_alive"] = KEEP_ALIVE
     if system:
         payload["system"] = system
     try:
@@ -381,19 +424,19 @@ def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
 
     Sin prompt: el pie de foto, en español. Con otro prompt sirve para cualquier
     cosa — de eso se aprovecha app/comments.py.
-
+    
     El estilo va en `system`, no en el prompt: probado, un 4b toma la lista de
     reglas del prompt como plantilla de salida y devuelve un listado con títulos
     ("Ropa:", "Ánimo:") en vez de un párrafo. En el system las obedece.
-
+    
     num_predict alto por defecto porque el pie es un párrafo mediano o largo:
     con 80 tokens se corta a la mitad de la frase. Ojo que a ~3,5 tok/s cada
     token se paga en segundos.
-
+    
     `prefill` es la primera palabra de la respuesta: se la escribimos nosotros y
     el modelo continúa desde ahí, así no puede irse de la voz. Va por /api/chat,
     que es el único que acepta empezarle la respuesta.
-
+    
     Lanza RuntimeError con un mensaje legible si algo falla."""
     prompt = prompt or caption_prompt()
     try:
@@ -409,16 +452,23 @@ def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
     # en un pie). Ollama por defecto usa 1.1, que para esto es poco.
     opts = {"temperature": temperature, "num_predict": num_predict,
             "repeat_penalty": repeat_penalty}
+    # Cuánto tiempo dejamos el modelo residente en VRAM después de usarlo. Sin
+    # esto, Ollama lo descarga a los 5 minutos y CADA vuelta (pie, copete,
+    # etiqueta) paga la carga otra vez (7-13s). Con 30m, los 2-3 modelos que
+    # usamos quedan calientes y la siguiente corrida sale en ~1s.
+    ka = {"keep_alive": KEEP_ALIVE} if KEEP_ALIVE else {}
     if prefill:
         msgs = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt, "images": [b64]},
             {"role": "assistant", "content": prefill}]
         payload = ("/api/chat", {"model": model, "messages": msgs,
-                                 "stream": False, "think": False, "options": opts})
+                                 "stream": False, "think": False,
+                                 "options": opts, **ka})
     else:
         payload = ("/api/generate", {"model": model, "prompt": prompt,
                                      "images": [b64], "system": system or "",
-                                     "stream": False, "think": False, "options": opts})
+                                     "stream": False, "think": False,
+                                     "options": opts, **ka})
     try:
         r = _post(*payload)
     except urllib.error.HTTPError as e:
@@ -734,7 +784,7 @@ def suggest_tags_pairs(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
         # diagnóstico: ¿el modelo NO dijo nada, o lo dijo y lo filtramos todo?
         motivo = "el modelo no devolvió texto" if not (raw or "").strip() else \
                  f"dijo algo pero se filtró/dedup todo (crudas={len(crudas)})"
-        print(f"[PAIRS] 0 etiquetas · {motivo} · raw[:120]={ (raw or '')[:120]!r }")
+        print("[PAIRS] 0 etiquetas · %s · raw[:120]=%r" % (motivo, (raw or "")[:120]))
     return pares
 
 

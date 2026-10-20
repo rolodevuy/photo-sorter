@@ -321,6 +321,26 @@ def person_photos(known_dir, name, only_nsfw=False, media="images"):
     return out
 
 
+def library_photo_counts(known_dir):
+    """{persona: n° de fotos} contando las imágenes de cada subcarpeta de la
+    Biblioteca en UNA pasada (la galería lista a todos; no conviene un rglob por
+    persona). Cuenta normales y NSFW; saltea _revisar (y las subcarpetas que
+    arrancan con "_", que no son personas). No cuenta videos."""
+    root = Path(known_dir) if known_dir else None
+    if not root or not root.is_dir():
+        return {}
+    out = {}
+    for sub in root.iterdir():
+        if not sub.is_dir() or sub.name.startswith("_"):
+            continue
+        n = 0
+        for p in sub.rglob("*"):
+            if p.suffix.lower() in IMAGE_EXTENSIONS and REVIEW_DIR_NAME not in p.parts:
+                n += 1
+        out[sub.name] = n
+    return out
+
+
 def move_photo(library, from_name, rel, to_name=None):
     """Saca una foto de la carpeta de una persona.
 
