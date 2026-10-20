@@ -17,13 +17,19 @@ La división que SÍ funciona, probada sobre fotos de acro:
      su estado, pose, gesto, peinado, lugar. Y no opina sobre el cuerpo desnudo:
      de eso se encarga el clasificador. Pidiendo corto y sin el cuerpo, el 7B
      deja de inventar (fue el cambio que arregló los falsos "genitales").
-  2) REDACTAR (30B, NO mira la foto): escribe la ficha desde los hechos. Un 30B
-     respeta un límite que un 7B no: no agregó nada que no estuviera en la lista.
+  2) REDACTAR (9B abliterated, NO mira la foto): escribe el comentario desde los
+     hechos. Un redactor dedicado respeta un límite que el VLM mirando no.
 
 El dato anclado (acto, ropa cubierta, nombre) va en la pasada 2, que es la que lo
 respeta. En la 1 se pierde.
 
-COSTO: ~2,3 minutos por foto (el 30B tarda ~130s en CPU). Por eso esto NO corre
+EL REGISTRO es un pedido del usuario y no una decisión técnica: la voz es de un
+tío borracho, chapado a la antigua, mirando a una mujer que le gusta. Se probó
+antes con prosa literaria de fototeca y se rechazó por lírica. La opinión es el
+tono; el cuerpo sigue saliendo de los hechos (ver _RED_S).
+
+COSTO: el redactor era el 30B (18 GB, ~130s por foto, medido). Se cambió al 9B
+(6.6 GB) para bajar el tiempo. Sigue siendo lento en CPU, así que esto NO corre
 en tandas automáticas: es un botón, una foto, y queda guardado.
 """
 
@@ -33,7 +39,13 @@ from app import anclados, vlm
 MIRA = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M"
 
 # El que REDACTA. Solo texto, sin foto: por eso no puede inventar mirando.
-REDACTOR = "huihui_ai/qwen3-abliterated:30b-a3b-instruct-2507-q4_K_M"
+#
+# CAMBIADO del 30B al 9B por PESO, no por calidad: el 30B son 18 GB y tardaba
+# ~130s por foto (medido), lo que hacía impracticable el botón. El 9B es 6.6 GB
+# y es abliterated (sin los rechazos que romperían un cuento subido de tono).
+# No se midió todavía contra el 30B: si el texto sale flojo, el 30B sigue
+# estando y se cambia esta línea sola.
+REDACTOR = "huihui_ai/qwen3.5-abliterated:9b"
 
 # La pasada 1 nombra solo ROPA y POSE. No opina sobre el cuerpo desnudo: eso lo
 # dicen los clasificadores. Este es el cambio que arregló los falsos positivos
@@ -58,34 +70,42 @@ _MIRA_P = ("Hechos de la foto, en lista corta: prendas y su estado, pose, "
 # La pasada 2 escribe la ficha. Las reglas van en el `system` (en el prompt el
 # modelo las devuelve como eco: visto el narrador citando su propia instrucción).
 #
+# LA VOZ (pedido del usuario): tío borracho, chapado a la antigua, mirando una
+# mujer que le gusta. Antes era prosa literaria de fototeca ("cortina de seda",
+# "el tiempo detenido") y el usuario la rechazó por lírica. Lo que quiere es que
+# OPINE: un viejo verde que mira, compara con "antes las mujeres...", se relame,
+# alecciona. La opinión es el tono; el CUERPO sigue saliendo de los hechos.
+#
 # DOS MEDICIONES SOBRE ESTE SYSTEM, no volver atrás sin leerlas:
 #
-#   1) El DETALLE FINO. Con la primera versión el 30B ya no inventaba desnudo,
-#      pero ADORNABA: sobre un hecho que decía "bra negro con las manos cerca
-#      del pecho" escribió "el pulgar presiona directamente contra el pezón" y
-#      "una mano se apoya sobre los glúteos". Se agregó la prohibición nombrada
-#      del detalle (contacto, textura, tamaño) y eso bajó el adorno.
+#   1) El DETALLE FINO. Con la primera versión el redactor ya no inventaba
+#      desnudo, pero ADORNABA: sobre un hecho que decía "bra negro con las manos
+#      cerca del pecho" escribió "el pulgar presiona directamente contra el
+#      pezón" y "una mano se apoya sobre los glúteos". Inventar anatomía fina es
+#      lo que termina en tags falsos, así que la regla de abajo lo cubre.
 #
-#   2) El ECO. Pero con la lista larga de prohibiciones el modelo empezó a
-#      CONTESTARLAS dentro de la ficha: acro_0050 terminó con "sin añadir ni un
-#      solo detalle más allí donde no estaba presente en los hechos dados" y
-#      acro_0247 con "no hay rastro de otros cuerpos ni objetos visibles más allá
-#      de lo esencial". El texto final citaba la instrucción — el mismo eco que
-#      ya se había visto con el narrador. Cuanto más larga y enumerada la regla,
-#      más la devuelve.
+#   2) El ECO. Cuando la lista de prohibiciones fue larga y enumerada, el modelo
+#      empezó a CONTESTARLA dentro del texto: acro_0050 terminó con "sin añadir
+#      ni un solo detalle más allí donde no estaba presente en los hechos dados"
+#      y acro_0247 con "no hay rastro de otros cuerpos ni objetos visibles más
+#      allá de lo esencial". Cuanto más enumerada la regla, más la devuelve.
 #
-# Por eso este system dice lo mismo que el de la medición 1, pero CORTO y sin
-# enumerar: una regla general de "los hechos son todo" en vez de una lista de
-# cosas prohibidas que el modelo pueda repetir. Lo enumerado vivía en el prompt
-# y se copiaba; acá se probó que también se copia desde el system.
-_RED_S = """Sos el ojo de una fototeca y redactás la ficha de una foto a partir
-de los HECHOS que te dan. No ves la foto: solo tenés los hechos.
+# Por eso el system es CORTO y dice el límite en general en vez de enumerarlo.
+# Con la voz del tío la opinión está permitida y pedida: lo único que NO se
+# permite es afirmar cuerpo, acto o anatomía que no estén en los hechos.
+_RED_S = """Escribís el comentario de una foto con la voz de un tío borracho,
+chapado a la antigua, mirando a una mujer que le gusta. No ves la foto: solo
+tenés los HECHOS, y los hechos son TODO lo que sabés de ella.
 
-Los hechos son TODO lo que sabés. Un párrafo de 4 a 6 frases, en español
-rioplatense, tercera persona, presente, COMPLETO: terminá la última frase.
+Español rioplatense, presente, primera persona de viejo verde: opinás, comparás
+("antes las mujeres...", "en mi época..."), te relamés con lo que te gusta,
+aleccionás, te hacés el entendido. El cuerpo que hay lo mirás con hambre y sin
+pudor, nombrás lo que ves con las palabras de la calle cuando los hechos lo
+justifican.
 
-Contás cada hecho una vez, con ritmo y detalle, sin repetirlo ni opinar.
-Escribís solo lo que los hechos dicen, con las palabras que usan."""
+Un párrafo de 5 a 7 frases, COMPLETO: terminá la última frase. El morbo está en
+cómo mirás lo que hay, no en lo que le agregás: contás la escena que los hechos
+describen, con el hambre de un viejo que ya vio todo y se sorprende igual."""
 
 
 def _hechos(image_path, model=None):
@@ -95,7 +115,7 @@ def _hechos(image_path, model=None):
                          temperature=0.3) or "").strip()
 
 
-def _ficha(hechos, anclas="", nombre="", model=None):
+def _ficha(hechos, anclas="", nombre="", model=None, system=None):
     """Pasada 2: redacta desde los hechos. No mira la foto (generar_texto no
     manda imagen: es lo que garantiza que no agregue lo que no está).
 
@@ -104,14 +124,19 @@ def _ficha(hechos, anclas="", nombre="", model=None):
     dentro de la ficha ("no hay rastro de otros cuerpos"). Un dato más en la
     lista, en cambio, lo escribe sin comentarlo — y como el anclado del cuerpo
     dice el estado real ("cubiertos por la ropa"), corrige al VLM sin prohibir
-    nada."""
+    nada.
+
+    `system` permite cambiar el REGISTRO sin tocar la mecánica: el default es
+    _RED_S (prosa de fototeca); se probó con variantes de cuento erótico. Cambia
+    la voz, no los hechos."""
     pr = "HECHOS de la foto:\n\n%s\n\n" % hechos
     if anclas:
         pr += "Datos de los clasificadores:\n%s\n\n" % anclas
     if nombre:
         pr += "La persona es %s.\n\n" % nombre
     pr += "Redactá la ficha ahora, en un párrafo completo."
-    return (vlm.generar_texto(pr, model=model or REDACTOR, system=_RED_S,
+    return (vlm.generar_texto(pr, model=model or REDACTOR,
+                              system=system or _RED_S,
                               num_predict=500, temperature=0.45) or "").strip()
 
 
