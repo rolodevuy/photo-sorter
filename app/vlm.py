@@ -38,9 +38,7 @@ KEEP_ALIVE = -1
 # Abliterado (sin censura) y de 2025: describe mejor y más rápido que llava, que
 # además lava las frases de contenido explícito. El desplegable de la web deja
 # elegir otro; este es el que se usa si no eligen.
-DEFAULT_MODEL = (
-    "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M",
-)
+DEFAULT_MODEL = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M"
 
 # Modelos para ETIQUETAR, en orden de preferencia: primero el q8 (menos
 # comprimido, ve mejor, no confunde color de pelo/piel), después el q4 (más

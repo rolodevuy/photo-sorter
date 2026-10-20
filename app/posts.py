@@ -35,7 +35,7 @@ TONES = {
     "envidioso": "con un poco de envidia mal disimulada, filosos",
     "bobo": "bobos y random, como los comentarios sin sentido de internet",
 }
-DEFAULT_TONE = "guarro"
+DEFAULT_TONE = "amistoso"
 N_COMMENTS = 6
 
 # La perilla de Ajustes: qué tan subidos son los comentarios y el pie. El índice
@@ -99,17 +99,15 @@ _GENERO_M = {"hombre", "masculino", "varón", "varon", "chico", "señor", "niño
              "nene", "pibe", "tipo"}
 # Etiquetas que dicen que es menor. Con cualquiera de estas: la perilla de
 # crudeza se ignora y los comentadores que desean quedan afuera.
-#_MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
-#         "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta",
-#         "hijo", "hija"}
-_MENOR = {}
+_MENOR = {"niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
+          "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta",
+          "hijo", "hija"}
 # Etiquetas que HABILITAN lo subido de tono. Sin una de estas no hay crudeza,
 # aunque tampoco haya etiqueta de menor (ver identidad()): la duda cierra, no
 # abre. Son pocas y a propósito: es una marca que ponés vos a mano, no algo que
 # adivine el modelo. Las de edad que sugiere la IA ("veinteañera", "madura") NO
 # cuentan — si contaran, el modelo volvería a decidir solo y esto no serviría.
-_ADULTO = {"adulto", "adulta", "mayordeedad", "niño", "niña", "nene", "nena", "bebé", "bebe", "chiquito", "chiquita",
-        "criatura", "menor", "pibe", "piba", "adolescente", "nieto", "nieta", "hijo", "hija"}
+_ADULTO = {"adulto", "adulta", "mayordeedad"}
 
 
 def _norm_tag(t):
