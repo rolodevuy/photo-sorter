@@ -54,6 +54,8 @@ from app.notfaces import add_not_faces, clear_not_faces, count_not_faces
 from app.nsfw import (NSFW_DIR_NAME, NSFW_THUMBS, SCORE_MIN, SCORE_MIN_HI,
                       SCORE_MIN_LO, move_to_nsfw, scan_nsfw)
 from app import person_meta
+from app import anclados
+from app import vision2
 from app import tags as tags_mod
 from app import interrogator, vlm
 from app import sexpos
@@ -6399,56 +6401,43 @@ def post_copete(name):
     return {"ok": True, "copete": texto}
 
 
-# Visión (paso 1 del Centro de IA): la IA "mira" la foto y narra qué hay.
-# Ese texto alimenta conceptualmente a etiquetas, pie y comentarios.
+# Visión (paso 1 del Centro de IA): la IA mira la foto y escribe qué hay.
+# Ese texto alimenta conceptualmente a etiquetas, pie y comentarios, y se guarda
+# en posts.json como "vision".
 #
-# POR QUÉ NARRACIÓN Y NO "FICHA OBJETIVA" (no volver atrás sin leer esto):
-# antes pedía "una ficha objetiva de 2-4 líneas, sin opinar" y salía un
-# inventario seco ("La imagen muestra a una mujer... Lleva lencería negra.").
-# Lo que se quiere es narración: que el texto TENGA ritmo y detalle, que se
-# pueda leer. Se cambió el registro, no la fidelidad — sigue mirando la foto y
-# sigue prohibido inventar, que es lo único que hace confiable a este paso.
-# Probado: en cuanto se le pide crudeza o "morbo", el modelo inventa desnudo
-# que no está (ver el historial del narrador). La crudeza vive en el PIE, con
-# su compuerta; acá el trabajo es MIRAR BIEN y contarlo bien.
-#
-# El "sin opinar" se mantiene a propósito: es una narración de lo que hay, no
-# un comentario. Lo que se saca es "ficha"/"objetiva", que era lo que enfriaba
-# el texto hasta volverlo un inventario.
-VISION_SYSTEM = """Sos el ojo de una fototeca. Mirás la foto y la contás como
-quien la está mirando de verdad: en español, con ritmo y detalle, quedándote en
-lo que hay. Narración, no inventario: no una lista de datos, un texto que se
-lea.
-
-Narrás lo que se ve: la persona, la pose, la ropa (prenda por prenda, con color
-y estado: puesta, abierta, corrida, levantada), el cuerpo, la piel a la vista,
-el gesto, la mirada, el pelo, los tatuajes, el lugar, la luz.
-
-No opinás ni calificás: nada de hermosa, sexy, provocante, sugerente. Tercera
-persona, presente. Un párrafo de 4 a 7 frases, sin listas ni títulos.
-
-Contás solo lo que ves. Si algo no se ve, no existe para vos."""
-VISION_PROMPT = ("Contá lo que se ve en esta foto, con ritmo y detalle: la "
-                 "persona, la pose, la ropa, el cuerpo, el gesto, el lugar.")
+# La implementación vive en app/vision2.py, con las mediciones que la justifican:
+# DOS PASADAS (una mira hechos cortos, otra redacta sin mirar) porque una sola
+# pasada inventaba desnudo donde no había, en las seis variantes que se probaron.
+# No reimplementar acá sin leer ese módulo primero.
 
 
 @app.route("/post/<name>/vision", methods=["POST"])
 def post_vision(name):
     """La «visión» de la foto: la IA mira y anota qué hay. Es el paso 1 del
-    Centro de IA; se guarda en posts.json como "vision"."""
+    Centro de IA; se guarda en posts.json como "vision".
+
+    Va en DOS PASADAS (ver app/vision2.py, con las mediciones): una mira y anota
+    hechos cortos, otra redacta desde esos hechos sin volver a mirar. Una sola
+    pasada inventaba desnudo donde no lo había, en las seis variantes probadas.
+
+    Tarda ~2,5 min: es lento a propósito y queda guardado. Por eso es un botón
+    de a una foto, no una tanda."""
     rel = request.form.get("rel", "")
     path = _photo_path(name, rel)
     if not path:
         return {"ok": False, "error": "Esa foto ya no está."}
     cfg = load_config()
+    ident = posts_mod.identidad_foto(name, rel)
+    es_nsfw = NSFW_DIR_NAME in Path(rel).parts
     try:
-        texto = vlm.describe(
-            str(path),
-            model=request.form.get("model") or cfg.get("post_model") or None,
-            prompt=VISION_PROMPT, system=VISION_SYSTEM,
-            num_predict=320, temperature=0.35)
+        texto = vision2.narrar(
+            path, name, rel=rel, es_nsfw=es_nsfw, sano=ident["sano"],
+            model_mira=request.form.get("model") or cfg.get("post_model") or None,
+            model_redactor=cfg.get("vision_redactor") or None)
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    if not texto:
+        return {"ok": False, "error": "El modelo no devolvió texto."}
     texto = posts_mod.set_vision(name, rel, texto)
     return {"ok": True, "vision": texto}
 
