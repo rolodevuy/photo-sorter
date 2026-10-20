@@ -255,7 +255,11 @@ def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiqueta
     "explicito" (el que te pone "tetas al aire", "culito roto"...)."""
     
     quien = quien or "la persona de la foto"
-    p = ((system + " ") if system else "") + f"Sos {quien}. Esta es una foto tuya."
+    p = [f"Sos {quien}. Esta es una foto tuya."]
+    # El nombre del system va como PRIMERA palabra de la respuesta, no adentro
+    # del prompt que se le manda al modelo: se saca en el return (ver abajo).
+    if system:
+        p[0] = system + " " + p[0]
     if quien_es:
         # el pie va en primera persona: sin esto sale "estoy cansado" cuando es
         # una mujer, o al revés
@@ -283,7 +287,21 @@ def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiqueta
     p.append("Escribí el pie: dónde estás y qué estás haciendo. Corto, una o dos "
              "frases. Si no estás haciendo nada, decilo en pocas palabras y no "
              "inventes.")
-    return (p[0][1:] if p[0].startswith("narrador", "explicito", "sano") else p[0]) + "\n\n" + "\n".join(p)
+    # Se arma la respuesta ACÁ y no en el return: el 'return' de abajo le saca a
+    # p[0] el nombre del system si empieza con "narrador"/"explicito"/"sano", y
+    # eso es lo que hace que el pie salga con "narrador " pegado adelante. El
+    # prompt que se le manda al modelo tiene que ser el FINAL, el mismo que le
+    # pasamos a _sin_instrucciones para detectar el eco: si no, el eco del
+    # arranque ("narrador Sos X. Esta es una foto tuya.") no matchea contra
+    # ningún n-grama del prompt y el modelo se auto-copia el "narrador".
+    # Se saca el LARGO del nombre y no un [1:] fijo: con "sano" (4) un [1:1]
+    # comía la "S" de "Sos" y el prompt salía "ano Sos Agos...". Los tres
+    # nombres tienen largos distintos, así que el corte se calcula.
+    for nombre in ("narrador", "explicito", "sano"):
+        if p[0].startswith(nombre + " "):
+            p[0] = p[0][len(nombre) + 1:]
+            break
+    return p[0] + "\n\n" + "\n".join(p)
 
 def _post(path, payload):
     req = urllib.request.Request(
