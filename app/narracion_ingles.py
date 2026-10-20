@@ -53,25 +53,98 @@ import re
 
 from app import vlm
 
-# Pasada 1: mirando la foto, en inglés. Vocabulario crudo y explícito a
-# propósito — nada de eufemismos ni clínico. Temperatura baja: fiel a lo que
-# ve, no inventa.
-SYSTEM_NARRACION_EN = """You are describing a photo in extremely literal, explicit
-English, for someone who cannot see it. Describe the person: hair (color,
-length), face and expression, body, clothing item by item with color and
-state (worn, pulled aside, open, missing), pose, and location if evident.
+# Pasada 1: mirando la foto, en inglés.
+#
+# LA VOZ: el narrador de literatura erótica prohibida — un pervertido que mira
+# la foto y la cuenta despacio, saboreando. No es un sistema que identifica
+# imágenes: primera persona del que MIRA ("I'm looking at...", "look at
+# those..."), no de la persona de la foto — la confusión es fácil y ya pasó (el
+# modelo contestaba "my body", "I'm looking at you": eso es el PIE, no el
+# narrador). Registro literario y crudo, no de ficha técnica: nada de "The image
+# shows a woman wearing".
+#
+# LA CLAVE DEL PEDIDO: lo bizarro/obsceno sale de narrar lo COTIDIANO con ojo
+# sucio. Una señora levantando un brazo, una bicicleta de fondo, un cartel de
+# fútbol: eso también se narra, y ahí está la gracia — no hace falta que haya
+# desnudo. Por eso el prompt insiste en quedarse en lo que hay y decir lo que le
+# hace querer, en vez de saltar a lo que no hay.
+#
+# EL LÍMITE (no tocar sin leer esto): la narración NO se muestra. La leen las
+# ETIQUETAS (posts._intencion), el pie en inglés y los comentarios — y lo que
+# afirme se convierte en etiqueta, la etiqueta dispara los moldes NSFW y habilita
+# crudeza. Si inventa "she's completely naked" en una foto vestida, esa foto
+# queda con etiqueta de desnuda para siempre. Por eso el morbo va en CÓMO lo
+# cuenta (tono, ganas, lo que le hace querer) y NUNCA en afirmar un acto, una
+# prenda corrida o un cuerpo que no está. El bloque de abajo lo dice con el caso
+# concreto, porque el genérico ("no inventes") no alcanzó: el modelo corría una
+# bikini a un costado y la daba por corrida.
+#
+# Sin bloque de "menores": este camino ya exige adulta confirmada (ver el
+# docstring del módulo) y la salvaguarda real vive en posts.menor_set() y en las
+# rutas que llaman acá. NO hay fotos de menores en la biblioteca — el modelo
+# escribe "niña"/"joven" para cualquier adulta (ver el bug de visión), así que
+# meter la regla en el prompt solo le sumaba el vocabulario que se quería evitar.
+#
+# POR QUÉ LA VOZ Y LAS REGLAS ESTÁN SEPARADAS (no unir sin leer esto): el bloque
+# entero —voz + reglas— en el PROMPT hacía que el modelo DEVOLVIERA el texto de
+# las reglas en la narración ('"her bare skin exposed," or maybe just the hint
+# of what's underneath'). Un 7B trata lo que sigue al pedido como contenido a
+# reproducir. Con las reglas en el `system` dejan de copiarse a la salida y se
+# obedecen igual. Probado A/B: voz+reglas en el prompt = eco; voz en el prompt y
+# reglas en el system = sale limpio. Ver también el orden en narrar_ingles.
+#
+# LA VOZ: el narrador de literatura erótica prohibida — un pervertido que mira
+# la foto y la cuenta despacio, saboreando. Primera persona del que MIRA
+# ("I'm looking at...", "look at those..."), no de la persona de la foto.
+SYSTEM_NARRACION_EN = """You are the narrator of banned erotic literature — the
+kind that gets passed around in secret. You are looking at this photo, and you
+tell what is in it the way that narrator would: filthy, obsessive, lingering,
+full of appetite. A PERVERT telling what he sees and what it does to him,
+slowly, savouring every detail.
 
-Use direct, crude, explicit vocabulary for anatomy, clothing and acts — no
-euphemisms, no clinical terms, no softening, no censorship. If it's visible,
-say it plainly.
+FIRST PERSON, PRESENT TENSE, of the man who LOOKS — "I'm looking at...", "look
+at those...", "fuck, I'd...". You are not a camera and not a catalogue: never
+write "The image shows", "The subject is wearing", "This photograph captures".
+You don't name what's there like an inventory — you stop on it, you describe it
+because you can't look away, and you say what it makes you want.
 
-Describe what MATTERS: the person, what they are doing, and what they are
-wearing. Do not inventory the scenery — furniture, wall texture, decor and
-lighting equipment only get a mention if they are part of what is happening.
+5 to 9 sentences, one paragraph. Go deep on the thing that has you hooked: the
+body, the skin, the tits, the ass, the mouth, the throat, the legs, the look,
+the pose, the clothes and how they sit on her, what's covered and what isn't.
+Crude words only — tits, ass, cunt, cock, naked. Never clinical, never a
+euphemism, never softened. Say what it does to you.
 
-This is a factual visual description, not commentary: no opinions, no
-"sexy"/"beautiful", no metaphors. Do not invent anything not visible. One
-paragraph, no lists, no titles."""
+FIND THE BIZARRE IN THE ORDINARY — this is what makes it good. The narrator's
+eye is dirty and it lands on whatever is there, even when what's there is
+banal: the chair she's sitting on, the bicycle in the background, the football
+sign on the wall, the mug on the table. The photo doesn't have to be explicit
+for this to work. With no nudity and no act going on, the pervert still
+narrates: he dwells on the arm she's lifting, the sweat, the fabric pulled
+tight, the bit of skin at her waist, and he says what he wishes he was seeing
+and what he'd do. Being filthy about a fully dressed person in an ordinary room
+IS the job — that's where the obscene lives.
+
+One paragraph, no lists, no titles."""
+
+# Las REGLAS van aparte, en el `system` de describe() (ver el comentario de
+# arriba): acá SÍ se nombran los casos concretos que se quieren evitar, porque
+# este texto no se copia a la salida. En el prompt estos mismos ejemplos
+# volvían como eco.
+SYSTEM_NARRACION_REGLAS = """Absolute rules about the photo, they beat the style:
+
+- Name only what is really there: garments, body parts, pose, acts. This text
+  is read by other programs and turned into tags, so a lie here becomes a lie
+  in her data.
+- Clothes on are ON. Underwear on is not "pulled aside", not "pushed up", not
+  "pulled down slightly", not "barely covering", not "exposing what's
+  underneath", not "hinting at" anything. A top is not "exposing bare skin
+  underneath". If she's dressed, she's just dressed: be filthy about the
+  clothes themselves and about how much you wish they weren't there.
+- Never invent a body part under a garment, never turn a dressed person naked,
+  never invent an act or a place.
+- Never comment on your own text or on the photo as an object: no "this text",
+  no "these tags", no "this image invites", no "as a narrator", no noting what
+  you did or didn't invent. You never break out of being the man looking."""
 
 # Glosario inglés->rioplatense grosero, para las reescrituras que SÍ hacen
 # falta (pie, comentarios — lo que se muestra al usuario). La narración ya NO
@@ -102,6 +175,36 @@ def _sin_nota_final(texto):
     return _NOTA_FINAL_RE.sub("", texto or "").strip()
 
 
+def _sin_cola_cortada(texto):
+    """Saca la última frase si quedó a medio terminar.
+
+    La narración no pasa por posts._sin_cola_cortada (eso es del pie), así que
+    sin esto el corte de `num_predict` deja una frase colgada a mitad de camino
+    ("...and that ass of hers, I swear I'd"). Mismo criterio que el del pie:
+    mejor una frase menos que una cortada."""
+    t = (texto or "").strip()
+    if not t or t[-1] in ".!?…":
+        return t
+    corte = max(t.rfind("."), t.rfind("!"), t.rfind("?"))
+    return t[:corte + 1].strip() if corte > 0 else t
+
+
+# El modelo se va de idioma cuando se acelera: en medio del inglés aparecen
+# caracteres CJK ("almost条纹的视觉冲击力，like she's dressed"). Visto dos veces,
+# siempre con la temperatura alta. Se corta la narración en el primer carácter
+# no latino: lo que sigue ya no es inglés y no sirve como insumo.
+_NO_LATINO = re.compile(r"[^\x00-\x7F\u00c0-\u024f\u2018\u2019\u201c\u201d\u2014\u2013\u2026]")
+
+
+def _solo_latino(texto):
+    """Corta en el primer carácter que no sea latino (CJK, cirílico, árabe…)."""
+    t = (texto or "").strip()
+    m = _NO_LATINO.search(t)
+    if not m:
+        return t
+    return _sin_cola_cortada(t[:m.start()].rstrip(" ,;:-"))
+
+
 def _endurecer_texto(texto):
     """Red de seguridad DETERMINÍSTICA: aplica el mismo endurecedor que usa el
     resto de la app (vlm._crudo_map: senos->tetas, vulva->concha... + lo que
@@ -120,7 +223,7 @@ def _endurecer_texto(texto):
     return texto
 
 
-def narrar_ingles(image_path, model=None, hechos_en="", num_predict=1200):
+def narrar_ingles(image_path, model=None, hechos_en="", num_predict=450):
     """La narración, en inglés, UNA sola pasada — devuelve el texto (str), no un
     dict. `model` por defecto el mejor NSFW disponible.
 
@@ -132,14 +235,54 @@ def narrar_ingles(image_path, model=None, hechos_en="", num_predict=1200):
 
     `hechos_en`: dato fijo de edad/género en inglés (opcional), igual función
     que `posts._hechos_de_perfil` pero en inglés — para que la pasada no
-    adivine lo que peor calcula."""
+    adivine lo que peor calcula.
+
+    `temperature=0.7`: la temperatura baja era del narrador neutral ("fiel a lo
+    que ve" era la prioridad), pero alta tampoco sirve — con 0.85 el modelo se
+    va de idioma y mete caracteres chinos en medio del inglés ("almost条纹的视觉
+    冲击力"). 0.7 mantiene el registro caliente sin que se despeñe.
+
+    La voz va en el PROMPT y las REGLAS en el `system`, las dos cosas a
+    propósito:
+
+    - La voz en el system no da el POV: el modelo la toma como contexto y
+      contesta en tercera persona ("The woman in the picture is..."). En el
+      prompt agarra la primera del observador, que es la que se quiere.
+    - Las reglas en el PROMPT vuelven como ECO dentro de la narración (el
+      modelo las reproduce: '"her bare skin exposed," or maybe just the hint of
+      what's underneath'). En el system no se copian a la salida y se obedecen
+      igual.
+    - El `system` de `describe()` por defecto es SYSTEM_PIE, que habla como si
+      fueras VOS la persona de la foto. Dejarlo puesto le cambia el POV a la
+      narración: se vio "my body", "I'm looking at you" — eso es el pie.
+
+    `num_predict=450`: la narración es literaria y larga a propósito (5 a 9
+    frases), pero 600 se pasaba de largo — el modelo seguía hasta agotar el
+    techo y salían 10-12 frases con cierre de ensayo. 450 alcanza para las 5-9
+    frases que pide el prompt y deja que el techo corte el excedente.
+
+    El corte de `num_predict` deja una frase colgada al final (acá no pasa por
+    posts._sin_cola_cortada, que es del pie), así que se limpia acá."""
     modelo = model or vlm.tag_model()
-    prompt_en = "Describe this image."
+    # ORDEN (probado A/B, no invertir): el pedido corto primero y la VOZ
+    # después. Con la voz al final —que "suena" más enfático— el modelo la lee
+    # como una orden más y colisiona con el POV del pie: contesta como la
+    # persona de la foto ("I'm lying on my back in bed", "your eyes follow
+    # me"). Con el pedido corto adelante la voz cae como el registro a adoptar,
+    # y sale la primera persona del que MIRA.
+    #
+    # Las REGLAS van al `system`, no al prompt (ver SYSTEM_NARRACION_REGLAS):
+    # en el prompt el modelo las devuelve como eco dentro de la narración.
+    prompt_en = ("Look at this photo and tell me what it does to you. "
+                 "You can't stop staring at it.")
     if hechos_en:
         prompt_en += " " + hechos_en
-    return _sin_nota_final(vlm.clean_caption(vlm.describe(
-        image_path, model=modelo, prompt=prompt_en, system=SYSTEM_NARRACION_EN,
-        num_predict=num_predict, temperature=0.3)))
+    prompt_en += "\n\n" + SYSTEM_NARRACION_EN
+    return _solo_latino(_sin_cola_cortada(_sin_nota_final(
+        vlm.clean_caption(vlm.describe(
+            image_path, model=modelo, prompt=prompt_en,
+            system=SYSTEM_NARRACION_REGLAS,
+            num_predict=num_predict, temperature=0.7)))))
 
 
 # ── PIE de dos pasadas ──────────────────────────────────────────────────────
