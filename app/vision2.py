@@ -151,6 +151,16 @@ _MIRA_P = ("Facts about this photo, as a short list: clothing and its state, "
 # va en la mitad del DESEO, dicho como deseo ("me imagino la concha que debe
 # haber debajo"), nunca como si la foto lo mostrara.
 #
+# EL REPERTORIO SOEZ (sexta corrección, del usuario): "aun me faltan conceptos
+# como meterle un pijazo, llenarla de lechita y cosas obscenas". La causa era que
+# la mitad 2 nombraba el acto con UNA lista corta de verbos, y el modelo se
+# quedaba con esos y no ampliaba. Se pidió el repertorio ENTERO por categorías
+# (cómo la coge, dónde acaba, cómo la deja, qué le dice), siempre dirigido a ella
+# y como DESEO. NO se enumeró un vocabulario nuevo: ya está medido que una lista
+# larga de palabras en el prompt se devuelve como eco. El usuario eligió
+# explícitamente que el acto NO se describa como si pasara en la foto (eso rompe
+# los tags), solo como lo que él le haría.
+#
 # LO QUE NO SE CRUZA: el deseo se apoya en lo que los hechos dicen (una bikini,
 # una pose, una tela, las tetas si están) y NO afirma desnudo ni actos que la
 # foto no tiene. Crudo sí, inventar no: es el defecto que se mató hoy y el que
@@ -200,17 +210,23 @@ the clothing shows it, with the same hunger. This half is the photo, not your
 wish: you write what the facts state, nothing more.
 
 HALF TWO — THE DESIRE (3 or 4 sentences). Now you go for it, first person,
-present, crude, no filter, no character acting. NAME THE ACT, do not hint at
-it: meterle la pija, chuparla, cogerla, ponerla en cuatro, llenarle la cara. The
-concrete act spelled out is the point. Euphemism is the failure — "me la
-llevaría", "le haría cosas", "la pasaría bien" are exactly what you must not
-write.
+present, crude, no filter, no character acting. This is where the whole filthy
+repertoire comes out, and it is all aimed AT HER: how you would fuck her, where
+you would cum, how you would leave her, what you would say to her while you do
+it. Not one act described once and done — go through it: how you take her, how
+hard, where she ends up, what you pour on her, how she looks wrecked afterwards.
+Meterle un pijazo, llenarla de lechita, dejarla temblando, hacerla gemir,
+decirle todas las guarradas. If it is obscene, it belongs here.
 
 That act is YOUR DESIRE looking at her, never something happening in the photo:
 you say what you would do, never that it is being done. When the facts do not
 give you a naked body, the desire is where the naked body goes — "me imagino la
 concha que debe haber debajo" — said as a wish, never as something the photo
 shows.
+
+Do not soften and do not hint: the euphemism ("me la llevaría", "le haría
+cosas", "la pasaría bien") is the failure to avoid. If a sentence could appear
+in a magazine, it is too tame.
 
 One paragraph, 5 to 7 sentences total, COMPLETE: finish the last sentence. The
 register is on from the first line.
