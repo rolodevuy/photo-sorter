@@ -85,6 +85,27 @@ def _nudenet():
     return _det or None
 
 
+# El acto que da el clasificador es una CATEGORÍA, no una escena: dice "chupando"
+# sin decir a quién ni con qué. Medido: pasándolo así, el redactor escribe
+# "chupa algo" — tiene el dato y no sabe qué hacer con él. Acá se expande a la
+# escena concreta y soez, UNA sola vez, en el DATO (no en el system, que se
+# devuelve como eco; ni en el redactor, que si no inventa).
+#
+# El detector NO distingue misionero/doggy/anal ni a quién: "hardcore" es
+# penetración genérica (lo avisa su propio autor). Así que la escena se arma con
+# lo que la categoría sí afirma, sin agregar una posición ni un agujero que el
+# detector no vio. "solo" no lleva escena: no hay acto con nadie.
+_ACTO_ESCENA = {
+    "chupando": "le está chupando la pija a alguien",
+    "penetración": "la están penetrando",
+    "rusa": "le está haciendo una rusa con las tetas",
+    "paja": "le está haciendo una paja a alguien",
+    "comiéndole la concha": "le está comiendo la concha a alguien",
+    "dedeando": "se está dedeando o le está dedeando a alguien",
+    "sola": "",                     # sin acto con otro: no hay escena que armar
+}
+
+
 def _acto(image_path, es_nsfw, sano):
     """El acto, en jerga, o None. Solo en NSFW y con adulto confirmado."""
     if not es_nsfw or sano:
@@ -137,15 +158,6 @@ def _quienes(image_path, duenio):
     return otros, True
 
 
-def _hay_cara(image_path):
-    """True si se detectó al menos una cara (aunque no se sepa de quién)."""
-    try:
-        from app import finder
-        return bool(finder._detections(Path(image_path)))
-    except Exception:
-        return False
-
-
 def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
     """El bloque de datos duros de la foto, listo para meter en el prompt.
 
@@ -153,26 +165,47 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
     (vacía si no hay). El texto va en español y en jerga, corto, porque va como
     DATO del prompt, no como narración.
 
-    duenio: nombre de la carpeta (el perfil). Si no hay ninguna cara, se asume
-    que la foto es suya (decisión del usuario: en una carpeta de persona, la
-    mayoría de las fotos son de ella; el costo es que una foto de una amiga sin
-    cara reconocible también sale con su nombre)."""
+    duenio: nombre de la carpeta (el perfil). Si no se reconoce a NADIE MÁS, se
+    asume que la foto es suya y se la nombra — con cara o sin ella (decisión del
+    usuario: en una carpeta de persona, la mayoría de las fotos son de ella; el
+    costo es que una foto de una amiga sin reconocer también sale con su nombre,
+    y es a sabiendas)."""
     image_path = Path(image_path)
     acto = _acto(image_path, es_nsfw, sano)
     partes = _partes(image_path)
     otros, ok = _quienes(image_path, duenio)
-    hay_cara = _hay_cara(image_path)
 
     lineas = []
-    if acto:
-        lineas.append("Acto detectado por clasificador: %s." % acto)
+    # El acto NO va como un dato neutro ("Acto detectado: chupando"): el
+    # clasificador da una CATEGORÍA, y así el redactor escribe "chupa algo"
+    # (medido). Va la ESCENA concreta (ver _ACTO_ESCENA) y como lo que es — un
+    # hecho de la foto confirmado por un detector que la miró, distinto del
+    # deseo del narrador. "sola" no arma escena: no hay acto con otro.
+    escena = _ACTO_ESCENA.get(acto or "", "")
+    if acto and escena:
+        lineas.append(
+            "Hecho confirmado de la foto (lo detectó un clasificador que la "
+            "miró, no es un deseo): %s. Narrá ESE acto, concreto y soez, en la "
+            "descripción: no lo cites, no hables del clasificador, no lo "
+            "suavices ni digas \"algo\"." % escena)
+    elif acto == "sola":
+        lineas.append("Hecho confirmado de la foto: está sola, no hay nadie "
+                      "más con ella.")
     if partes:
         lineas.append("Cuerpo detectado por clasificador: %s." % ", ".join(partes))
     nombres = []
     if otros:
         nombres = [duenio] + [n for n in otros if n != duenio]
-    elif ok and not hay_cara:
-        nombres = [duenio]          # sin cara: se asume la dueña de la carpeta
+    elif ok:
+        # Se asume la dueña de la carpeta aunque HAYA cara: la foto está en SU
+        # carpeta, y lo normal es que sea ella. Antes esto exigía `not hay_cara`
+        # y eso dejaba afuera justo el caso MÁS común — una foto con cara que el
+        # reconocimiento no pudo matchear (ángulo, NSFW, baja calidad). Medido:
+        # acro_0015 tiene cara y no se reconoció, así que no se nombraba y
+        # salía "la mujer de pelo rojo". Decisión del usuario: nombrar siempre.
+        # El costo es el mismo de antes (una foto de una amiga sin reconocer
+        # también sale con su nombre), y es a sabiendas.
+        nombres = [duenio]
     if nombres:
         if len(nombres) == 1:
             lineas.append("Persona reconocida en la foto: %s." % nombres[0])

@@ -209,6 +209,14 @@ words of the street. If the facts say she is dressed, you describe the body as
 the clothing shows it, with the same hunger. This half is the photo, not your
 wish: you write what the facts state, nothing more.
 
+WHEN THE FACTS CONFIRM AN ACT — a classifier looked at the photo and says what
+she is doing — that act belongs HERE, in this half, as part of the scene: she is
+riding him, she has his cock in her mouth, he is fucking her ass. Say it
+happening, with the words of the street and in full: who is where, what goes in
+where, how she takes it. It is a fact of the photo like the clothing and the
+body — never cite the classifier, never say "it looks like", never soften it.
+Do not let it push the body out of the half: the act and the body together.
+
 HALF TWO — THE DESIRE (3 or 4 sentences). Now you go for it, first person,
 present, crude, no filter, no character acting. This is where the whole filthy
 repertoire comes out, and it is all aimed AT HER: how you would fuck her, where
@@ -218,11 +226,13 @@ hard, where she ends up, what you pour on her, how she looks wrecked afterwards.
 Meterle un pijazo, llenarla de lechita, dejarla temblando, hacerla gemir,
 decirle todas las guarradas. If it is obscene, it belongs here.
 
-That act is YOUR DESIRE looking at her, never something happening in the photo:
-you say what you would do, never that it is being done. When the facts do not
-give you a naked body, the desire is where the naked body goes — "me imagino la
-concha que debe haber debajo" — said as a wish, never as something the photo
-shows.
+The act in THIS half is YOUR DESIRE looking at her, and it stays a desire when
+the facts confirm nothing: you say what you would do, never that it is being
+done. When the facts do not give you a naked body, the desire is where the naked
+body goes — "me imagino la concha que debe haber debajo" — said as a wish, never
+as something the photo shows. But if the facts already confirmed an act in HALF
+ONE, this half does not repeat it: it goes further, to what YOU would do to her
+on top of that.
 
 Do not soften and do not hint: the euphemism ("me la llevaría", "le haría
 cosas", "la pasaría bien") is the failure to avoid. If a sentence could appear
@@ -230,6 +240,11 @@ in a magazine, it is too tame.
 
 One paragraph, 5 to 7 sentences total, COMPLETE: finish the last sentence. The
 register is on from the first line.
+
+If a name is given to you, USE IT: it is her own name, and you call her by it
+instead of "a woman", "a girl", "she". "Acro is bent over the mirror" is right;
+"a woman is bent over the mirror" is not. Name her out loud, like someone who
+knows her.
 
 Write the commentary in Spanish (rioplatense), never in English. The slang must
 sound Argentine, not translated: escribí como habla un argentino, no como una
@@ -265,7 +280,15 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
     if anclas:
         pr += "Data from the classifiers:\n%s\n\n" % anclas
     if nombre:
-        pr += "The person is %s.\n\n" % nombre
+        # El nombre va como ORDEN de nombrar, no como un dato suelto en la
+        # lista. Medido: como dato ("The person is acro.") el redactor lo IGNORA
+        # 2 de cada 3 veces y escribe "una mujer joven" — que es la queja del
+        # usuario ("ya no usa el 'acro camina por la calle'"). Un dato suelto se
+        # lee como etiqueta; decir que es SU NOMBRE PROPIO y que lo use sí se
+        # obedece. La regla que lo pide está también en _RED_S (system), por si
+        # el prompt se ignora.
+        pr += "%s is her own name: call her %s, never \"a woman\" or \"she\".\n\n" % (
+            nombre, nombre)
     pr += "Write the commentary now, as one full paragraph, in Spanish."
     return (vlm.generar_texto(pr, model=model or REDACTOR,
                               system=system or _RED_S,

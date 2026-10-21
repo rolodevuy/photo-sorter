@@ -9372,6 +9372,18 @@ def _modelos_para_calentar():
     except Exception:
         pass
     modelos.append(COPETE_MODEL)
+    # El REDACTOR de la Visión (paso 2: el que escribe la narración sin ver la
+    # foto). Faltaba acá, y se notaba: la PRIMERA Visión de cada sesión pagaba su
+    # carga desde cero (medido: ~13s de una corrida eran eso), y con 16 GB de
+    # VRAM Ollama lo va turnando con el VLM de 7B. Va al final de la lista a
+    # propósito: el último que se calienta queda residente en la GPU, y el que
+    # interesa residente es el VLM de 7B (etiquetas, copetes, el pie mirando),
+    # que se usa mucho más seguido. El redactor se usa solo al apretar Visión.
+    try:
+        from app import vision2
+        modelos.append(load_config().get("vision_redactor") or vision2.REDACTOR)
+    except Exception:
+        pass
     try:
         modelos.append(vlm.tag_model())
     except Exception:
