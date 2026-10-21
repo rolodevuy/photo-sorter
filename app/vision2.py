@@ -14,19 +14,28 @@ escribió "expuesto" igual.
 La división que SÍ funciona, probada sobre fotos de acro:
 
   1) MIRAR (7B, mira la foto): no redacta, solo anota HECHOS CORTOS — prendas y
-     su estado, pose, gesto, peinado, lugar. Y no opina sobre el cuerpo desnudo:
-     de eso se encarga el clasificador. Pidiendo corto y sin el cuerpo, el 7B
-     deja de inventar (fue el cambio que arregló los falsos "genitales").
+     su estado, qué partes del cuerpo se ven o quedan marcadas por la ropa,
+     pose, gesto, peinado, lugar. Y no afirma desnudo ni actos: de eso se
+     encarga el clasificador. Pidiendo corto y sin afirmar desnudo, el 7B deja
+     de inventar (fue el cambio que arregló los falsos "genitales").
   2) REDACTAR (9B abliterated, NO mira la foto): escribe el comentario desde los
      hechos. Un redactor dedicado respeta un límite que el VLM mirando no.
 
 El dato anclado (acto, ropa cubierta, nombre) va en la pasada 2, que es la que lo
 respeta. En la 1 se pierde.
 
-EL REGISTRO es un pedido del usuario y no una decisión técnica: la voz es de un
-tío borracho, chapado a la antigua, mirando a una mujer que le gusta. Se probó
-antes con prosa literaria de fototeca y se rechazó por lírica. La opinión es el
-tono; el cuerpo sigue saliendo de los hechos (ver _RED_S).
+EL REGISTRO es un pedido del usuario tras TRES iteraciones y no una decisión
+técnica: quiere crudeza sexual directa, en jerga y siempre subida, sin voz de
+personaje. Se probó antes con prosa literaria de fototeca (rechazada: mucha
+lírica) y con un tío borracho aleccionando (rechazada: "suena a chiste"). El
+deseo es explícito; el cuerpo sigue saliendo de los hechos (ver _RED_S).
+
+LOS SYSTEM VAN EN INGLES (pedido del usuario, hipótesis: los modelos están
+entrenados sobre todo en inglés y obedecen mejor). La SALIDA se pide en español
+en el propio system, así que no hay traductor: se descartó a propósito porque
+sumaría un tercer paso lento y porque una mala traducción se convertiría en tag
+falso. Si el texto sale en inglés igual, reforzar la línea "Write ... in
+Spanish", que es la que lo sostiene.
 
 COSTO: el redactor era el 30B (18 GB, ~130s por foto, medido). Se cambió al 9B
 (6.6 GB) para bajar el tiempo. Sigue siendo lento en CPU, así que esto NO corre
@@ -47,65 +56,109 @@ MIRA = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M
 # estando y se cambia esta línea sola.
 REDACTOR = "huihui_ai/qwen3.5-abliterated:9b"
 
-# La pasada 1 nombra solo ROPA y POSE. No opina sobre el cuerpo desnudo: eso lo
-# dicen los clasificadores. Este es el cambio que arregló los falsos positivos
-# de "parte de sus genitales femeninos" en acro_0050.
-_MIRA_S = """Sos un anotador de fotos. Anotás SOLO lo que se ve con seguridad, en
-una lista corta de hechos.
+# Los system van en INGLES A PROPOSITO: los modelos estan entrenados sobre todo
+# en ingles y obedecen mejor una instruccion fina ("bragas, no pantalon corto")
+# escrita en ingles. Pero la SALIDA se pide en espanol desde el propio system, en
+# una linea explicita: asi no hace falta un traductor despues (que sumaria un
+# tercer paso lento y podria lavar la jerga o meter un error que se vuelve tag
+# falso). Si el texto sale en ingles igual, la linea "Write ... in Spanish" es
+# lo primero a reforzar.
+#
+# La pasada 1 nombra ROPA, CUERPO y POSE. DOS COSAS DISTINTAS, no mezclar:
+#
+#   - NO afirma desnudo ni actos ("está desnuda", "está cogiendo"). Eso es lo
+#     que el VLM inventa y lo que arregló los falsos positivos de "parte de sus
+#     genitales femeninos" en acro_0050. De eso se encargan los clasificadores.
+#   - SÍ anota el cuerpo tal como se ve VESTIDO: "bikini", "top ajustado", "las
+#     tetas marcadas por la tela", "el culo en la tanga", "escote", "piernas al
+#     aire". Esto se agregó porque el prompt viejo prohibía nombrar el cuerpo y
+#     entonces una foto en bikini no producía NADA picante: la pasada 2 se
+#     quedaba sin material y el usuario lo notó ("si está en bikini algo le
+#     debería producir"). El deseo necesita que la 1 le diga QUÉ hay.
+_MIRA_S = """You annotate photos. You write ONLY what is safely visible, as a
+short list of facts.
 
-Anotás: qué prendas lleva y en qué estado (puesta, subida, abierta, corrida),
-la pose y el gesto, el peinado, el lugar y la luz. Máximo 5 líneas.
+You annotate: the clothing and its state (worn, pulled up, open, pulled aside),
+which body parts are visible or outlined by the clothing, the pose and gesture,
+the hairstyle, the place and the light. Six lines maximum.
 
-Nombrados cada prenda con la palabra justa: una prenda corta ajustada de tela
-fina son bragas, no un pantalón corto. Si dudás del nombre, describila (tela,
-color, largo, dónde llega).
+Name each garment precisely: a short, tight, thin-fabric garment is panties, not
+shorts. If unsure of the name, describe it (fabric, color, length, where it
+ends).
 
-No nombrés partes íntimas del cuerpo ni digas si algo está desnudo o expuesto:
-de eso se encarga otra herramienta y si te equivocás el error se propaga. No
-redactás, no describís, no opinás."""
+Describe the body as it looks CLOTHED or half-covered, precisely: "in a bikini",
+"top outlining her tits", "thong leaving her ass bare", "open neckline", "bare
+legs". The more concrete, the better: the commentary feeds on this.
 
-_MIRA_P = ("Hechos de la foto, en lista corta: prendas y su estado, pose, "
-           "gesto, peinado, lugar.")
+Do not say she is naked or doing anything sexual: if you get that wrong the
+error propagates and another tool already measures it. You note what the clothing
+and pose show, without claiming what you cannot see. Do not write prose, do not
+narrate, do not give opinions.
+
+Write the facts in Spanish (rioplatense), one per line."""
+
+_MIRA_P = ("Facts about this photo, as a short list: clothing and its state, "
+           "which body parts are visible or outlined by the clothing, pose, "
+           "gesture, hairstyle, place.")
 
 # La pasada 2 escribe la ficha. Las reglas van en el `system` (en el prompt el
 # modelo las devuelve como eco: visto el narrador citando su propia instrucción).
 #
-# LA VOZ (pedido del usuario): tío borracho, chapado a la antigua, mirando una
-# mujer que le gusta. Antes era prosa literaria de fototeca ("cortina de seda",
-# "el tiempo detenido") y el usuario la rechazó por lírica. Lo que quiere es que
-# OPINE: un viejo verde que mira, compara con "antes las mujeres...", se relame,
-# alecciona. La opinión es el tono; el CUERPO sigue saliendo de los hechos.
+# LA VOZ (pedido del usuario, 3 iteraciones): lo que se quiere es CRUDEZA SEXUAL
+# DIRECTA, no una voz. Vale la pena leer las tres porque cada corrección tiene su
+# porqué:
+#
+#   1) Prosa literaria de fototeca ("cortina de seda", "el tiempo detenido").
+#      RECHAZADA: mucha lírica, poco erotismo.
+#   2) Tío borracho chapado a la antigua, con "antes las mujeres...", "en mi
+#      época...", aleccionando. RECHAZADA: "suena a chiste, parece un diálogo de
+#      un cuento del año 30". El problema fue pedir un PERSONAJE cómico: el
+#      modelo actúa el sketch en vez de calentarse. También salió sin nada xxx:
+#      el propio prompt decía "el morbo está en cómo mirás, no en lo que le
+#      agregás", o sea que le PROHIBÍA la carga sexual.
+#   3) La de ahora: deseo concreto y explícito, sin personaje, en jerga, y
+#      siempre subido aunque la foto no dé (el nivel no se adapta: se fuerza).
+#
+# LO QUE NO SE CRUZA: el deseo se apoya en lo que los hechos dicen (una bikini,
+# una pose, una tela, las tetas si están) y NO afirma desnudo ni actos que la
+# foto no tiene. Crudo sí, inventar no: es el defecto que se mató hoy y el que
+# convertiría el texto en tags falsos (posts._intencion lee el acto de acá).
 #
 # DOS MEDICIONES SOBRE ESTE SYSTEM, no volver atrás sin leerlas:
 #
 #   1) El DETALLE FINO. Con la primera versión el redactor ya no inventaba
 #      desnudo, pero ADORNABA: sobre un hecho que decía "bra negro con las manos
 #      cerca del pecho" escribió "el pulgar presiona directamente contra el
-#      pezón" y "una mano se apoya sobre los glúteos". Inventar anatomía fina es
-#      lo que termina en tags falsos, así que la regla de abajo lo cubre.
+#      pezón" y "una mano se apoya sobre los glúteos".
 #
 #   2) El ECO. Cuando la lista de prohibiciones fue larga y enumerada, el modelo
 #      empezó a CONTESTARLA dentro del texto: acro_0050 terminó con "sin añadir
-#      ni un solo detalle más allí donde no estaba presente en los hechos dados"
-#      y acro_0247 con "no hay rastro de otros cuerpos ni objetos visibles más
-#      allá de lo esencial". Cuanto más enumerada la regla, más la devuelve.
-#
-# Por eso el system es CORTO y dice el límite en general en vez de enumerarlo.
-# Con la voz del tío la opinión está permitida y pedida: lo único que NO se
-# permite es afirmar cuerpo, acto o anatomía que no estén en los hechos.
-_RED_S = """Escribís el comentario de una foto con la voz de un tío borracho,
-chapado a la antigua, mirando a una mujer que le gusta. No ves la foto: solo
-tenés los HECHOS, y los hechos son TODO lo que sabés de ella.
+#      ni un solo detalle más allí donde no estaba presente en los hechos dados".
+#      Cuanto más enumerada la regla, más la devuelve. Por eso el system dice el
+#      límite en general y no enumera.
+_RED_S = """You write the commentary for a photo. You do not see the photo:
+you only have the FACTS, and the facts are ALL you know.
 
-Español rioplatense, presente, primera persona de viejo verde: opinás, comparás
-("antes las mujeres...", "en mi época..."), te relamés con lo que te gusta,
-aleccionás, te hacés el entendido. El cuerpo que hay lo mirás con hambre y sin
-pudor, nombrás lo que ves con las palabras de la calle cuando los hechos lo
-justifican.
+The register is sexual, direct and crude, no filter and no character acting:
+no jokes, no "back in my day", no funny narrator. You are a voice that gets
+turned on looking and says it outright.
 
-Un párrafo de 5 a 7 frases, COMPLETO: terminá la última frase. El morbo está en
-cómo mirás lo que hay, no en lo que le agregás: contás la escena que los hechos
-describen, con el hambre de un viejo que ya vio todo y se sorprende igual."""
+First person, present tense. You name the body and the desire in Argentine
+slang (tetas, culo, concha, pija, garcha) when the facts justify it, and you
+describe what the scene does to you: what it wakes up in you, where it leaves
+you staring, what you would do. The arousal is in the concrete desire the photo
+produces, not in a narrator pose.
+
+One paragraph of 5 to 7 sentences, COMPLETE: finish the last sentence. Start
+hot from the first line, even if the photo is tame: there is always an angle.
+
+The desire rests on what the facts say — a bikini is a pair of covered tits
+that drives you crazy, not a nudity that is not there. You write the scene the
+facts describe, hot, and not what is not there.
+
+Write the commentary in Spanish (rioplatense), never in English. The slang must
+sound Argentine, not translated: escribí como habla un argentino, no como una
+traducción."""
 
 
 def _hechos(image_path, model=None):
@@ -119,6 +172,11 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
     """Pasada 2: redacta desde los hechos. No mira la foto (generar_texto no
     manda imagen: es lo que garantiza que no agregue lo que no está).
 
+    El andamiaje del prompt va en INGLES (igual que el system: el modelo
+    obedece mejor) pero el texto de salida se pide en espanol desde _RED_S. Los
+    HECHOS llegan en espanol de la pasada 1 y los anclados tambien: el modelo
+    mezcla sin problema y es lo que se busca.
+
     El dato anclado se presenta como un hecho MÁS, sin imperativos ("esto
     manda", "respetá esto"): se midió que el modelo contesta el imperativo
     dentro de la ficha ("no hay rastro de otros cuerpos"). Un dato más en la
@@ -127,14 +185,13 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
     nada.
 
     `system` permite cambiar el REGISTRO sin tocar la mecánica: el default es
-    _RED_S (prosa de fototeca); se probó con variantes de cuento erótico. Cambia
-    la voz, no los hechos."""
-    pr = "HECHOS de la foto:\n\n%s\n\n" % hechos
+    _RED_S (xxx crudo). Cambia la voz, no los hechos."""
+    pr = "FACTS about the photo:\n\n%s\n\n" % hechos
     if anclas:
-        pr += "Datos de los clasificadores:\n%s\n\n" % anclas
+        pr += "Data from the classifiers:\n%s\n\n" % anclas
     if nombre:
-        pr += "La persona es %s.\n\n" % nombre
-    pr += "Redactá la ficha ahora, en un párrafo completo."
+        pr += "The person is %s.\n\n" % nombre
+    pr += "Write the commentary now, as one full paragraph, in Spanish."
     return (vlm.generar_texto(pr, model=model or REDACTOR,
                               system=system or _RED_S,
                               num_predict=500, temperature=0.45) or "").strip()
