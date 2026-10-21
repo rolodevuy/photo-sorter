@@ -388,6 +388,17 @@ def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
                                             tags=tags)
     except Exception:
         pass                        # los detectores nunca rompen la narración
+    # Las caras marcadas A MANO (cuadro + nombre en el visor). Es lo que le dice
+    # al redactor a QUIÉN describir: medido, sin esto el VLM le atribuía a la
+    # dueña la ropa de alguien que estaba atrás. Va aparte del ancla porque sale
+    # del etiquetado del usuario, no de un detector.
+    try:
+        from app import posts as _posts
+        caras = _posts.caras_para_prompt(duenio, rel)
+        if caras:
+            anclas = (anclas + "\n" + caras) if anclas else caras
+    except Exception:
+        pass
     nom = anclados.nombre_para_narrar(nombres, duenio)
     dec("redactando…")
     return _ficha(h, anclas=anclas, nombre=nom, model=model_redactor)

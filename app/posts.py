@@ -376,11 +376,36 @@ def _stable_hash(s):
 
 def _post_de(got):
     """Normaliza un post crudo del json. "people" = OTROS conocidos etiquetados
-    en la foto (el dueño de la carpeta va implícito). "fav" = favorito."""
+    en la foto (el dueño de la carpeta va implícito). "fav" = favorito.
+    "faces" = etiquetado A MANO con posición (ver set_faces): [{"name", "box"}],
+    con el box normalizado 0-1 — no en píxeles, así vale para cualquier tamaño
+    de pantalla y para cualquier copia de la foto."""
     got = got or {}
     return {"caption": got.get("caption"), "comments": got.get("comments", []),
             "people": got.get("people", []), "fav": bool(got.get("fav")),
-            "vision": got.get("vision")}
+            "vision": got.get("vision"), "faces": _faces_limpias(got.get("faces"))}
+
+
+def _faces_limpias(faces):
+    """Sanea la lista de caras etiquetadas a mano. Descarta lo que no sirva en
+    vez de romper: un box sin las cuatro coordenadas, o con valores fuera de
+    0-1, se tira (mejor perder una etiqueta que pintar un cuadro en el aire)."""
+    limpias = []
+    for f in faces or ():
+        try:
+            n = str(f.get("name") or "").strip()
+            b = [float(x) for x in f.get("box")]
+            if not n or len(b) != 4:
+                continue
+            if any(x < -0.02 or x > 1.02 for x in b):
+                continue
+            x0, y0, x1, y1 = [min(1.0, max(0.0, x)) for x in b]
+            if x1 - x0 < 0.005 or y1 - y0 < 0.005:
+                continue                 # cuadro degenerado: no es una cara
+            limpias.append({"name": n, "box": [x0, y0, x1, y1]})
+        except (TypeError, ValueError, KeyError):
+            continue
+    return limpias
 
 
 def set_fav(name, rel, value):
@@ -399,6 +424,35 @@ def get_many(name, rels):
     """Los posts de varias fotos de una, sin releer el archivo por cada una."""
     data = _load()
     return {rel: _post_de(data.get(_key(name, rel))) for rel in rels}
+
+
+def set_faces(name, rel, faces):
+    """Las caras etiquetadas A MANO con su cuadro: [{"name", "box"}, ...].
+
+    `box` viene en normalizado 0-1 (x0, y0, x1, y1) desde el frontend: la esquina
+    sup-izq y la inf-der del cuadro que dibujó el usuario, divididas por el ancho
+    y alto de la foto mostrada. Se guarda normalizado y no en píxeles porque los
+    píxeles dependen de cómo se mostró la foto; el normalizado vale siempre.
+
+    A diferencia de set_people (que exige que el nombre exista en la base), acá
+    el nombre es libre: la idea es poder marcar la cara de la DUEÑA (que no está
+    en su propia base de conocidos) y también la de alguien que no esté cargado.
+    Sin dueño no hay a quién atribuir la ropa, que es el problema que esto viene
+    a resolver."""
+    limpio, vistos = [], set()
+    for f in faces or ():
+        try:
+            n = str(f.get("name") or "").strip()
+            b = [float(x) for x in f.get("box")]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not n or len(b) != 4:
+            continue
+        if n in vistos:
+            continue
+        vistos.add(n)
+        limpio.append({"name": n, "box": b})
+    return _put(name, rel, faces=_faces_limpias(limpio))["faces"]
 
 
 def set_people(name, rel, people):
@@ -1277,6 +1331,53 @@ def quien_es_pie(ident):
                   "cómo la estás pasando. NADA sexual ni subido de tono, y nada "
                   "sobre tu cuerpo: está terminantemente prohibido acá.")
     return quien.strip()
+
+
+def caras_para_prompt(name, rel):
+    """Las caras etiquetadas a mano, en texto, para meter en el prompt.
+
+    Es la que resuelve el problema que originó todo esto: la Visión describió la
+    ROPA de alguien que estaba atrás, porque el VLM mira la foto entera y no sabe
+    cuál de las personas es la dueña. Con las caras marcadas sabe quién está en
+    cada cuadro y a quién describir.
+
+    Va en texto y no como ejemplo: ya está medido en este archivo que los
+    ejemplos se copian y las etiquetas se recitan. Se dice quién está y que el
+    cuerpo que importa es el suyo — sin describir el cuadro con coordenadas, que
+    el modelo convertiría en "en el centro de la imagen, a la izquierda".
+
+    Devuelve "" si la foto no tiene caras marcadas (el caso de siempre)."""
+    try:
+        caras = get(name, rel).get("faces") or []
+    except Exception:
+        return ""
+    if not caras:
+        return ""
+    quien = []
+    for f in caras:
+        n = str(f.get("name") or "").strip()
+        if n and n not in quien:
+            quien.append(n)
+    if not quien:
+        return ""
+    due = name in quien
+    if len(quien) == 1 and due:
+        return ("Caras marcadas a mano en la foto: solo %s. Es ella y no hay "
+                "otra persona: todo lo que se ve es suyo." % name)
+    otros = [q for q in quien if q != name]
+    txt = "Caras marcadas a mano en la foto: %s." % ", ".join(quien)
+    if due:
+        txt += (" La protagonista es %s: el cuerpo y la ropa que describís son "
+                "LOS SUYOS." % name)
+        if otros:
+            txt += (" También están %s, pero NO son la protagonista: no le "
+                    "atribuyas a %s la ropa ni el cuerpo de %s."
+                    % (", ".join(otros), name, " ni de ".join(otros)))
+    else:
+        # Ninguna cara marcada es la dueña: puede pasar si etiquetaste solo a
+        # otra gente. Se avisa para que no la dé por presente ni le invente ropa.
+        txt += " Ninguna es la dueña de la carpeta: no la des por presente."
+    return txt
 
 
 def _sin_copia_del_pie(textos, pie):
