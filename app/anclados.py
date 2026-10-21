@@ -48,10 +48,15 @@ from app import NSFW_DIR_NAME
 # del mismo cuerpo con 0.007 de diferencia.
 #
 # Pasarle eso a la narración como dato duro sería darle permiso para inventar
-# desnudo, que es JUSTO lo que este módulo existe para evitar. Así que de
-# NudeNet solo se usa el lado conservador: "esto está tapado por la ropa". Eso
-# nunca agrega desnudo, solo lo niega — y negarlo es lo que frena el invento.
-# Si el pecho está realmente al descubierto, lo dice el VLM mirando la foto.
+# desnudo. Así que de NudeNet solo se usa el lado conservador: "esto está tapado
+# por la ropa". Eso nunca agrega desnudo, solo lo niega — y negarlo es lo que
+# frena el invento.
+#
+# QUIÉN AFIRMA EL DESNUDO: el VLM mirando la foto (decisión explícita del
+# usuario). Este módulo es el FRENO, no el juez: si dice "cubierto", la pasada 2
+# lo respeta; si la descripción dice "desnuda" y acá no hay nada que la
+# contradiga, se describe desnuda. Es a sabiendas, porque el detector solo no
+# sirve (ver arriba: tizi_0000, vestida, BREAST_EXPOSED 0.836).
 _PARTES_TAPADO = {
     "FEMALE_GENITALIA_COVERED": "genitales cubiertos por la ropa",
     "FEMALE_BREAST_COVERED": "pechos cubiertos por la ropa",
