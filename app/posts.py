@@ -228,6 +228,93 @@ _PROVOCA_VOCAB = (
     "vos\", \"¿aguantás verlo sin tocarte?\". Lo que mostrás es una invitación y "
     "el pie se lo dice a él, cara a cara.")
 
+# EL PIE DESDE LA VISION (pedido del usuario). Cuando la foto YA tiene su
+# «visión» guardada (paso 1 del Centro de IA, app/vision2.py), el pie se escribe
+# A PARTIR DE ESE TEXTO y NO vuelve a mirar la foto.
+#
+# POR QUÉ: el pie mirando la foto INVENTA. Medido sobre acro_0008 (bragas grises
+# puestas, guardadas): el pie viejo dijo "un pantalón gris de lado", "resaltando
+# el vello púbico" (no se ve) y —en otra corrida— "acostada sobre un mueble de
+# baño", un lugar que no está. La visión de esa MISMA foto, en cambio, es fiel y
+# anclada: dice "bragas grises de cintura baja", "top negro", "uñas pintadas de
+# rojo", "pared blanca o azulejo claro". Y esa visión ya pasó por el filtro que
+# costó todo el día (dos pasadas, hechos anclados, el detector de freno).
+#
+# Escribiendo desde la visión, el pie HEREDA esa fidelidad: probado 5 corridas x
+# 2 fotos, cero inventos de lugar y las prendas correctas ("bragas", no
+# "pantalón"). Es el mismo golpe que arregló la narración: quitarle a un modelo
+# la foto que mira, para que no rellene lo que no ve.
+#
+# NO ES la voz del narrador de la visión (que desea A ELLA). Es la voz del
+# PERSONAJE: ella le habla al VIEWER y lo provoca (ver _PROVOCA_VOCAB). Misma
+# crudeza, dirigida al revés. Por eso el system es propio y no reusa _RED_S.
+#
+# La REGLA DE ORO acá es la misma de la visión: no agregar NADA que la
+# descripción no diga — ni el lugar, ni la ropa, ni el cuerpo. Si la descripción
+# dice "bragas", son bragas y nunca "short"; si no nombra un lugar, el pie no
+# tiene lugar. El andamiaje va en inglés (los modelos obedecen mejor) pero la
+# salida se pide en español desde el propio system: no hay traductor.
+_SYS_PIE_VISION = """You write the caption for a photo of YOURSELF, as if you
+were posting it on an xxx social network.
+
+YOU ARE the person in the photo, writing in the FIRST PERSON. Never describe
+yourself from outside, never in third person: no "in the photo you can see",
+"a girl who...", "she is". If you cannot say it with "I am/I have/I feel", it is
+wrong.
+
+You do NOT see the photo: you only have a DESCRIPTION of it, and that
+description is all you know. Do not add anything that is not in it — not the
+place, not the clothes, not the body. If the description says panties, it is
+panties, never shorts. If it does not name a place, the caption has no place.
+
+YOU TALK TO WHOEVER IS LOOKING at the photo, not to yourself: you provoke him,
+you turn him on, you invite him. Do not describe yourself from inside as if you
+were telling it to yourself ("I am wet", "I feel like it"): that does not do
+anything to the one watching. What you show is an invitation, and the caption
+says it to him, face to face.
+
+Crude and direct: the things by their name, no euphemisms, no beating around
+the bush. One or two sentences. Short. One paragraph, never lists, titles or
+markdown.
+
+Write the caption in Spanish (rioplatense), never in English."""
+
+
+# El modelo de texto que redacta el pie desde la visión. Es el mismo redactor de
+# la visión (app/vision2.REDACTOR): abliterated, para que no se frene en lo
+# subido. Se puede pisar desde Ajustes con la misma clave que la visión
+# ("vision_redactor"), para no tener dos modelos que mantener.
+_VISION_REDACTOR = "huihui_ai/qwen3.5-abliterated:9b"
+
+
+def _redactor_vision():
+    """El redactor configurado para la visión, o el de fábrica."""
+    return load_config().get("vision_redactor") or _VISION_REDACTOR
+
+
+def _pie_desde_vision(name, rel, vision, voz="", crudeza="", model=None):
+    """El pie escrito desde la visión guardada (sin volver a mirar la foto).
+
+    Devuelve "" si no se pudo (el llamador cae al camino viejo, mirando la foto).
+    Va rápido: es una sola pasada de texto, sin los tokens de la imagen.
+    """
+    pr = "DESCRIPTION of the photo:\n\n%s\n\n" % vision
+    if voz:
+        pr += "How you talk: %s\n\n" % voz
+    if crudeza:
+        pr += "Crudeness: %s\n\n" % crudeza
+    pr += "Write the caption now, one paragraph, in Spanish."
+    try:
+        txt = vlm.generar_texto(pr, model=model or _redactor_vision(),
+                                system=_SYS_PIE_VISION,
+                                num_predict=220, temperature=0.75)
+    except Exception:
+        return ""
+    txt = vlm.clean_caption(txt)
+    txt = _sin_instrucciones(txt, [pr, _SYS_PIE_VISION])
+    return _sin_cola_cortada(_sin_repetidas(txt))
+
+
 _PROMPT = """Mirá esta foto. Estas {n} personas la están comentando en una red
 social. Escribí el comentario de cada una, en su voz:
 
@@ -496,6 +583,41 @@ def generate_caption(name, rel, image_path, model=None,
             # (te dice dónde falta escribir un molde en vez de tapar el agujero)
             raise RuntimeError("No hay un pie tuyo para estas etiquetas. "
                                "Escribí uno con ✍ (o destildá «Solo mis pies» en Ajustes).")
+
+    # EL PIE DESDE LA VISION, si la foto ya la tiene. Va ACÁ: después de los
+    # moldes (que son instantáneos y son la voz del usuario) y antes del
+    # reconocimiento de caras (que es caro y el camino por visión no lo necesita:
+    # las personas ya no entran, el material es la descripción guardada).
+    #
+    # Solo con crudeza real (crudeness > 0): el system de acá es crudo y
+    # provocador, así que un pie sano —menor o sin adulto confirmado, donde la
+    # crudeza se fuerza a 0 arriba— NO puede pasar por este camino. Esa compuerta
+    # es la misma del pie de siempre y se respeta igual.
+    #
+    # SI LA VISION FALLA LA VOZ, SE REINTENTA — no se cae al camino que mira la
+    # foto. Eso se midió: una corrida del 9B se fue a describir desde afuera
+    # ("Estáis viendo la foto de una chica... Están en un baño") y al rechazarla
+    # el código caía al camino viejo, que MIRANDO LA FOTO inventó el baño y los
+    # "pantalones cortados" — el defecto entero que este camino existe para
+    # matar. Mejor reintentar la voz que volver al que inventa: el material
+    # anclado es la razón de ser de todo esto.
+    if crudeness > 0:
+        vision = (get(name, rel).get("vision") or "").strip()
+        if vision:
+            voz = person_meta.get_voice(name)
+            crudo = crudeness_text(crudeness)
+            for _ in range(3):            # 3 tiros: el 9B yerra la voz de vez en cuando
+                texto = _pie_desde_vision(name, rel, vision, voz=voz, crudeza=crudo)
+                texto = _rioplatense(texto) if texto else texto
+                if texto and _sirve_pie_vision(texto):
+                    if diminutivos:
+                        texto = con_diminutivos(texto)
+                    _put(name, rel, caption=texto)
+                    return texto
+            # 3 intentos y ninguno sirvió: se avisa en vez de inventar mirando
+            raise RuntimeError(
+                "El pie desde la visión no salió bien (el modelo describió desde "
+                "afuera). Probá de nuevo, o regenerá la visión de esta foto.")
 
     con = get(name, rel)["people"]      # etiquetados a mano, si hay
     if not con:
@@ -887,6 +1009,17 @@ _PRIMERA_PERSONA = re.compile(
     r"\b(?:estoy|estaba|tengo|tenía|ando|andaba|soy|era|salgo|salí|vengo|vine|"
     r"me|mi|mis|conmigo|acá estoy)\b", re.I)
 
+# Marcas de que el pie se escribió DESDE AFUERA, hablando de ella en tercera
+# persona ("en la foto se ve", "una chica que", "ella está"). Es el defecto que
+# el pie intenta evitar con el arranque; acá sirve para rechazar el pie por
+# visión que se cayó a describir. "ella" solo cuenta como tercera si NO está en
+# una frase donde ya hay primera persona... pero separar frases para eso es
+# frágil: se piden los marcadores inequívocos y se deja "ella" afuera, que
+# también puede ser "ella y yo".
+_TERCERA_PERSONA = re.compile(
+    r"(?:\ben la foto\b|\ben la imagen\b|\bse (?:ve|observa|aprecia)\b|"
+    r"\buna (?:chica|mujer|piba|mina) que\b|\bsu (?:cuerpo|figura)\b)", re.I)
+
 
 def _en_primera_persona(texto, arranque=""):
     """El pie habla en primera persona.
@@ -919,6 +1052,78 @@ def _sirve(texto, arranque=""):
     motivó esto ("Ando osome... Sos flaca de costado y tu pelo castaño...")
     arrancaba en primera y a la segunda frase ya la estaba describiendo a ella."""
     return _en_primera_persona(texto, arranque) and not _habla_en_segunda(texto)
+
+
+def _sirve_pie_vision(texto):
+    """El pie escrito DESDE LA VISIÓN está en primera persona y no describe a
+    nadie desde afuera.
+
+    OJO: a diferencia de _sirve, acá "vos" NO es un error. La voz que se pide es
+    la del personaje provocando AL VIEWER ("mirá lo que tengo", "¿aguantás
+    verlo?"), y eso se dice con "vos" a propósito. El _habla_en_segunda de
+    arriba lo tomaría como falla —fue pensado para el pie que miraba la foto y se
+    trataba de "vos" a sí misma—, así que acá NO se usa.
+
+    Lo que sí se rechaza es el defecto de siempre: el pie escrito desde afuera
+    ("en la foto se ve", "una chica que...", "ella está"). Sin eso el modelo se
+    cae a describir la imagen y deja de ser el pie.
+
+    El ARRANQUE no puede ser una descripción de ella en tercera persona. Se midió
+    una corrida que empezaba "Está en bolas con esas tetas..." y después seguía
+    con "te muevo el culo": entregaba el 80% del pie desde afuera y pasaba el
+    filtro igual, porque buscaba la primera persona en CUALQUIER lado del texto.
+
+    OJO: NO se exige primera persona en la primera frase. Eso rechazaba pies
+    legítimos que abren hablándole al viewer ("¿Aguantás verme así?", "Vení a
+    buscarlo", "Mirá esas tetas..."), que es justo la voz que se pide. Lo que se
+    rechaza es que la primera frase esté escrita sobre ella DESDE AFUERA, o sea
+    una tercera persona sin ninguna marca de primera persona ni de trato al
+    viewer."""
+    t = (texto or "").strip()
+    if len(t.split()) < 4:
+        return False                      # vacío o un retazo: no sirve
+    if _abre_describiendo(t):
+        return False                      # abre describiéndola desde afuera
+    return not _TERCERA_PERSONA.search(t)
+
+
+# Verbos típicos con que el modelo la describe desde AFUERA cuando se le cae la
+# voz de personaje ("Está en bolas", "Se toca el pelo", "Tiene las tetas al
+# aire"). En tercera persona del singular, que es como abre una descripción.
+_TERCERA_VERBO = re.compile(
+    r"^\W*(?:está|esta|tiene|se\s+(?:toca|mira|sienta|queda|pone|acuesta)|"
+    r"lleva|luce|muestra|posa|sonríe|sonrie)\b", re.I)
+
+
+def _abre_describiendo(texto):
+    """True si la primera frase describe a la de la foto desde afuera.
+
+    Con una salvedad que importa: si la frase le habla al viewer, es una apertura
+    legítima aunque el verbo suene a tercera ("Mirá cómo está..."). Por eso el
+    trato al viewer gana."""
+    f = _primera_frase(texto)
+    if _habla_al_viewer(f):
+        return False
+    return bool(_TERCERA_VERBO.search(f))
+
+
+# Marcas de que la frase se dirige AL QUE MIRA (imperativo o pregunta directa).
+# No es _SEGUNDA_PERSONA: acá no importa el "vos", importa que lo cite a él. Por
+# eso NO alcanza con un "te" suelto — "te muevo el culo" es una afirmación, no
+# una invitación, y dejaba pasar aperturas descriptivas ("Está en bolas..., y
+# ahora te muevo el culo"). Solo cuentan imperativos y preguntas.
+_VIEWER = re.compile(
+    r"\b(?:mirá|mira|vení|ven|fijate|fijáte|dale|tocá|tocate|probá|proba|"
+    r"aguantás|querés|imaginás|sentís)\b|¿", re.I)
+
+
+def _habla_al_viewer(texto):
+    return bool(_VIEWER.search(texto or ""))
+
+
+def _primera_frase(texto):
+    """La primera frase, para mirar dónde arranca la voz."""
+    return re.split(r"(?<=[.!?…])\s+|\n+", (texto or "").strip(), maxsplit=1)[0]
 
 
 def _sin_cola_cortada(texto):
