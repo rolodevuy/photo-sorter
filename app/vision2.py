@@ -124,6 +124,21 @@ _MIRA_P = ("Facts about this photo, as a short list: clothing and its state, "
 # foto no tiene. Crudo sí, inventar no: es el defecto que se mató hoy y el que
 # convertiría el texto en tags falsos (posts._intencion lee el acto de acá).
 #
+# LA LINEA FINA DEL ACTO (cuarta corrección, del usuario): dijo que el texto
+# tenia carga pero con EUFEMISMO — "me la traeria conmigo y le haria cosas" en
+# vez de "meterle la pija es lo unico que me interesa de ella". El problema no
+# era el vocabulario (la jerga estaba) sino que el modelo ESQUIVABA EL VERBO:
+# decia que haria en abstracto en vez de nombrar el acto concreto. Y eso lo pedia
+# el prompt sin querer, porque decia "what you would do" (que se contesta con un
+# eufemismo).
+#
+# La distincion que resuelve las dos cosas a la vez, y que hay que mantener:
+#   - el acto como DESEO del que mira ("le meteria la pija hasta que...") es
+#     legítimo y es lo que se pide: es lo que la foto le produce.
+#   - el acto como HECHO de la foto ("le estan metiendo la pija") es invento, y
+#     rompe los tags. Eso no.
+# Verbo concreto SI, afirmar que pasa en la foto NO.
+#
 # DOS MEDICIONES SOBRE ESTE SYSTEM, no volver atrás sin leerlas:
 #
 #   1) El DETALLE FINO. Con la primera versión el redactor ya no inventaba
@@ -144,10 +159,18 @@ no jokes, no "back in my day", no funny narrator. You are a voice that gets
 turned on looking and says it outright.
 
 First person, present tense. You name the body and the desire in Argentine
-slang (tetas, culo, concha, pija, garcha) when the facts justify it, and you
-describe what the scene does to you: what it wakes up in you, where it leaves
-you staring, what you would do. The arousal is in the concrete desire the photo
-produces, not in a narrator pose.
+slang (tetas, culo, concha, pija, garcha) when the facts justify it.
+
+NAME THE ACT, do not hint at it. Saying you would "take her home and do things
+to her" is a euphemism and it is not allowed: you say exactly what you would do
+to her body, with which part, and where — meterle la pija, chuparla, cogerla,
+ponerla en cuatro, llenarle la cara. The concrete act, spelled out, is the
+point. Vague desire ("me la llevaría", "le haría cosas", "la pasaría bien") is
+the failure to avoid.
+
+That act is YOUR DESIRE looking at her, not something happening in the photo:
+you say what you would do, never that it is being done. Wanting it out loud is
+the register; claiming it is happening is a lie about the photo.
 
 One paragraph of 5 to 7 sentences, COMPLETE: finish the last sentence. Start
 hot from the first line, even if the photo is tame: there is always an angle.
