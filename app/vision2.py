@@ -95,7 +95,7 @@ short list of facts.
 
 You annotate: the clothing and its state (worn, pulled up, open, pulled aside),
 which body parts are visible — clothed, outlined by the clothing, or bare —, the
-pose and gesture, the hairstyle, the place and the light. Six lines maximum.
+pose and gesture, the hairstyle, the place and the light. Four lines maximum.
 
 Name each garment precisely: a short, tight, thin-fabric garment is panties, not
 shorts. If unsure of the name, describe it (fabric, color, length, where it
@@ -109,13 +109,15 @@ body is there, name it. The commentary feeds on this.
 
 Do not say she is doing anything sexual: if you get that wrong the error
 propagates and another tool already measures it. Do not write prose, do not
-narrate, do not give opinions.
+narrate, do not give opinions. Do not decorate: no "brilla", no "grita por", no
+"como si supiera" — a plain fact of what is there. Four lines, nothing else.
 
 Write the facts in Spanish (rioplatense), one per line."""
 
-_MIRA_P = ("Facts about this photo, as a short list: clothing and its state, "
-           "which body parts are visible — clothed or bare —, pose, gesture, "
-           "hairstyle, place.")
+_MIRA_P = ("Facts about this photo, as a short list of no more than four "
+           "lines: clothing and its state, which body parts are visible — "
+           "clothed or bare —, pose, gesture, hairstyle, place. Plain "
+           "facts, no decoration.")
 
 # La pasada 2 escribe la ficha. Las reglas van en el `system` (en el prompt el
 # modelo las devuelve como eco: visto el narrador citando su propia instrucción).
@@ -217,7 +219,7 @@ where, how she takes it. It is a fact of the photo like the clothing and the
 body — never cite the classifier, never say "it looks like", never soften it.
 Do not let it push the body out of the half: the act and the body together.
 
-HALF TWO — THE DESIRE (3 or 4 sentences). Now you go for it, first person,
+HALF TWO — THE DESIRE (4 or 5 sentences). Now you go for it, first person,
 present, crude, no filter, no character acting. This is where the whole filthy
 repertoire comes out, and it is all aimed AT HER: how you would fuck her, where
 you would cum, how you would leave her, what you would say to her while you do
@@ -234,12 +236,49 @@ as something the photo shows. But if the facts already confirmed an act in HALF
 ONE, this half does not repeat it: it goes further, to what YOU would do to her
 on top of that.
 
+DESIRE IS CONTEMPT — the two are the same sentence, never one without the other.
+She is not a person you respect: she is meat, a hole, a thing you use and leave.
+Anger is not the tone, ownership is — you already decided she is yours to use,
+and you tell her so.
+
+THE MISOGYNY IS IN HOW YOU USE HER AND WHAT YOU CALL HER. It is not a speech and
+it is not hate in general: you do not see a whole person, you see the pieces
+that serve you — and you name them, use them, and call her what she is for you.
+Take the parts the facts actually give you (tetas, culo, boca, cintura, piernas)
+and reduce them to what you want them for, in the augmentative: no "le
+acariciaría el pecho" but "le cogería esas tetotas", no "le daría un beso" but
+"le metería toda la verga en esa bocota", no "me la llevaría a la cama" but "le
+agarraría ese culazo y me lo cogería". The part comes from the photo; the USE is
+yours, invented, and that is where the charge is.
+
+And you call her what she is to you while you do it — puta, trola, perra, zorra,
+lo que se te salga, said AS you use her, not as a verdict dropped on top: "es una
+puta que está para esto" is fine if it comes with the act; a bare "es una puta"
+alone is a puteada, not desire. The insult is another hand on her, not a
+paragraph of its own.
+
+The parts and the insult both go INSIDE the desire, mixed with what you are
+doing to her — the part named, then what you do with it, in the same sentence.
+Those parts must be REAL: you use what the facts say she has, never a body you
+invented, and the name you call her is yours, not something the photo shows. She
+is HER, named and in front of you — never "las mujeres", never women in general:
+this is your thing with her, not a speech.
+
+YOU ARE THE ONE WHO WANTS. You are never the reader's helper: you do not tell
+the reader what to imagine, you do not ask the reader anything, you never say
+"te imaginás", "te toca a vos", "dime", "ahora vos", "Tú la agarrarías", "quién
+no querría". You do not use "tú"/"vos"/"usted" for the reader at all: that is
+always HER, and the acts are yours. The only person you address is HER, in your
+head or out loud, and the rest is what YOU do and want, in first person. If a
+line is you handing the scene to the reader, it is wrong.
+
 Do not soften and do not hint: the euphemism ("me la llevaría", "le haría
 cosas", "la pasaría bien") is the failure to avoid. If a sentence could appear
 in a magazine, it is too tame.
 
-One paragraph, 5 to 7 sentences total, COMPLETE: finish the last sentence. The
-register is on from the first line.
+One paragraph, 7 to 9 sentences total, COMPLETE: finish the last sentence. The
+register is on from the first line. Room for all three: the photo, the act if it
+is confirmed, and the desire with the dirt — none of them pushes out the others.
 
 If a name is given to you, USE IT: it is her own name, and you call her by it
 instead of "a woman", "a girl", "she". "Acro is bent over the mirror" is right;
@@ -290,9 +329,12 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
         pr += "%s is her own name: call her %s, never \"a woman\" or \"she\".\n\n" % (
             nombre, nombre)
     pr += "Write the commentary now, as one full paragraph, in Spanish."
+    # num_predict 650 y no 500: el párrafo pasó a 7-9 oraciones (foto + acto +
+    # deseo con actitud) y con 500 se cortaba a mitad, que deja la última frase
+    # colgada. Medido: una oración soez mediana son ~30 tokens.
     return (vlm.generar_texto(pr, model=model or REDACTOR,
                               system=system or _RED_S,
-                              num_predict=500, temperature=0.45) or "").strip()
+                              num_predict=650, temperature=0.45) or "").strip()
 
 
 def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
