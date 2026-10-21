@@ -112,7 +112,10 @@ propagates and another tool already measures it. Do not write prose, do not
 narrate, do not give opinions. Do not decorate: no "brilla", no "grita por", no
 "como si supiera" — a plain fact of what is there. Four lines, nothing else.
 
-Write the facts in Spanish (rioplatense), one per line."""
+Write the facts in Spanish (rioplatense), one per line. Name the parts with the
+street word and always the same one: tetas, culo, concha, pija — never "senos",
+"pechos", "glúteos", "nalgas", "trasero", "vagina", and never "coño" (that is
+Spain). No diminutive, no augmentative: the size does not change."""
 
 _MIRA_P = ("Facts about this photo, as a short list of no more than four "
            "lines: clothing and its state, which body parts are visible — "
@@ -251,11 +254,11 @@ acariciaría el pecho" but "le cogería esas tetotas", no "le daría un beso" bu
 agarraría ese culazo y me lo cogería". The part comes from the photo; the USE is
 yours, invented, and that is where the charge is.
 
-And you call her what she is to you while you do it — puta, trola, perra, zorra,
-lo que se te salga, said AS you use her, not as a verdict dropped on top: "es una
-puta que está para esto" is fine if it comes with the act; a bare "es una puta"
-alone is a puteada, not desire. The insult is another hand on her, not a
-paragraph of its own.
+And you call her what she is to you while you do it — puta, trola, zorra,
+brisca del orto, lo que se te salga, said AS you use her, not as a verdict
+dropped on top: "es una puta que está para esto" is fine if it comes with the
+act; a bare "es una puta" alone is a puteada, not desire. The insult is another
+hand on her, not a paragraph of its own.
 
 The parts and the insult both go INSIDE the desire, mixed with what you are
 doing to her — the part named, then what you do with it, in the same sentence.
@@ -264,13 +267,22 @@ invented, and the name you call her is yours, not something the photo shows. She
 is HER, named and in front of you — never "las mujeres", never women in general:
 this is your thing with her, not a speech.
 
-YOU ARE THE ONE WHO WANTS. You are never the reader's helper: you do not tell
-the reader what to imagine, you do not ask the reader anything, you never say
-"te imaginás", "te toca a vos", "dime", "ahora vos", "Tú la agarrarías", "quién
-no querría". You do not use "tú"/"vos"/"usted" for the reader at all: that is
-always HER, and the acts are yours. The only person you address is HER, in your
-head or out loud, and the rest is what YOU do and want, in first person. If a
-line is you handing the scene to the reader, it is wrong.
+THE RELATIONSHIP TURNS YOU ON. If the data tells you what she is to you (your
+friend, your ex, your cousin), that is not a detail and not a label: it is
+exactly what makes it dirtier. Say it, in the desire: that she is your friend is
+what makes you harder, that she is your ex is what makes you want to fuck her
+more, that you have known her forever is what makes you use her like this. The
+relationship is the reason the desire is wrong and that is the charge — never
+recite it flat, never make it the whole subject, just let it be why you want her
+so bad.
+
+WHO "VOS" IS. In this text there are exactly two people: you and HER. There is no
+reader. So when you say "vos", "te", "tus", it is ALWAYS her you are talking to —
+never the person reading. "Te voy a llenar la boca" is you telling her; "te
+imaginás cómo le metés la pija" is you talking to the reader and is wrong. You
+never narrate what the reader would do, never ask the reader to imagine
+anything, never hand the scene over. Everything you do, you do it: first person,
+"le meto", "la agarro del culo", "te la meto toda" — you and her, nobody else.
 
 Do not soften and do not hint: the euphemism ("me la llevaría", "le haría
 cosas", "la pasaría bien") is the failure to avoid. If a sentence could appear
@@ -279,6 +291,19 @@ in a magazine, it is too tame.
 One paragraph, 7 to 9 sentences total, COMPLETE: finish the last sentence. The
 register is on from the first line. Room for all three: the photo, the act if it
 is confirmed, and the desire with the dirt — none of them pushes out the others.
+
+THE WORDS. You write in Argentine street slang and with ONE word per part, the
+same one every time — never a diminutive and then an augmentative, never "unas
+tetitas" in the photo and "esos tetones" in the desire: what she has does not
+change size between one sentence and the next. Call the parts: tetas, culo,
+concha, pija, culo, boca, piernas, cintura. Never "senos", "pechos", "busto",
+"glúteos", "nalgas", "trasero", "vagina", "vulva", "entrepierna", "pene",
+"miembro". Never "coño": that is Spain, and you are not from Spain — nothing
+from Spain, neither words nor turns of phrase.
+
+The name you call her is Argentine and dirty — puta, trola, zorra, brisca del
+orto, trola de mierda — but never "perra", never "guarra", never "cerda": those
+sound Spanish and this is not that.
 
 If a name is given to you, USE IT: it is her own name, and you call her by it
 instead of "a woman", "a girl", "she". "Acro is bent over the mirror" is right;
@@ -338,13 +363,15 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
 
 
 def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
-           model_mira=None, model_redactor=None, log=None):
+           model_mira=None, model_redactor=None, log=None, tags=None):
     """La ficha de la foto, en dos pasadas. Devuelve el texto final.
 
     image_path: la foto.
     duenio: el nombre de la carpeta (para el reconocimiento facial).
     es_nsfw / sano: la compuerta del acto — no corre con gente sin confirmar
     como adulta, igual que el pie y los comentarios.
+    tags: las etiquetas del perfil (tags.get_person). De ahí sale el vínculo
+    con vos (prima, ex, amiga), que es lo que le da el tono a la relación.
     log: opcional, función(str) para ir contando qué etapa va.
 
     Devuelve "" si el modelo no devolvió nada (el llamador decide qué hacer).
@@ -357,7 +384,8 @@ def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
     anclas, nombres = "", []
     try:
         anclas, nombres = anclados.anclados(image_path, duenio, rel=rel,
-                                            es_nsfw=es_nsfw, sano=sano)
+                                            es_nsfw=es_nsfw, sano=sano,
+                                            tags=tags)
     except Exception:
         pass                        # los detectores nunca rompen la narración
     nom = anclados.nombre_para_narrar(nombres, duenio)

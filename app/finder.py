@@ -150,16 +150,18 @@ def find_known(folder, eps, media="both", progress=None, should_stop=None):
     return grouped, scanned
 
 
-def who_is_in(image_path, eps=EPS_DEFAULT, exclude=None):
-    """Quiénes de los conocidos están en ESTA foto. Devuelve [nombres], del más
-    seguro al menos.
+def faces_in(image_path, eps=EPS_DEFAULT, exclude=None):
+    """Como who_is_in, pero devuelve el BOX de cada cara reconocida.
 
-    Misma lógica que find_known (ejemplos reales + MARGIN contra el segundo
-    candidato), pero para un archivo suelto. Lo usa el pie de foto para poder
-    decir "acá comiendo con Alberto" en vez de "con alguien".
+    Devuelve [{"name", "box", "dist"}], del más seguro al menos. `box` es la
+    tupla de facedet. Opcionalmente `exclude` (el dueño de la carpeta) saca
+    nombres, pero OJO: acá solo saca su nombre, no su cara — el box de una cara
+    no reconocida no se devuelve, porque sin nombre el box no sirve para nada.
 
-    Barato: es detección de caras (décimas de segundo), no el modelo de lenguaje.
-    `exclude` es el dueño de la carpeta, que ya sabemos que está."""
+    who_is_in se armó sobre esta función (antes tenía el cálculo adentro) para
+    que las dos digan lo mismo: dos copias del mismo umbral se desincronizan
+    con el tiempo y una empieza a nombrar gente que la otra no reconoce.
+    """
     db = load_known()
     if not db:
         return []
@@ -173,7 +175,7 @@ def who_is_in(image_path, eps=EPS_DEFAULT, exclude=None):
         return []
 
     best = {}
-    for box, enc, image in dets:
+    for box, enc, _image in dets:
         d_all = 1.0 - all_vecs @ enc
         per_person = np.full(len(names), 2.0, dtype=np.float32)
         np.minimum.at(per_person, owners, d_all)
@@ -181,11 +183,25 @@ def who_is_in(image_path, eps=EPS_DEFAULT, exclude=None):
         j, d1 = int(order[0]), float(per_person[order[0]])
         d2 = float(per_person[order[1]]) if len(order) > 1 else 2.0
         if d1 <= eps and d2 - d1 >= MARGIN:
-            if names[j] not in best or d1 < best[names[j]]:
-                best[names[j]] = d1
-    for n in (exclude or ()):
-        best.pop(n, None)
-    return sorted(best, key=lambda n: best[n])
+            n = names[j]
+            if n not in best or d1 < best[n]["dist"]:
+                best[n] = {"name": n, "box": box, "dist": d1}
+    fuera = set(exclude or ())
+    return sorted((v for v in best.values() if v["name"] not in fuera),
+                  key=lambda v: v["dist"])
+
+
+def who_is_in(image_path, eps=EPS_DEFAULT, exclude=None):
+    """Quiénes de los conocidos están en ESTA foto. Devuelve [nombres], del más
+    seguro al menos.
+
+    Misma lógica que find_known (ejemplos reales + MARGIN contra el segundo
+    candidato), pero para un archivo suelto. Lo usa el pie de foto para poder
+    decir "acá comiendo con Alberto" en vez de "con alguien".
+
+    Barato: es detección de caras (décimas de segundo), no el modelo de lenguaje.
+    `exclude` es el dueño de la carpeta, que ya sabemos que está."""
+    return [f["name"] for f in faces_in(image_path, eps=eps, exclude=exclude)]
 
 
 def find_person(folder, name, eps, media="both", progress=None, should_stop=None):

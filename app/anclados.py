@@ -149,16 +149,59 @@ def _quienes(image_path, duenio):
     El reconocimiento es cara por cara y exige margen contra el segundo
     candidato (ver finder.who_is_in): si duda entre dos personas no nombra
     ninguna, que es lo correcto para algo que se guarda como dato de la foto.
+
+    Devuelve (otros, ok, duenio_en_foto). `duenio_en_foto` es True solo si la
+    CARA de la dueña se reconoció de verdad (ver faces_in) — no si se asumió por
+    estar la foto en su carpeta. Sirve para el sujeto del acto: "chupando" es una
+    categoría sin sujeto, y con la cara reconocida se puede afirmar de quién es.
     """
     try:
         from app import finder
-        otros = finder.who_is_in(str(image_path), exclude=[duenio])
+        caras = finder.faces_in(str(image_path))
     except Exception:
-        return [], False
-    return otros, True
+        return [], False, False
+    nombres = [c["name"] for c in caras]
+    otros = [n for n in nombres if n != duenio]
+    return otros, True, duenio in nombres
 
 
-def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
+def _vinculo_linea(tags, duenio):
+    """La relación con el dueño, en UNA línea, o "".
+
+    El vínculo ya existe en el sistema de perfiles (moldes.relacion_de: lo que
+    ELLA es para vos — prima, ex, amiga) y se usa en el pie. La Visión no lo
+    miraba, y eso deja al narrador tratando a una ex igual que a una desconocida.
+    Va como dato para que la trate según el vínculo, no para que lo recite.
+
+    `relacion_para_duenio` da el vínculo DADO VUELTA (prima -> primo, cómo te
+    llama ella a vos): es lo que necesita un narrador en primera persona que le
+    habla a ella ("vení, primita").
+    """
+    if not tags:
+        return ""
+    try:
+        from app import moldes
+        vinc = moldes.relacion_de(tags)
+    except Exception:
+        return ""
+    if not vinc:
+        return ""
+    try:
+        rec = moldes.relacion_para_duenio(vinc) or ""
+    except Exception:
+        rec = ""
+    txt = ("Vínculo con %s: ella es tu %s" % (duenio, vinc))
+    if rec and rec != vinc:
+        txt += "; ella te llama %s" % rec
+    txt += (". Ese vínculo te calienta MÁS, no menos: si es tu amiga, que sea tu "
+            "amiga te la pone más dura; si es tu ex, saber que es tu ex te dan "
+            "más ganas de cogerla. Usalo como morbo en el deseo — decí que te "
+            "excita justamente eso — sin convertirlo en el tema y sin recitarlo "
+            "como etiqueta.")
+    return txt
+
+
+def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True, tags=None):
     """El bloque de datos duros de la foto, listo para meter en el prompt.
 
     Devuelve (texto, nombres) donde `nombres` es la lista de gente reconocida
@@ -169,11 +212,13 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
     asume que la foto es suya y se la nombra — con cara o sin ella (decisión del
     usuario: en una carpeta de persona, la mayoría de las fotos son de ella; el
     costo es que una foto de una amiga sin reconocer también sale con su nombre,
-    y es a sabiendas)."""
+    y es a sabiendas).
+    tags: las etiquetas del perfil (tags.get_person). De ahí sale el vínculo;
+    si no vienen, la narración simplemente no lo menciona."""
     image_path = Path(image_path)
     acto = _acto(image_path, es_nsfw, sano)
     partes = _partes(image_path)
-    otros, ok = _quienes(image_path, duenio)
+    otros, ok, duenio_en_foto = _quienes(image_path, duenio)
 
     lineas = []
     # El acto NO va como un dato neutro ("Acto detectado: chupando"): el
@@ -181,7 +226,14 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
     # (medido). Va la ESCENA concreta (ver _ACTO_ESCENA) y como lo que es — un
     # hecho de la foto confirmado por un detector que la miró, distinto del
     # deseo del narrador. "sola" no arma escena: no hay acto con otro.
+    #
+    # EL SUJETO: la categoría viene sin sujeto ("chupando" no dice de quién). Si
+    # la cara reconocida ES la dueña (duenio_en_foto, de faces_in: reconocida de
+    # verdad, no asumida por carpeta), se puede afirmar de quién es el acto. Antes
+    # el modelo no lo sabía y escribía "chupando" a secas; ahora dice de quién.
     escena = _ACTO_ESCENA.get(acto or "", "")
+    if acto and escena and duenio_en_foto:
+        escena = "%s es quien lo hace: %s" % (duenio, escena)
     if acto and escena:
         lineas.append(
             "Hecho confirmado de la foto (lo detectó un clasificador que la "
@@ -193,6 +245,9 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True):
                       "más con ella.")
     if partes:
         lineas.append("Cuerpo detectado por clasificador: %s." % ", ".join(partes))
+    vinc = _vinculo_linea(tags, duenio)
+    if vinc:
+        lineas.append(vinc)
     nombres = []
     if otros:
         nombres = [duenio] + [n for n in otros if n != duenio]

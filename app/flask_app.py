@@ -6429,9 +6429,17 @@ def post_vision(name):
     cfg = load_config()
     ident = posts_mod.identidad_foto(name, rel)
     es_nsfw = NSFW_DIR_NAME in Path(rel).parts
+    # Las etiquetas del PERFIL (no las de la foto): de ahí sale el vínculo
+    # (prima, ex, amiga). `ident` solo dice si es adulto; el vínculo es otra cosa,
+    # y sin él el narrador trataba a una ex como a una desconocida.
+    try:
+        perfil_tags = tags_mod.get_person(name)
+    except Exception:
+        perfil_tags = []
     try:
         texto = vision2.narrar(
             path, name, rel=rel, es_nsfw=es_nsfw, sano=ident["sano"],
+            tags=perfil_tags,
             model_mira=request.form.get("model") or cfg.get("post_model") or None,
             model_redactor=cfg.get("vision_redactor") or None)
     except Exception as e:
