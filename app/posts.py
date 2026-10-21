@@ -204,6 +204,30 @@ _CRUDO_VOCAB = (
 # fuerza a 0 antes de llegar acá, así que nunca les toca.
 _CRUDO_DESDE = 2
 
+# LA VOZ PROVOCADORA (pedido del usuario), y va SOLO en el nivel más alto de la
+# perilla (guarro). El pie ya es primera persona del personaje; lo que le faltaba
+# era DIRIGIRSE AL QUE MIRA. La diferencia es de a quién le habla, no de crudeza:
+#
+#   - La VISION (app/vision2.py) es el que MIRA: desea a la de la foto ("le
+#     metería un pijazo"). El deseo va de él HACIA ella.
+#   - El PIE es la de la foto: le habla al VIEWER y lo provoca ("mirá cómo
+#     estoy", "esto es para vos"). Misma crudeza, dirigida al revés.
+#
+# Sin esta regla, el nivel guarro escribía cosas subidas pero PARA SÍ MISMA
+# ("estoy tan mojada"), que no es provocar a nadie. Con esto se le pide el
+# aguijón hacia afuera. Es una regla de estilo, no un ejemplo: por eso no se
+# copia textual (misma razón que _CRUDO_VOCAB, ver arriba).
+#
+# Solo en el nivel más alto a propósito (decisión del usuario: "mejorar solo el
+# nivel más alto"): los otros cuatro quedan como están.
+_PROVOCA_VOCAB = (
+    "Le hablás AL QUE ESTÁ MIRANDO la foto, no a vos misma: lo provocás, lo "
+    "calentás, lo citás. Nada de describirte desde adentro (\"estoy mojada\", "
+    "\"tengo ganas\") como si te lo contaras a vos: eso no provoca a nadie. "
+    "Hablale a él: \"mirá lo que tengo\", \"vení a buscarlo\", \"esto es para "
+    "vos\", \"¿aguantás verlo sin tocarte?\". Lo que mostrás es una invitación y "
+    "el pie se lo dice a él, cara a cara.")
+
 _PROMPT = """Mirá esta foto. Estas {n} personas la están comentando en una red
 social. Escribí el comentario de cada una, en su voz:
 
@@ -411,6 +435,10 @@ def crudeness_text(level):
     # entiende "sin eufemismos" pero igual escribe "senos" y "figura escultural"
     if i >= _CRUDO_DESDE:
         txt += " " + _CRUDO_VOCAB
+    # la voz provocadora SOLO en el nivel más alto (guarro = el último): el pie
+    # deja de escribirse para sí mismo y le habla al que mira (ver _PROVOCA_VOCAB)
+    if i == len(niveles) - 1:
+        txt += " " + _PROVOCA_VOCAB
     return txt
 
 
