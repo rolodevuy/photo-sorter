@@ -787,6 +787,22 @@ BASE_CSS = """
   .pia-actions { display:flex; align-items:center; gap:.45rem;
     flex-wrap:wrap; }
   .pia-tags { border-top:0; }
+  /* Los hechos del paso 1, dentro del paso Visión: un desplegable chico y sobrio
+     (mismo espíritu que .pia-step, pero anidado y más discreto) para no competir
+     con la narración, que es lo que se lee. */
+  .pia-hechos { border:1px solid var(--line); border-radius:8px;
+    background:transparent; }
+  .pia-hechos summary { display:flex; align-items:center; gap:.4rem;
+    justify-content:flex-start; padding:.4rem .55rem; cursor:pointer;
+    font-size:.78rem; font-weight:600; color:var(--mut); list-style:none;
+    user-select:none; }
+  .pia-hechos summary::-webkit-details-marker { display:none; }
+  .pia-hechos summary span.meta { font-weight:400; font-size:.72rem; }
+  .pia-hechos summary::before { content:'▸'; font-size:.65rem;
+    transition:transform .15s; }
+  .pia-hechos[open] summary::before { transform:rotate(90deg); }
+  .pia-hechos-txt { margin:0; padding:0 .55rem .5rem; line-height:1.45;
+    white-space:pre-wrap; font-size:.82rem; color:var(--mut); }
   /* el botón que abre el Centro de IA, al pie de la columna del post */
   .cat-button { width:100%; padding:.6rem; margin-top:.4rem; font-weight:600; }
   /* modal propio del Centro de IA */
@@ -4391,6 +4407,13 @@ POST_LIGHTBOX = """
             <div class="sk sk-linea" style="width:96%"></div>
             <div class="sk sk-linea" style="width:80%"></div>
           </div>
+          <!-- Lo que la IA VE (hechos crudos del paso 1), aparte de la narración.
+               Cerrado por defecto: el modal queda limpio, y quien quiere el dato
+               técnico lo abre. -->
+          <details class="pia-hechos" id="pia-hechos" style="display:none">
+            <summary>👁 Lo que ve la IA <span class="meta">(hechos, antes de redactar)</span></summary>
+            <p id="ia-hechos" class="pia-hechos-txt"></p>
+          </details>
           <div class="pia-actions">
             <button class="primary capfab" id="ia-vision-btn" onclick="genVisionIA()"
                     title="Mirar la foto y anotar qué hay (paso 1 del Centro de IA)">✨</button>
@@ -4505,7 +4528,7 @@ POST_LIGHTBOX = """
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams(body)}).then(r => r.json());
   const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[], people:[], vision:null, copete:null, faces:[]}); }
+  function slot(r) { return POSTS[r] || (POSTS[r] = {caption:null, comments:[], people:[], vision:null, hechos:null, copete:null, faces:[]}); }
   function copeteDe(r) { return (window.COPETES[r] || '').trim() || null; }
 
   // --- acordeón del Centro de IA: estado por foto ---
@@ -4549,6 +4572,11 @@ POST_LIGHTBOX = """
     // mismos datos (lo que se genera vale para la columna y para el modal)
     $('ia-vision').textContent = d.vision || 'La IA todavía no miró la foto: tocar ✨.';
     $('ia-vision').className = d.vision ? '' : 'empty';
+    // Hechos del paso 1: el bloque solo aparece si hay algo que mostrar (una
+    // foto sin hechos guardados no deja un desplegable vacío colgado).
+    const hec = (d.hechos || '').trim();
+    $('pia-hechos').style.display = hec ? '' : 'none';
+    $('ia-hechos').textContent = hec;
     $('ia-vision-st').textContent = '';
     $('ia-vision-btn').title = d.vision ? 'Volver a mirar la foto' : 'Mirar la foto y anotar qué hay (paso 1 del Centro de IA)';
     $('ia-cap').textContent = d.caption || 'Todavía no tiene pie de foto.';
@@ -5015,7 +5043,7 @@ POST_LIGHTBOX = """
       if (r === rel()) render();     // ya pasaste de foto: guardalo igual
     }).catch(e => { trabajando(clave, false); $(TRABAJOS[clave].st).textContent = ' ' + e; });
   }
-  function genVisionIA()  { genIA('visIA', VISION_URL,  (p, d) => { p.vision = d.vision; }); }
+  function genVisionIA()  { genIA('visIA', VISION_URL,  (p, d) => { p.vision = d.vision; p.hechos = d.hechos; }); }
   function genCaptionIA() { genIA('capIA', CAP_URL,     (p, d) => { p.caption = d.caption; }); }
   function genCommentsIA(){ genIA('comIA', COM_URL,     (p, d) => { p.comments = d.comments; }); }
   function genCopeteIA()  { genIA('copIA', COPETE_URL,  (p, d, r) => { p.copete = d.copete;
@@ -6668,17 +6696,21 @@ def post_vision(name):
     except Exception:
         perfil_tags = []
     try:
-        texto = vision2.narrar(
+        partes = vision2.narrar_con_hechos(
             path, name, rel=rel, es_nsfw=es_nsfw, sano=ident["sano"],
             tags=perfil_tags,
             model_mira=request.form.get("model") or cfg.get("post_model") or None,
             model_redactor=cfg.get("vision_redactor") or None)
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    texto = partes["narracion"]
     if not texto:
         return {"ok": False, "error": "El modelo no devolvió texto."}
     texto = posts_mod.set_vision(name, rel, texto)
-    return {"ok": True, "vision": texto}
+    # Los hechos del paso 1 van aparte (campo "hechos"): es el texto técnico que
+    # el usuario quiere poder leer sin que se mezcle con la narración.
+    hechos = posts_mod.set_hechos(name, rel, partes["hechos"])
+    return {"ok": True, "vision": texto, "hechos": hechos}
 
 
 @app.route("/post/<name>/fav", methods=["POST"])

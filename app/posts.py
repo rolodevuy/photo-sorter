@@ -494,7 +494,8 @@ def _post_de(got, name=None):
             people.append(p)
     return {"caption": got.get("caption"), "comments": got.get("comments", []),
             "people": people, "fav": bool(got.get("fav")),
-            "vision": got.get("vision"), "faces": faces}
+            "vision": got.get("vision"), "hechos": got.get("hechos"),
+            "faces": faces}
 
 
 def _faces_limpias(faces):
@@ -607,6 +608,13 @@ def set_vision(name, rel, text):
     """Guarda la «visión» de la foto: lo que la IA ve que hay (paso 1 del
     Centro de IA). Sin pisar el pie ni los comentarios."""
     return _put(name, rel, vision=text)["vision"]
+
+
+def set_hechos(name, rel, text):
+    """Guarda los HECHOS crudos del paso 1: lo que el VLM vio en la foto, antes
+    de redactar. Es el texto técnico que el usuario quiere poder leer aparte de la
+    narración. Va en su propio campo para no mezclarlo con la visión."""
+    return _put(name, rel, hechos=text)["hechos"]
 
 
 def set_comments(name, rel, comments):

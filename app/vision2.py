@@ -362,25 +362,21 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
                               num_predict=650, temperature=0.45) or "").strip()
 
 
-def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
-           model_mira=None, model_redactor=None, log=None, tags=None):
-    """La ficha de la foto, en dos pasadas. Devuelve el texto final.
+def _narrar_partes(image_path, duenio, rel="", es_nsfw=False, sano=True,
+                   model_mira=None, model_redactor=None, log=None, tags=None):
+    """El motor de las dos pasadas. Devuelve {"hechos": str, "narracion": str}.
 
-    image_path: la foto.
-    duenio: el nombre de la carpeta (para el reconocimiento facial).
-    es_nsfw / sano: la compuerta del acto — no corre con gente sin confirmar
-    como adulta, igual que el pie y los comentarios.
-    tags: las etiquetas del perfil (tags.get_person). De ahí sale el vínculo
-    con vos (prima, ex, amiga), que es lo que le da el tono a la relación.
-    log: opcional, función(str) para ir contando qué etapa va.
+    Existe para poder ver LAS DOS cosas por separado: los hechos crudos del paso
+    1 (lo que el VLM ve, técnico, en inglés a veces) y la narración redactada del
+    paso 2. Antes solo se devolvía la narración y los hechos se tiraban.
 
-    Devuelve "" si el modelo no devolvió nada (el llamador decide qué hacer).
-    """
+    Devuelve {"hechos": "", "narracion": ""} si el VLM no vio nada (el llamador
+    decide qué hacer)."""
     dec = log or (lambda _s: None)
     dec("mirando la foto…")
     h = _hechos(image_path, model=model_mira)
     if not h:
-        return ""
+        return {"hechos": "", "narracion": ""}
     anclas, nombres = "", []
     try:
         anclas, nombres = anclados.anclados(image_path, duenio, rel=rel,
@@ -401,4 +397,28 @@ def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
         pass
     nom = anclados.nombre_para_narrar(nombres, duenio)
     dec("redactando…")
-    return _ficha(h, anclas=anclas, nombre=nom, model=model_redactor)
+    return {"hechos": h, "narracion": _ficha(h, anclas=anclas, nombre=nom,
+                                             model=model_redactor)}
+
+
+def narrar(image_path, duenio, rel="", es_nsfw=False, sano=True,
+           model_mira=None, model_redactor=None, log=None, tags=None):
+    """La ficha de la foto, en dos pasadas. Devuelve SOLO el texto final.
+
+    La lógica vive en _narrar_partes; esta queda como la puerta simple para quien
+    solo quiere la narración (contrato de siempre: un str, "" si no hubo nada)."""
+    return _narrar_partes(image_path, duenio, rel=rel, es_nsfw=es_nsfw, sano=sano,
+                          model_mira=model_mira, model_redactor=model_redactor,
+                          log=log, tags=tags)["narracion"]
+
+
+def narrar_con_hechos(image_path, duenio, rel="", es_nsfw=False, sano=True,
+                      model_mira=None, model_redactor=None, log=None, tags=None):
+    """Igual que narrar, pero devuelve AMBAS partes:
+    {"hechos": lo que el VLM vio (paso 1), "narracion": el texto redactado}.
+
+    Es lo que usa el Centro de IA para mostrarle al usuario los dos textos: qué ve
+    la IA y qué escribió con eso."""
+    return _narrar_partes(image_path, duenio, rel=rel, es_nsfw=es_nsfw, sano=sano,
+                          model_mira=model_mira, model_redactor=model_redactor,
+                          log=log, tags=tags)
