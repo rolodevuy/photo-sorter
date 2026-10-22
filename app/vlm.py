@@ -540,6 +540,26 @@ def _conversiones():
         return {}
 
 
+def _crudo_map():
+    """El endurecedor COMPLETO, palabra por palabra: _CRUDO_MAP + las conversiones
+    del usuario que sean de UNA sola palabra.
+
+    Por qué existe: `app/narracion_ingles.py` la llamaba para endurecer su texto
+    reescrito y NUNCA estaba definida (AttributeError) — mismo caso que
+    `posts.narracion_de`. Devuelve un dict {suave: crudo} listo para aplicar con
+    re.sub palabra por palabra.
+
+    Las conversiones de VARIAS palabras ("rusa" -> "paja rusa") quedan afuera a
+    propósito: acá se reemplaza palabra por palabra, y meter una frase del lado
+    del reemplazo rompería el sentido ("una rusa" -> "una paja rusa" está bien
+    por etiqueta entera, pero a nivel palabra daría cualquier cosa)."""
+    mapa = dict(_CRUDO_MAP)
+    for suave, crudo in _conversiones().items():
+        if " " not in suave and " " not in crudo:
+            mapa.setdefault(suave, crudo)
+    return mapa
+
+
 def _aplicar_conversiones(tags, conv=None):
     """Cambia cada etiqueta que esté EXACTA en el mapa de conversiones."""
     if conv is None:

@@ -325,6 +325,61 @@ def _regla_trato(name):
             "is \"%s\"." % (quien, quien, quien))
 
 
+_SYS_NARRACION = """Mirás una foto y la contás como el narrador que la tiene
+delante: qué se ve, quién está, qué está haciendo y cómo está puesta. Sos un
+observador sucio y sin pudor, no una ficha técnica: nada de "la imagen muestra a
+una mujer con". Describís lo COTIDIANO con ojo sucio —una señora levantando un
+brazo, una bicicleta de fondo— porque ahí está la gracia.
+
+Español rioplatense, directo. Los nombres vulgares y no los clínicos: "tetas" no
+"senos", "culo" no "glúteos", "concha" no "vulva". Nunca nada de España
+("coño", "chaval", "polla" no van).
+
+No inventes: contá ESTA foto, no lo que suele haber en fotos así. Si algo no se
+ve, no lo pongas. Un párrafo, cinco a siete frases, completo."""
+
+_SYS_NARRACION_SANO = """Mirás una foto y la contás en español rioplatense: qué
+se ve, quién está, qué está haciendo, cómo está puesta, la ropa y el lugar.
+
+Es una persona de la que NO hay confirmación de adulto (o es un chico): la
+narración es amable y descriptiva, y NADA sexual ni sobre el cuerpo. Nada de
+"tetas", "culo", "concha" ni de lo que se le ve. Solo lo que está pasando, la
+ropa, el lugar y la actividad.
+
+No inventes: contá ESTA foto. Un párrafo, tres a cinco frases, completo."""
+
+
+def narracion_de(name, rel, image_path, model=None):
+    """La narración de la foto: mirarla UNA vez y contarla (el camino clásico de
+    una pasada que alimenta al pie y a los comentarios).
+
+    Por qué existe: `app/narracion_ingles.py` la llamaba y NUNCA se había escrito
+    —daba AttributeError—. Ese módulo genera en inglés y reescribe, pero necesita
+    la narración base; esta es esa base, en español y en una sola pasada, igual
+    que el resto del pipeline clásico.
+
+    La salvaguarda es la de siempre: sin etiqueta de adulto, la narración sale
+    sana (ver _SYS_NARRACION_SANO). La duda cierra, no abre.
+
+    Devuelve "" si el modelo no devolvió nada (el llamador decide qué hacer)."""
+    from app import vlm, vision2
+    ident = identidad_foto(name, rel)
+    sano = ident["sano"]
+    prompt = ("Contá esta foto de %s: qué se ve, qué está haciendo y cómo está "
+              "puesta." % name)
+    try:
+        # MIRA es el VLM (el que MIRA la foto); REDACTOR es solo texto y no
+        # recibiría la imagen. Acá hace falta uno que vea.
+        raw = vlm.describe(str(image_path), model=model or vision2.MIRA,
+                           prompt=prompt,
+                           system=_SYS_NARRACION_SANO if sano else _SYS_NARRACION,
+                           num_predict=220, temperature=0.4)
+    except Exception:
+        return ""
+    txt = vlm.clean_caption(raw or "")
+    return _sin_cola_cortada(_sin_repetidas(txt))
+
+
 def _pie_desde_vision(name, rel, vision, voz="", crudeza="", model=None):
     """El pie escrito desde la visión guardada (sin volver a mirar la foto).
 

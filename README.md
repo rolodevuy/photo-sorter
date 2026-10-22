@@ -81,9 +81,14 @@ Código: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`); ruta: `app
 ## Mapa del proyecto
 
 - **`app/flask_app.py`** (~450 KB): toda la web sobre Flask — rutas, plantillas, CSS y JS en un solo archivo. Nada se sirve con caché vieja: CSS/JS llevan hash `?v=` (para ver cambios: cerrá lanzador y **Ctrl+F5**).
-- **Visión + texto (Ollama)**: `app/vlm.py` (VLM de etiquetado/visión, sistema de prompts), `app/narracion_ingles.py` (la narración que lee la IA), `app/posts.py` (pie/comentarios/copete + favoritos), `app/moldes.py` (editor de pies), `app/phrases.py`, `app/texto.py`, `app/cola.py`.
+- **Visión + texto (Ollama)**: `app/vlm.py` (VLM de etiquetado/visión, sistema de prompts), `app/posts.py` (pie/comentarios/copete + favoritos), `app/moldes.py` (editor de pies), `app/phrases.py`, `app/vision2.py` (paso 1 del Centro de IA: hechos + narración), `app/copetes.py` (titulares de noticia).
+- **Features a medio hacer (listas para enganchar, sin rutas ni botones todavía)**: son módulos COMPLETOS cuyas tripas funcionan pero que nadie importa aún — no son código muerto, son features sin cara visible:
+  - `app/narracion_ingles.py` (667 líneas): genera la narración/pie/comentarios **en inglés** (donde el vocabulario explícito es más denso) y los reescribe al rioplatense con el MISMO modelo + un endurecedor determinístico. Le faltan los tres botones del Creador ("Crear narración", "Crear pie", "Crear comentarios") y sus rutas en `flask_app.py`. Depende de `posts.narracion_de` y `vlm._crudo_map`, que ya existen (antes llamaba a funciones inexistentes y habría explotado al engancharse).
+  - `app/cola.py` (210 líneas): cola de trabajos pesados persistente en disco (`data/cola.json`) que corre de a UNA tarea sobre TODAS las fotos, por fases, para cargar cada modelo de Ollama una sola vez y no mil veces. Retoma tras reinicio (`rescatar_huerfanos`), calcula ETA real. Le falta el worker (el hilo que saca de la cola) y las rutas `/cola/...` + el botón en la UI.
+  - `app/similar.py`: búsqueda por parecido visual con CLIP (vectores de 512 números, distancia coseno) — distinto de Duplicados, que compara píxeles. Sin enganchar.
+  - `app/texto.py`: separador de memes/capturas de texto por densidad de bordes con OpenCV puro (no hace OCR). Sin enganchar.
 - **Análisis / biblioteca**: `app/analyze.py` (clustering), `app/facedet.py` (YuNet+SFace, modelos en `app/models/`), `app/known.py` (personas conocidas), `app/organizer.py`, `app/limpieza.py`, `app/corrector.py`, `app/renamer.py`, `app/splitter.py`, `app/notfaces.py`, `app/procesadas.py`, `app/respaldo.py`.
-- **Escáneres**: `app/duplicates.py` (SHA-1/dHash), `app/nsfw.py` (NudeNet), `app/similar.py`, `app/sexpos.py` (acto, resnet50), `app/finder.py` (buscador de personas).
+- **Escáneres**: `app/duplicates.py` (SHA-1/dHash), `app/nsfw.py` (NudeNet), `app/sexpos.py` (acto, resnet50), `app/finder.py` (buscador de personas).
 - **Interface extra**: `app/home_premium.py` (portada), `app/tags.py`, `app/stats.py`, `app/person_meta.py`.
 - **Datos**: `data/` (ver árbol en SETUP.md). Los `.json` se escriben foto a foto, nunca se pierde lo hecho.
 - **Arranque**: `PhotoSorter.bat` (mata el puerto 5000 fantasma y lanza `venv\Scripts\python -m app.flask_app`; `PORT=5000`, `host=0.0.0.0`).
