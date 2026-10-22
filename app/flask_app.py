@@ -2352,14 +2352,9 @@ SETTINGS_TEMPLATE = """
 </div>
 
 <div class="panel">
-  <div class="counter">💬 Comentarios y pie de foto <span class="hint-ico" title="El programa trae 62 pies de fábrica que quedan mezclados con los tuyos y hacen que varíe mucho antes de caer en uno propio. Con esto solo se usan los que escribiste vos, y si no hay ninguno para esa foto te avisa en vez de inventar uno estándar.">ⓘ</span> <span class="hint-ico" title="Cuando abrís una foto de la galería, la IA le escribe un pie y unos comentarios como si fueran de seguidores. Acá elegís con qué onda.">ⓘ</span></div>
+  <div class="counter">💬 Comentarios y pie de foto <span class="hint-ico" title="Cuando abrís una foto de la galería, la IA le escribe un pie y unos comentarios como si fueran de seguidores. Acá elegís con qué onda.">ⓘ</span></div>
   <form method="post" action="{{ url_for('settings_save') }}">
     <input type="hidden" name="library" value="{{ library }}">
-
-    <div class="row">
-      <label><input type="checkbox" name="solo_moldes_propios" value="1"
-             {% if solo_moldes_propios %}checked{% endif %}> Solo mis pies</label>
-    </div>
 
     <div class="row">
       <label>Vos sos: <span class="hint-ico" title="Para que los vínculos salgan bien en los pies: con {relacion}, si en el perfil dice prima te va a decir «primo» o «prima» según esto. Y da vuelta los que cambian: tu mamá te dice «hijo»/«hija», tu sobrina te dice «tío»/«tía». Sin definir, usa el vínculo tal cual.">ⓘ</span></label>
@@ -2368,6 +2363,19 @@ SETTINGS_TEMPLATE = """
         <option value="m" {% if genero_duenio == 'm' %}selected{% endif %}>hombre</option>
         <option value="f" {% if genero_duenio == 'f' %}selected{% endif %}>mujer</option>
       </select>
+    </div>
+
+    <div class="row">
+      <label>Tu nombre (el que mira): <span class="hint-ico" title="Cómo te llamás vos, el dueño de la carpeta. Si lo ponés, la mina te puede nombrar por tu nombre en el pie («rolo, mirá lo que me puse»). Vacío = no te nombra por nombre, solo por el vínculo.">ⓘ</span></label>
+      <input class="path" type="text" name="duenio_nombre" value="{{ duenio_nombre }}"
+             placeholder="ej: rolo">
+    </div>
+
+    <div class="row" style="align-items:flex-start">
+      <label style="flex:none">Otros nombres con que te llama: <span class="hint-ico" title="Los apodos con que ella te nombra además del vínculo y tu nombre: «mi amor», «putito», «nene», «jefe»… Separados por coma. Son OPCIONES: el pie usa el vínculo casi siempre y uno de estos de vez en cuando, para no sonar repetido. Vacío = solo te llama por el vínculo.">ⓘ</span></label>
+      <input class="path" type="text" name="duenio_apodos" value="{{ duenio_apodos }}"
+             placeholder="separados por coma: mi amor, nene, jefe"
+             style="flex:1">
     </div>
 
     {# el pie y los comentarios corrían clavados al 4B: la config ya se leía
@@ -2532,7 +2540,9 @@ def settings_page():
         # con qué modelo se escriben el pie y los comentarios (vacío = el de fábrica)
         post_model=cfg.get("post_model", ""),
         genero_duenio=cfg.get("genero_duenio", ""),
-        solo_moldes_propios=bool(cfg.get("solo_moldes_propios")),
+        # cómo llamás vos, el que mira: tu nombre y los apodos con que te nombra
+        duenio_nombre=cfg.get("duenio_nombre", ""),
+        duenio_apodos=", ".join(cfg.get("duenio_apodos") or []),
         default_model=vlm.DEFAULT_MODEL,
         vlm_models=vlm.list_models(),
         vlm_crudos=vlm.modelos_descensurados(),
@@ -2596,10 +2606,14 @@ def settings_save():
         cfg["comment_users"] = users        # vacío = los de fábrica
     if "guardar_post" in request.form:      # el form de los comentarios
         cfg["diminutivos"] = request.form.get("diminutivos") == "1"
-        cfg["solo_moldes_propios"] = request.form.get("solo_moldes_propios") == "1"
     if "genero_duenio" in request.form:     # tu género: da vuelta los vínculos
         g = request.form.get("genero_duenio", "").strip().lower()
         cfg["genero_duenio"] = g if g in ("m", "f") else ""
+    if "duenio_nombre" in request.form:      # tu nombre: cómo te nombra ella
+        cfg["duenio_nombre"] = request.form.get("duenio_nombre", "").strip()
+    if "duenio_apodos" in request.form:      # los apodos con que te llama
+        apodos = [a.strip() for a in request.form.get("duenio_apodos", "").split(",")]
+        cfg["duenio_apodos"] = [a for a in apodos if a]   # vacío = ninguno
     if "post_model" in request.form:        # con qué modelo se escribe el pie
         # vacío = el de fábrica. Solo se acepta un modelo que EXISTA: si no, un
         # nombre mal tipeado deja el pie roto y el error recién aparece al generar.
@@ -3052,19 +3066,30 @@ def person_renombrar(name):
 
 @app.route("/person/<name>/perfil", methods=["POST"])
 def person_perfil(name):
-    """Configuración del perfil (modal ⚙): bio + voz, en una sola escritura."""
+    """Configuración del perfil (modal ⚙): bio + voz + nombre/alias, en una sola
+    escritura. El nombre y los alias son la identidad para los TEXTOS (la IA la
+    nombra con el nombre y varía con los alias); NO cambian la carpeta."""
     try:
         bio, voice = person_meta.set_profile(
             name,
             request.form.get("bio", ""),
             request.form.get("voice", ""))
+        # el nombre/alias solo se tocan si vinieron en el form (así guardar la bio
+        # no pisa lo que no se editó)
+        if "nombre" in request.form or "alias" in request.form:
+            person_meta.set_identidad(
+                name,
+                request.form.get("nombre", ""),
+                request.form.get("alias", ""))
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "bio": bio, "voice": voice}
+    return {"ok": True, "bio": bio, "voice": voice,
+            "nombre": person_meta.nombre_para_texto(name),
+            "alias": person_meta.get_alias(name)}
 
 
 PERSON_TEMPLATE = """
-<h1>{{ name }}</h1>
+<h1>{{ titulo }}</h1>
 <div class="row" style="justify-content:space-between">
   <a href="{{ url_for('known_page') }}#p{{ anchor }}">← Galería{% if total %} <span class="meta">({{ pos }}/{{ total }})</span>{% endif %}</a>
   <span class="row" style="margin:0">
@@ -3574,7 +3599,7 @@ PERSON_TEMPLATE = """
   <!-- Columna derecha: nombre + ⚙ + etiquetas -->
   <div class="pcard-main">
     <div class="row" style="justify-content:space-between; align-items:center; margin:0">
-      <h1 style="margin:0; font-size:19px">{{ name }}</h1>
+      <h1 style="margin:0; font-size:19px">{{ titulo }}</h1>
       <button class="secondary iconbtn" onclick="pcfgAbrir()" title="Configuración de {{ name }}">⚙</button>
     </div>
     {% if bio %}<div class="p-bio">{{ bio }}</div>{% endif %}
@@ -3589,6 +3614,13 @@ PERSON_TEMPLATE = """
         <div style="max-height:68vh; overflow-y:auto; padding-right:.2rem">
 
           <form id="pcfg-perfil">
+            <b>🪪 Nombre y alias <span class="hint-ico" title="El nombre «lindo» con que se muestra el álbum y con el que la IA la nombra en la narración, el pie, los comentarios y el copete (ej. «Nombre Apellido»). Los alias son OTRAS formas de llamarla: la IA usa el nombre casi siempre y de vez en cuando uno de estos. NO cambia la carpeta ni el reconocimiento de caras: eso sigue igual.">ⓘ</span></b>
+            <input class="path" type="text" name="nombre" value="{{ meta_nombre }}"
+                   style="width:100%; margin-top:.3rem"
+                   placeholder="Nombre para mostrar (ej. {{ name }} Apellido)">
+            <input class="path" type="text" name="alias" value="{{ meta_alias }}"
+                   style="width:100%; margin-top:.35rem"
+                   placeholder="alias separados por coma (ej. La Acro, mi hermana)">
             <b>📝 Bio <span class="hint-ico" title="El párrafo que se ve en su perfil, abajo del nombre: quién es, desde cuándo la conocés…">ⓘ</span></b>
             <textarea name="bio" rows="3" style="width:100%; margin-top:.3rem"
                       placeholder="Quién es {{ name }} (un párrafo corto)…">{{ bio }}</textarea>
@@ -3596,7 +3628,7 @@ PERSON_TEMPLATE = """
             <textarea name="voice" rows="3" style="width:100%; margin-top:.3rem"
                       placeholder="Ej: «habla con ironía, frases cortas, usa lunfardo»…">{{ voice }}</textarea>
             <div class="row" style="margin:.5rem 0 0; gap:.4rem">
-              <button class="primary" type="button" onclick="pcfgGuardar()">💾 Guardar bio y voz</button>
+              <button class="primary" type="button" onclick="pcfgGuardar()">💾 Guardar perfil</button>
               <span class="meta" id="pcfg-st"></span>
             </div>
           </form>
@@ -3855,6 +3887,7 @@ window.VLM_MODELS = {{ vlm_models|tojson }};
 window.HAS_COVER = {{ has_thumb|tojson }};
 window.COVER_URL_THUMB = "{{ url_for('known_thumb', name=name) }}?v={{ cache_bust }}";
 const PERSON = {{ name|tojson }};
+const PERSON_TITULO = {{ titulo|tojson }};   // nombre "lindo" del álbum (o la carpeta)
 let PERSON_TAGS = {{ person_tags|tojson }};
 let FAVS = {{ favs_tags|tojson }};             // tus favoritas (persona + globales)
 const PHOTO_TAGS = {{ photo_tags|tojson }};   // {rel: [tags propias]}
@@ -4094,6 +4127,8 @@ function pcfgGuardar() {
   const fd = new URLSearchParams();
   fd.set('bio', document.querySelector('#pcfg-perfil textarea[name=bio]').value);
   fd.set('voice', document.querySelector('#pcfg-perfil textarea[name=voice]').value);
+  fd.set('nombre', document.querySelector('#pcfg-perfil input[name=nombre]').value);
+  fd.set('alias', document.querySelector('#pcfg-perfil input[name=alias]').value);
   st.textContent = ' guardando…';
   fetch(PCFG_URL, {method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: fd})
@@ -4101,6 +4136,11 @@ function pcfgGuardar() {
       if (!d.ok) { st.textContent = ' ✗ ' + d.error; return; }
       st.textContent = ' ✓ guardado';
       setTimeout(() => st.textContent = '', 2000);
+      // el título del álbum pasa a ser el nombre nuevo, sin recargar
+      if (d.nombre) {
+        const h1 = document.querySelector('.pcard-main h1');
+        if (h1) h1.textContent = d.nombre;
+      }
       // reflejar la bio nueva bajo el nombre sin recargar
       const bio = document.querySelector('.p-bio');
       if (d.bio) {
@@ -4925,7 +4965,10 @@ POST_LIGHTBOX = """
       faceDraw = [Math.min(p0.x, p.x), Math.min(p0.y, p.y),
                   Math.max(p0.x, p.x), Math.max(p0.y, p.y)];
       const g = faceGeom();
-      ghost.style.display = '';
+      // OJO: tiene que ser 'block', NO ''. La regla #lb .fdraw .fghost { display:none }
+      // pisa al estilo en línea, así que poner '' borraba el valor y el cuadradito
+      // nunca se veía: parecía que "no se podía dibujar". Con 'block' gana lo inline.
+      ghost.style.display = 'block';
       ghost.style.left   = (g.lv.x + faceDraw[0] * g.w) + 'px';
       ghost.style.top    = (g.lv.y + faceDraw[1] * g.h) + 'px';
       ghost.style.width  = ((faceDraw[2] - faceDraw[0]) * g.w) + 'px';
@@ -4966,7 +5009,7 @@ POST_LIGHTBOX = """
   }
   window.lbOpen = function(i) {
     lb.style.display = 'block';
-    $('lb-who').textContent = PERSON;
+    $('lb-who').textContent = PERSON_TITULO;
     const av = $('lb-av');
     if (window.HAS_COVER) { av.src = window.COVER_URL_THUMB; av.style.display = ''; }
     else { av.style.display = 'none'; }
@@ -5778,6 +5821,11 @@ def person_page(name):
         searched_ago=person_meta.humanize(meta["searched"]),
         voice=meta["voice"],
         bio=meta["bio"],
+        # identidad para los textos: el nombre "lindo" y sus alias (la carpeta
+        # NO cambia). `titulo` es lo que se muestra como nombre del álbum.
+        meta_nombre=person_meta.get_nombre(name),
+        meta_alias=", ".join(person_meta.get_alias(name)),
+        titulo=person_meta.nombre_para_texto(name),
         pick_rel=pick_rel,
         pick_count=pick_count,
         pick_v=int(time.time()),
@@ -6699,19 +6747,19 @@ COPETE_MODEL = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGU
 # modelo no sabía a quién ponerle el nombre y salía genérico.
 COPETE_SYSTEM = """Sos redactor de tapas de revista. Mirás la foto y escribís el
 TÍTULO DE TAPA: el gancho de una nota que le pondría esa foto —el tema, no la
-descripción—, con el nombre de la persona adentro. Pensá en títulos tipo "10
-formas de mantenerse en forma con Paula" o "Cómo tomar birra con Acro": anuncian
-un tema y tientan, no cuentan la foto.
+descripción—, con el nombre de la persona adentro. Dos formas que funcionan: una
+promesa de lista o consejo con su nombre ("10 formas de mantenerse en forma con
+Paula", "Cómo tomar birra con Acro"), o un secreto sugerido sobre ella. Anuncian
+un tema y tientan, no cuentan la foto. Que el tema salga de ESTA foto, distinto
+cada vez: NO repitas la misma fórmula ni el mismo tema en títulos distintos.
 
 Es una revista para adultos: si la foto lo da, el título va en clave erótica, con
-morbo y doble sentido ("El secreto de Acro para la Navidad", "Lo que Paula hace
-cuando nadie la ve"). Sin caer en el grotesco ni en el insulto: es una tapa, tiene
-que tentar, no asquear.
+morbo y doble sentido. Sin caer en el grotesco ni en el insulto: es una tapa,
+tiene que tentar, no asquear.
 
 Español rioplatense, presente, una sola línea, de 5 a 10 palabras. Sin signos de
 exclamación, sin comillas, sin puntos intermedios ni final, sin subtítulo ni
-segunda frase. Que pegue a ESTA foto: no un elogio que le serviría a cualquiera.
-No inventes hechos que no se vean."""
+segunda frase. No inventes hechos que no se vean."""
 
 
 def _copete_prompt(name):
@@ -6719,17 +6767,33 @@ def _copete_prompt(name):
 
     El vínculo entra porque la tapa es de una publicación para él: si es su
     hermana, el morbo va por ahí. Sin nombre ni vínculo el modelo escribía un
-    titular anónimo, que era justo lo que no se quería."""
+    titular anónimo, que era justo lo que no se quería. También van tu nombre y
+    tus apodos (Ajustes), como las otras formas de nombrarte, para que la tapa no
+    repita siempre el mismo vínculo."""
     quien = ""
     try:
         quien = posts_mod._trato_al_duenio(name)
     except Exception:
         quien = ""
+    nombre_duenio = ""
+    apodos = []
+    try:
+        nombre_duenio = posts_mod._nombre_duenio()
+        apodos = posts_mod._apodos_duenio()
+    except Exception:
+        pass
     p = [f"Escribí el título de tapa de esta foto. La persona de la foto se llama "
          f"{name}, poné su nombre en el título."]
     if quien:
         p.append(f"Es una publicación que ella le dedica a su {quien}: dejá que el "
                  f"vínculo se note y sume morbo.")
+        otros = []
+        if nombre_duenio:
+            otros.append(f'"{nombre_duenio}"')
+        otros += [f'"{a}"' for a in apodos]
+        if otros:
+            p.append("Al dirigirte a él podés nombrarlo también como "
+                     + ", ".join(otros) + ", pero de vez en cuando, no siempre.")
     p.append("Una sola línea, de 5 a 10 palabras, con gancho, como tapa de revista.")
     return " ".join(p)
 

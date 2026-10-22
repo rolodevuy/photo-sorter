@@ -322,7 +322,7 @@ def _hechos(image_path, model=None):
                          temperature=0.3) or "").strip()
 
 
-def _ficha(hechos, anclas="", nombre="", model=None, system=None):
+def _ficha(hechos, anclas="", nombre="", alias=(), model=None, system=None):
     """Pasada 2: redacta desde los hechos. No mira la foto (generar_texto no
     manda imagen: es lo que garantiza que no agregue lo que no está).
 
@@ -337,6 +337,9 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
     lista, en cambio, lo escribe sin comentarlo — y como el anclado del cuerpo
     dice el estado real ("cubiertos por la ropa"), corrige al VLM sin prohibir
     nada.
+
+    `alias` son las OTRAS formas de llamarla (person_meta): el nombre manda y un
+    alias entra de vez en cuando, para no repetir el mismo nombre en cada foto.
 
     `system` permite cambiar el REGISTRO sin tocar la mecánica: el default es
     _RED_S (xxx crudo). Cambia la voz, no los hechos."""
@@ -353,6 +356,12 @@ def _ficha(hechos, anclas="", nombre="", model=None, system=None):
         # el prompt se ignora.
         pr += "%s is her own name: call her %s, never \"a woman\" or \"she\".\n\n" % (
             nombre, nombre)
+        if alias:
+            # los alias entran como VARIANTE: el nombre manda y un alias aparece
+            # de vez en cuando para no arrancar todas las fotos con el mismo nombre
+            pr += ("Now and then (not every time) you may call her one of these "
+                   "instead: %s. Never two of them in the same text.\n\n"
+                   % ", ".join('"%s"' % a for a in alias))
     pr += "Write the commentary now, as one full paragraph, in Spanish."
     # num_predict 650 y no 500: el párrafo pasó a 7-9 oraciones (foto + acto +
     # deseo con actitud) y con 500 se cortaba a mitad, que deja la última frase

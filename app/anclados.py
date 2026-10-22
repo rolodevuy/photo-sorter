@@ -290,11 +290,18 @@ def nombre_para_narrar(nombres, duenio):
 
     Con una sola persona se nombra. Con varias se nombra solo si la dueña está
     (es su foto): se la nombra a ella y se dice que hay más gente, sin arriesgar
-    quién es quién."""
+    quién es quién.
+
+    El nombre que devuelve es el de MOSTRAR (person_meta: el nombre "lindo" si lo
+    cargaste, si no la carpeta), no el de la carpeta: así la narración dice
+    "Nombre Apellido camina" y no "acro camina"."""
     if not nombres:
         return ""
-    if len(nombres) == 1:
-        return nombres[0]
-    if duenio in nombres:
-        return duenio
-    return ""
+    elegido = nombres[0] if len(nombres) == 1 else (duenio if duenio in nombres else "")
+    if not elegido:
+        return ""
+    try:
+        from app import person_meta
+        return person_meta.nombre_para_texto(elegido)
+    except Exception:
+        return elegido

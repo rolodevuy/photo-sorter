@@ -254,8 +254,9 @@ _PROVOCA_VOCAB = (
 #
 # 1) NO ES UN RESUMEN. Antes repetía la narración ("estoy en bolas con las tetas
 #    al aire") y no sumaba nada: el que mira YA VE la foto. Ahora suma lo que la
-#    foto no dice — ánimo, situación, clima, motivo ("me levanté con ganas", "me
-#    puse esto para la cena"). Eso es el pie; el cuerpo lo ve él.
+#    foto no dice — ánimo, situación, clima, motivo. OJO: los ejemplos concretos
+#    ("cena de Navidad") se los copia TODO el modelo, así que en el system no va
+#    ningún ejemplo; se pide que varíe. Eso es el pie; el cuerpo lo ve él.
 # 2) SIEMPRE LE HABLA A ÉL, arrancando por el vínculo ("hermano, mirá..."). El
 #    vínculo va como ORDEN aparte (ver _regla_trato). El "vos" es SIEMPRE para él.
 # 3) SIGUE SIENDO RED SOCIAL: natural y corto, no un párrafo literario.
@@ -263,7 +264,7 @@ _PROVOCA_VOCAB = (
 # El andamiaje va en inglés (los modelos obedecen mejor) pero la salida se pide en
 # español desde el propio system: no hay traductor.
 _SYS_PIE_VISION = """You write the caption for a photo of YOURSELF, as if you
-were posting it on an xxx social network.
+were posting it on an xxx social network where you SELL your content.
 
 YOU ARE the person in the photo, writing in the FIRST PERSON. Never describe
 yourself from outside, never in third person: no "in the photo you can see",
@@ -282,12 +283,20 @@ the relationship word given to you separately: "hermano, mirá lo que me puse",
 "tío, hoy me levanté así". "Vos/te/tu" in this caption ALWAYS means him, never
 yourself.
 
+YOU ARE SELLING. This is the caption of a girl who posts to get him hard and
+get him to pay, follow or come back. So you TEASE like one: you brag about what
+you are showing, you ask him if he likes what he sees, you offer a little more,
+you make him beg or come closer. Flaunt, provoke, lure — that is the tone of the
+whole caption, not just one line.
+
 DO NOT SUMMARIZE THE PHOTO. He is already looking at it: he sees your body, the
 clothes, the place. Describing them again adds nothing. The caption says what the
 photo does NOT: your mood, the situation, the weather, the excuse, why you post
-this today ("me levanté con ganas", "qué calor que hace", "me puse esto para la
-cena", "no daba más del aburrimiento"). That context has to FIT the description:
-if it is a beach, it is hot — do not invent a Christmas dinner in a beach photo.
+this today. Pick a DIFFERENT everyday reason each time (feeling horny or bored,
+the heat or the cold, a lazy day, wanting his attention or his money) and NEVER
+reuse the same reason: a caption that repeats an earlier one is a failed caption.
+That context has to FIT what the description says — do not invent a situation the
+photo could not be from.
 
 It is still SOCIAL MEDIA: it sounds like what you would actually type posting
 this photo — natural and short, not a literary paragraph, not an inventory of
@@ -295,7 +304,8 @@ your body.
 
 You provoke him and turn him on: what you show is an invitation and you say it to
 his face. Crude and direct, the things by their name, no euphemisms, no beating
-around the bush.
+around the bush. You own it: you are his little whore and you say it proudly, not
+ashamed.
 
 Three or four sentences, ONE paragraph, complete. Never lists, titles or markdown.
 
@@ -332,6 +342,22 @@ def _trato_al_duenio(name):
         return ""
 
 
+def _nombre_duenio():
+    """Tu nombre, el del que mira (Ajustes › "Tu nombre"). Vacío = sin nombre."""
+    try:
+        return (load_config().get("duenio_nombre") or "").strip()
+    except Exception:
+        return ""
+
+
+def _apodos_duenio():
+    """Los apodos con que ella te llama además del vínculo (Ajustes). Lista."""
+    try:
+        return [a for a in (load_config().get("duenio_apodos") or []) if a]
+    except Exception:
+        return []
+
+
 def _regla_trato(name):
     """La línea del prompt que le dice al redactor cómo hablarle a él.
 
@@ -343,17 +369,45 @@ def _regla_trato(name):
     parentesco (es lo que hace que suene a relación y no a anuncio), y el vínculo
     suma morbo (si es tu hermano, que se note que es tu hermano y que eso te
     calienta). Si la persona no tiene vínculo, se igual le pide que le hable a él,
-    sin inventar un parentesco."""
+    sin inventar un parentesco.
+
+    Además del vínculo, se le pasan TU NOMBRE y tus APODOS (Ajustes): son las otras
+    formas de llamarte. Pero se usan COMO VARIANTE, no siempre: el vínculo es la
+    forma principal (es lo que hace que suene a relación), y el nombre o un apodo
+    entran de vez en cuando para no repetir el mismo arranque foto tras foto."""
     quien = _trato_al_duenio(name)
+    nombre = _nombre_duenio()
+    apodos = _apodos_duenio()
+    # las "otras formas" de nombrarlo: tu nombre (entre comillas, para que quede
+    # claro que es un nombre propio) + tus apodos, todo junto para la variante
+    otros = []
+    if nombre:
+        otros.append('"%s"' % nombre)
+    otros += ["\"%s\"" % a for a in apodos]
+    variante = (", ".join(otros)) if otros else ""
     if not quien:
-        return ("YOU TALK TO HIM, the one looking at the photo: address him "
+        base = ("YOU TALK TO HIM, the one looking at the photo: address him "
                 "directly from the first words (\"mirá lo que...\", \"vení a "
                 "ver...\"), never a caption that talks to nobody.")
-    return ("YOU TALK TO HIM, and he is your %s. START the caption by addressing "
-            "him as \"%s\" (\"%s, mirá lo que me puse...\") — the relationship is "
-            "the point, not decoration. The fact that he is your %s turns you on "
-            "and you let it show. Do NOT use generic pet names (amor, bebé, "
-            "cariño): the real word is \"%s\"." % (quien, quien, quien, quien, quien))
+        if variante:
+            base += (" You can also call him %s — but ONE of those, occasionally, "
+                     "never the same every time." % variante)
+        return base
+    regla = ("YOU TALK TO HIM, and he is your %s. START the caption by addressing "
+             "him as \"%s\" (\"%s, mirá lo que me puse...\") — the relationship is "
+             "the point, not decoration. The fact that he is your %s turns you on "
+             "and you let it show." % (quien, quien, quien, quien))
+    if variante:
+        # el vínculo manda; el nombre/los apodos son la excepción que evita el
+        # "hermano, hermano, hermano" en todas las fotos
+        regla += (" MOST of the time you call him \"%s\"; NOW AND THEN (not every "
+                  "time) you swap it for one of these: %s. Never use two of them "
+                  "in the same caption, and never a generic pet name (amor, bebé, "
+                  "cariño) that is not on that list." % (quien, variante))
+    else:
+        regla += (" Do NOT use generic pet names (amor, bebé, cariño): the real "
+                  "word is \"%s\"." % quien)
+    return regla
 
 
 _SYS_NARRACION = """Mirás una foto y la contás como el narrador que la tiene
@@ -734,8 +788,7 @@ def crudeness_text(level):
 
 
 def generate_caption(name, rel, image_path, model=None,
-                     crudeness=CRUDENESS_DEFAULT, diminutivos=False,
-                     usar_moldes=True):
+                     crudeness=CRUDENESS_DEFAULT, diminutivos=False):
     """Escribe el pie de foto y lo guarda. ~1,5 minutos en CPU.
 
     Sabemos de quién es la foto (sale de la carpeta), así que el pie lo escribe
@@ -747,49 +800,22 @@ def generate_caption(name, rel, image_path, model=None,
 
     Las ETIQUETAS de la foto (propias + de la persona) son la intención real:
     el pie se escribe A PARTIR de ellas, literal, no de lo que el modelo cree
-    ver — evita que se floree o invente un clima que no está."""
+    ver — evita que se floree o invente un clima que no está.
+
+    LOS MOLDES YA NO ENTRAN ACÁ. Antes, si alguna etiqueta prendía un molde
+    escrito a mano, el pie salía instantáneo de ahí y NUNCA llegaba al modelo:
+    probabas "escribir con IA" y te contestaba un prehecho, sin forma de salir de
+    ahí. Con la Visión andando bien, el modelo escribe mejor y ahora manda
+    siempre: el pie sale del camino IA (Visión si la hay; si no, el que mira la
+    foto). El editor ✍ sigue existiendo para escribir moldes a mano, pero es una
+    herramienta APARTE: no se dispara sola al pedir el pie."""
     # el pie va en primera persona, así que el género importa: "estoy cansada"
     # o "cansado" sale de las etiquetas de la persona
     ident = identidad_foto(name, rel)
     if ident["sano"]:
         crudeness = 0
 
-    # MOLDES PRIMERO, antes de tocar nada caro. Escritos por el usuario, salen
-    # instantáneos y con su voz; el modelo local, probado en seis configuraciones,
-    # no llega a eso (ver app/moldes.py). Si ninguna etiqueta prende un molde se
-    # cae al modelo, así una foto sin cobertura igual tiene pie.
-    # Va ANTES del reconocimiento de caras a propósito: who_is_in carga la base de
-    # vectores y escanea la imagen, y no tendría sentido pagar eso para después
-    # contestar con un molde que no lo usa.
-    if usar_moldes:
-        # el pie que ya tiene: se le pasa para que devuelva OTRO. Sin esto,
-        # apretar "regenerar" te daba siempre exactamente el mismo.
-        # `pulir` = lo mismo que se le hace al pie ANTES de guardarlo. Va también
-        # a escribir() para que compare el pie guardado contra las variantes ya
-        # transformadas; si no, nunca coincide y regenerar devuelve siempre el
-        # primero (pasó con los diminutivos: guardaba "playita", comparaba "playa").
-        pulir_pie = con_diminutivos if diminutivos else None
-        # "Solo mis pies" (Ajustes): los 62 de fábrica quedan horneados en tu
-        # moldes.json al guardar el primero y después compiten con los tuyos, así
-        # que el pie variaba mucho antes de caer en uno propio.
-        solo_mios = bool(_cfg().get("solo_moldes_propios"))
-        pie = moldes.escribir(_key(name, rel),
-                              tags_mod.effective_photo(name, rel), sano=ident["sano"],
-                              evitar=get(name, rel)["caption"], pulir=pulir_pie,
-                              solo_propios=solo_mios)
-        if pie:
-            if pulir_pie:
-                pie = pulir_pie(pie)
-            _put(name, rel, caption=pie)
-            return pie
-        if solo_mios:
-            # con "solo mis pies" no se cae al modelo: se avisa, que es lo útil
-            # (te dice dónde falta escribir un molde en vez de tapar el agujero)
-            raise RuntimeError("No hay un pie tuyo para estas etiquetas. "
-                               "Escribí uno con ✍ (o destildá «Solo mis pies» en Ajustes).")
-
-    # EL PIE DESDE LA VISION, si la foto ya la tiene. Va ACÁ: después de los
-    # moldes (que son instantáneos y son la voz del usuario) y antes del
+    # EL PIE DESDE LA VISION, si la foto ya la tiene. Va ANTES del
     # reconocimiento de caras (que es caro y el camino por visión no lo necesita:
     # las personas ya no entran, el material es la descripción guardada).
     #
@@ -831,7 +857,8 @@ def generate_caption(name, rel, image_path, model=None,
             con = []      # sin base de caras o foto ilegible: el pie igual sale
     voz = person_meta.get_voice(name)
     crudeza, quien_es = crudeness_text(crudeness), quien_es_pie(ident)
-    prompt = vlm.caption_prompt(name, voz, con=con, crudeza=crudeza, quien_es=quien_es,
+    prompt = vlm.caption_prompt(person_meta.nombre_para_texto(name), voz, con=con,
+                                crudeza=crudeza, quien_es=quien_es,
                                 etiquetas=_intencion(name, rel, image_path, ident["sano"]),
                                 system=_cfg().get("post_pie_system") or "narrador",
                                 trato=_regla_trato(name))

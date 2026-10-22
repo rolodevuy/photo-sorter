@@ -86,6 +86,69 @@ def get_bio(name):
     return (_load().get(name, {}) or {}).get("bio", "")
 
 
+def get_nombre(name):
+    """El nombre "lindo" de la persona (ej. "Nombre Apellido"), para el título del
+    álbum y para que la IA la nombre así. Vacío = se usa el nombre de la carpeta."""
+    return (_load().get(name, {}) or {}).get("nombre", "")
+
+
+def get_alias(name):
+    """Los alias con que se la puede llamar (lista). Vacío = solo el nombre."""
+    al = (_load().get(name, {}) or {}).get("alias") or []
+    return [a for a in al if isinstance(a, str) and a.strip()]
+
+
+def get_identidad(name):
+    """{"nombre", "alias"} de una persona: el nombre para mostrar y sus alias."""
+    return {"nombre": get_nombre(name), "alias": get_alias(name)}
+
+
+def set_identidad(name, nombre="", alias=()):
+    """Guarda el nombre y los alias de una persona. Vacíos se borran (se cae al
+    nombre de la carpeta). `alias` puede ser lista o texto separado por comas."""
+    data = _load()
+    d = data.setdefault(name, {})
+    nombre = (nombre or "").strip()
+    if isinstance(alias, str):
+        alias = alias.split(",")
+    limpios, vistos = [], set()
+    for a in alias or ():
+        a = (a or "").strip()
+        k = a.lower()
+        if a and k not in vistos:
+            vistos.add(k)
+            limpios.append(a)
+    if nombre:
+        d["nombre"] = nombre
+    else:
+        d.pop("nombre", None)
+    if limpios:
+        d["alias"] = limpios
+    else:
+        d.pop("alias", None)
+    _save(data)
+    return nombre, limpios
+
+
+def nombre_para_texto(name):
+    """Cómo nombrarla en un texto de la IA: el nombre lindo si lo hay, si no la
+    carpeta. Es el ancla; los alias son las variantes (ver variantes_nombre)."""
+    return get_nombre(name) or name
+
+
+def variantes_nombre(name):
+    """Las formas de nombrarla que la IA puede usar: la principal primero (nombre
+    o carpeta) y después los alias, sin repetir."""
+    principal = nombre_para_texto(name)
+    out, vistos = [], set()
+    for n in [principal] + get_alias(name):
+        k = (n or "").lower()
+        if n and k not in vistos:
+            vistos.add(k)
+            out.append(n)
+    return out
+
+
 def set_profile(name, bio="", voice=""):
     """Guarda juntas la bio y la voz (el modal de configuración las edita de una
     sola vez, una sola escritura). Vacías se borran. Devuelve (bio, voice)."""
