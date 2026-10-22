@@ -249,11 +249,19 @@ _PROVOCA_VOCAB = (
 # PERSONAJE: ella le habla al VIEWER y lo provoca (ver _PROVOCA_VOCAB). Misma
 # crudeza, dirigida al revés. Por eso el system es propio y no reusa _RED_S.
 #
-# La REGLA DE ORO acá es la misma de la visión: no agregar NADA que la
-# descripción no diga — ni el lugar, ni la ropa, ni el cuerpo. Si la descripción
-# dice "bragas", son bragas y nunca "short"; si no nombra un lugar, el pie no
-# tiene lugar. El andamiaje va en inglés (los modelos obedecen mejor) pero la
-# salida se pide en español desde el propio system: no hay traductor.
+# El pie es una PUBLICACIÓN de red social erótica: la mina sube la foto y le
+# escribe a ÉL. Tres cosas, todas aprendidas a los golpes:
+#
+# 1) NO ES UN RESUMEN. Antes repetía la narración ("estoy en bolas con las tetas
+#    al aire") y no sumaba nada: el que mira YA VE la foto. Ahora suma lo que la
+#    foto no dice — ánimo, situación, clima, motivo ("me levanté con ganas", "me
+#    puse esto para la cena"). Eso es el pie; el cuerpo lo ve él.
+# 2) SIEMPRE LE HABLA A ÉL, arrancando por el vínculo ("hermano, mirá..."). El
+#    vínculo va como ORDEN aparte (ver _regla_trato). El "vos" es SIEMPRE para él.
+# 3) SIGUE SIENDO RED SOCIAL: natural y corto, no un párrafo literario.
+#
+# El andamiaje va en inglés (los modelos obedecen mejor) pero la salida se pide en
+# español desde el propio system: no hay traductor.
 _SYS_PIE_VISION = """You write the caption for a photo of YOURSELF, as if you
 were posting it on an xxx social network.
 
@@ -262,20 +270,34 @@ yourself from outside, never in third person: no "in the photo you can see",
 "a girl who...", "she is". If you cannot say it with "I am/I have/I feel", it is
 wrong.
 
-You do NOT see the photo: you only have a DESCRIPTION of it, and that
-description is all you know. Do not add anything that is not in it — not the
-place, not the clothes, not the body. If the description says panties, it is
-panties, never shorts. If it does not name a place, the caption has no place.
+You do NOT see the photo: you only have a DESCRIPTION of it. The PHYSICAL facts
+are bounded by that description — never contradict it: if it says panties, it is
+panties, never shorts; if it does not name a place, do not put yourself in one.
+But the MOOD, the situation and the excuse are yours to add: that is exactly what
+the description cannot give, and it is what makes the caption a post and not a
+copy of the description.
 
-YOU TALK TO WHOEVER IS LOOKING at the photo, not to yourself: you provoke him,
-you turn him on, you invite him. Do not describe yourself from inside as if you
-were telling it to yourself ("I am wet", "I feel like it"): that does not do
-anything to the one watching. What you show is an invitation, and the caption
-says it to him, face to face.
+YOU TALK TO HIM — the one looking at the photo. You start by addressing him, by
+the relationship word given to you separately: "hermano, mirá lo que me puse",
+"tío, hoy me levanté así". "Vos/te/tu" in this caption ALWAYS means him, never
+yourself.
 
-Crude and direct: the things by their name, no euphemisms, no beating around
-the bush. One or two sentences. Short. One paragraph, never lists, titles or
-markdown.
+DO NOT SUMMARIZE THE PHOTO. He is already looking at it: he sees your body, the
+clothes, the place. Describing them again adds nothing. The caption says what the
+photo does NOT: your mood, the situation, the weather, the excuse, why you post
+this today ("me levanté con ganas", "qué calor que hace", "me puse esto para la
+cena", "no daba más del aburrimiento"). That context has to FIT the description:
+if it is a beach, it is hot — do not invent a Christmas dinner in a beach photo.
+
+It is still SOCIAL MEDIA: it sounds like what you would actually type posting
+this photo — natural and short, not a literary paragraph, not an inventory of
+your body.
+
+You provoke him and turn him on: what you show is an invitation and you say it to
+his face. Crude and direct, the things by their name, no euphemisms, no beating
+around the bush.
+
+Three or four sentences, ONE paragraph, complete. Never lists, titles or markdown.
 
 Write the caption in Spanish (rioplatense), never in English."""
 
@@ -311,18 +333,27 @@ def _trato_al_duenio(name):
 
 
 def _regla_trato(name):
-    """La línea del prompt que le dice al redactor cómo nombrarlo a él.
+    """La línea del prompt que le dice al redactor cómo hablarle a él.
 
     Va como ORDEN, no como dato suelto: medido en este archivo, una línea de dato
     se ignora; "llamalo X" se cumple. Y se le prohíbe el genérico ("amor", "bebé")
-    para que no tape el parentesco real."""
+    para que no tape el parentesco real.
+
+    No alcanza con nombrarlo: el pie tiene que ARRANCAR dirigiéndose a él por ese
+    parentesco (es lo que hace que suene a relación y no a anuncio), y el vínculo
+    suma morbo (si es tu hermano, que se note que es tu hermano y que eso te
+    calienta). Si la persona no tiene vínculo, se igual le pide que le hable a él,
+    sin inventar un parentesco."""
     quien = _trato_al_duenio(name)
     if not quien:
-        return ""
-    return ("YOU TALK TO HIM, and he is your %s. Name him that way when you "
-            "address him (\"%s, ...\"), because the relationship is the point. "
-            "Do NOT use generic pet names (amor, bebé, cariño): the real word "
-            "is \"%s\"." % (quien, quien, quien))
+        return ("YOU TALK TO HIM, the one looking at the photo: address him "
+                "directly from the first words (\"mirá lo que...\", \"vení a "
+                "ver...\"), never a caption that talks to nobody.")
+    return ("YOU TALK TO HIM, and he is your %s. START the caption by addressing "
+            "him as \"%s\" (\"%s, mirá lo que me puse...\") — the relationship is "
+            "the point, not decoration. The fact that he is your %s turns you on "
+            "and you let it show. Do NOT use generic pet names (amor, bebé, "
+            "cariño): the real word is \"%s\"." % (quien, quien, quien, quien, quien))
 
 
 _SYS_NARRACION = """Mirás una foto y la contás como el narrador que la tiene
@@ -802,7 +833,8 @@ def generate_caption(name, rel, image_path, model=None,
     crudeza, quien_es = crudeness_text(crudeness), quien_es_pie(ident)
     prompt = vlm.caption_prompt(name, voz, con=con, crudeza=crudeza, quien_es=quien_es,
                                 etiquetas=_intencion(name, rel, image_path, ident["sano"]),
-                                system=_cfg().get("post_pie_system") or "narrador")
+                                system=_cfg().get("post_pie_system") or "narrador",
+                                trato=_regla_trato(name))
     extra = (_cfg().get("post_extra_pie") or "").strip()   # tu caja de Ajustes
     if extra:
         prompt += "\n" + extra
@@ -816,12 +848,12 @@ def generate_caption(name, rel, image_path, model=None,
         # la playa, ser directo, vulgar..." y pies terminados en "Sos Alejandro".
         # Se compara contra el prompt ENTERO, no contra los pedazos: cualquier
         # línea que le mandemos puede volver copiada.
-        # num_predict corto a propósito: el pie son una o dos frases. Con 280 el
-        # modelo se queda sin qué decir a la mitad y RELLENA repitiendo el mismo
-        # verso hasta gastar el presupuesto (visto: 3 veces la misma frase). Menos
-        # techo = menos relleno, y encima tarda menos.
+        # num_predict corto a propósito: el pie son tres o cuatro frases. Con 280
+        # el modelo se queda sin qué decir a la mitad y RELLENA repitiendo el
+        # mismo verso hasta gastar el presupuesto (visto: 3 veces la misma frase).
+        # Menos techo = menos relleno, y encima tarda menos.
         crudo = vlm.describe(image_path, model=modelo, prompt=prompt, prefill=prefill,
-                             num_predict=100)
+                             num_predict=140)
         # _rioplatense corrige el tuteo y lo peninsular ("chaval"->"pibe",
         # "polla"->"pija"). Estaba SOLO en los comentarios, así que al pie le
         # llegaban gallegismos tal cual: real, devolvió "un chaval de 25 años".
@@ -1221,10 +1253,23 @@ def _habla_en_segunda(texto):
 
 
 def _sirve(texto, arranque=""):
-    """El pie está en primera persona Y no le habla a otro. Las dos cosas: el que
-    motivó esto ("Ando osome... Sos flaca de costado y tu pelo castaño...")
-    arrancaba en primera y a la segunda frase ya la estaba describiendo a ella."""
-    return _en_primera_persona(texto, arranque) and not _habla_en_segunda(texto)
+    """El pie está en primera persona y no se describe a sí misma desde afuera.
+
+    OJO con el "vos": ANTES acá se prohibía toda segunda persona (_habla_en_segunda),
+    porque el pie era la mina hablándose a SÍ MISMA y un "te ves linda" era el pie
+    roto. Ya NO: el pie le habla a ÉL (el que mira), así que "vos/te/tu" es
+    correcto y esperado. Lo que sí se rechaza es el defecto de siempre —que abra
+    describiéndola desde afuera ("una chica sentada...")—, igual que en
+    _sirve_pie_vision.
+
+    Solo se usa para decidir si hace falta el arranque; NO es una compuerta que
+    impida guardar el pie (se guarda igual, ver generate_caption)."""
+    t = (texto or "").strip()
+    if not t:
+        return False
+    if _abre_describiendo(t):
+        return False
+    return _en_primera_persona(t, arranque) and not _TERCERA_PERSONA.search(t)
 
 
 def _sirve_pie_vision(texto):

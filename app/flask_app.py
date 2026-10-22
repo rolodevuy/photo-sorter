@@ -6416,8 +6416,8 @@ def _generar_copete(name, rel, path, cfg, model=None):
     Igual que _generar_vision: la ruta y el lote comparten esta lógica."""
     texto = vlm.describe(
         str(path), model=model or cfg.get("copete_model") or COPETE_MODEL,
-        prompt=COPETE_PROMPT, system=COPETE_SYSTEM,
-        num_predict=60, temperature=0.9)
+        prompt=_copete_prompt(name), system=COPETE_SYSTEM,
+        num_predict=80, temperature=0.9)
     texto = _copete_titular(texto)
     return copetes_mod.set_copete(name, rel, texto)
 
@@ -6690,15 +6690,48 @@ def post_caption(name):
 # para el copete se usa el VLM de visión abliterated de 7B, el mismo que
 # escribe etiquetas y narración — mucho más específico que el genérico.
 COPETE_MODEL = "hf.co/mradermacher/Qwen2.5-VL-7B-NSFW-Caption-V3-abliterated-GGUF:Q4_K_M"
-COPETE_SYSTEM = """Sos un titularista de diario canchero. Mirás la foto con ganas
-de titular, no de describir: elegís EL detalle que llama la atención (la pose,
-la ropa, el gesto, el lugar, lo que está haciendo) y lo contás como noticia
-CORTA y con gancho, en español, presente, de 4 a 8 palabras, en una sola línea.
-Que pegue a ESTA foto, no un elogio genérico que le serviría a cualquiera. Sin
-signos de exclamación, sin comillas, sin puntos intermedios ni al final, sin
-subtítulos ni segunda frase, sin frases de relleno. Solo lo que se ve: no
-inventes nada."""
-COPETE_PROMPT = "Escribí el titular de diario de esta foto, en una sola línea, de 4 a 8 palabras, presente y con gancho."
+# El copete es una TAPA DE REVISTA, no un titular de diario: el tipo de título que
+# anuncia un tema y tienta ("10 formas de mantenerse en forma con Paula", "Cómo
+# tomar birra con Acro"). Lleva el NOMBRE de la persona y, si da, va en clave
+# erótica: la foto es de una red social xxx, así que el morbo es bienvenido.
+#
+# Se le pasa el nombre y el vínculo en el prompt (ver _copete_prompt): sin eso el
+# modelo no sabía a quién ponerle el nombre y salía genérico.
+COPETE_SYSTEM = """Sos redactor de tapas de revista. Mirás la foto y escribís el
+TÍTULO DE TAPA: el gancho de una nota que le pondría esa foto —el tema, no la
+descripción—, con el nombre de la persona adentro. Pensá en títulos tipo "10
+formas de mantenerse en forma con Paula" o "Cómo tomar birra con Acro": anuncian
+un tema y tientan, no cuentan la foto.
+
+Es una revista para adultos: si la foto lo da, el título va en clave erótica, con
+morbo y doble sentido ("El secreto de Acro para la Navidad", "Lo que Paula hace
+cuando nadie la ve"). Sin caer en el grotesco ni en el insulto: es una tapa, tiene
+que tentar, no asquear.
+
+Español rioplatense, presente, una sola línea, de 5 a 10 palabras. Sin signos de
+exclamación, sin comillas, sin puntos intermedios ni final, sin subtítulo ni
+segunda frase. Que pegue a ESTA foto: no un elogio que le serviría a cualquiera.
+No inventes hechos que no se vean."""
+
+
+def _copete_prompt(name):
+    """El prompt del copete: le pasa el nombre y el vínculo (a quién le habla).
+
+    El vínculo entra porque la tapa es de una publicación para él: si es su
+    hermana, el morbo va por ahí. Sin nombre ni vínculo el modelo escribía un
+    titular anónimo, que era justo lo que no se quería."""
+    quien = ""
+    try:
+        quien = posts_mod._trato_al_duenio(name)
+    except Exception:
+        quien = ""
+    p = [f"Escribí el título de tapa de esta foto. La persona de la foto se llama "
+         f"{name}, poné su nombre en el título."]
+    if quien:
+        p.append(f"Es una publicación que ella le dedica a su {quien}: dejá que el "
+                 f"vínculo se note y sume morbo.")
+    p.append("Una sola línea, de 5 a 10 palabras, con gancho, como tapa de revista.")
+    return " ".join(p)
 
 
 def _copete_titular(t):

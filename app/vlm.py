@@ -112,15 +112,20 @@ SOS VOS quien habla, en PRIMERA PERSONA. Nunca describas la foto desde afuera ni
 hables de vos en tercera persona: nada de "en la foto se ve", "una chica que...",
 "ella está". Si no podés decirlo con "estoy/tengo/me", está mal.
 
-Lo más importante: el que lee YA ESTÁ VIENDO LA FOTO. No se la describas —eso lo
-ve solo—. SITUALA: dónde estás y qué estás haciendo. Nada más.
+LE HABLÁS A ÉL, el que está mirando la foto (el nombre o el parentesco te lo digo
+abajo): arrancás dirigiéndote a él. El "vos/te/tu" de este pie es SIEMPRE para él,
+nunca para vos misma.
 
-LA ACCIÓN es lo que importa. Si estás haciendo algo (comiendo, tomando sol,
-manejando, cocinando), ESO es el pie. Si no estás haciendo nada, como en una
-selfie donde solo posás, NO le inventes una acción: decís dónde estás, corto, y
-listo. Es mejor un pie de cinco palabras que uno inventado.
+NO RESUMAS LA FOTO: el que lee YA LA VE — tu cuerpo, la ropa, el lugar. Repetir
+eso no suma nada. El pie dice lo que la foto NO: tu ánimo, la situación, el clima,
+el motivo por el que la subís hoy ("me levanté con ganas", "qué calor que hace",
+"me puse esto para la cena"). Ese contexto es el pie, y tiene que cerrar con la
+foto: si es una playa, hace calor; no inventes una cena de Navidad en la playa.
 
-Una o dos frases. Corto. Un párrafo, nunca listas ni títulos ni markdown.
+SIGUE SIENDO RED SOCIAL: suena a lo que escribirías subiendo la foto, natural y
+corto, no un párrafo literario ni un inventario.
+
+Tres o cuatro frases. Un párrafo, nunca listas ni títulos ni markdown.
 
 Crudo y directo: las cosas por su nombre, sin eufemismos ni vueltas.
  """ + VOSEO_REGLA + """
@@ -132,7 +137,7 @@ Si hay alguien más y te digo quién es, nombralo; si no te lo dije, no lo adivi
 NADA DE POESÍA. Prohibido: metáforas, "el silencio de la tarde", comparar algo
 con otra cosa, adornar. Si te digo qué hay confirmado en la foto (etiquetas),
 ESO es la verdad de lo que pasa: contalo literal, directo, sin darle vuelta
-poética ni inventar un clima que no te dijeron.
+poética.
 
 Nunca cerrás con moraleja ni con resumen, ni ofrecés ayuda, ni te disculpás."""
 
@@ -206,7 +211,7 @@ PROMPT_IS_SPANISH = True
 
 
 def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiquetas=(),
-                    system="narrador"):
+                    system="narrador", trato=""):
     """El prompt del pie. Corto a propósito: el estilo va en SYSTEM_PIE.
     
     Sabemos de quién es la foto porque está en su carpeta, así que el pie lo
@@ -214,7 +219,9 @@ def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiqueta
     (se configura en su perfil); vacío = la voz genérica. `con` son los otros
     conocidos que el reconocimiento facial encontró en la foto: así el pie puede
     decir "comiendo con Alberto" en vez de "comiendo con alguien". `crudeza` es
-    la perilla de Ajustes (ver posts.CRUDENESS).
+    la perilla de Ajustes (ver posts.CRUDENESS). `trato` es la orden de a quién le
+    habla y cómo llamarlo (el vínculo: "hermano", "tío"; ver posts._regla_trato):
+    sin esto el pie mira la foto y no le habla a nadie.
     
     `system`: qué style le pedís que use. "narrador" (el default, que adivina),
     "explicito" (el que te pone "tetas al aire", "culito roto"...)."""
@@ -231,6 +238,9 @@ def caption_prompt(quien=None, voz="", con=(), crudeza="", quien_es="", etiqueta
         p.append(quien_es)
     if voz:
         p.append(f"Así hablás vos: {voz}")
+    if trato:
+        # el vínculo: el pie de una red social erótica le habla a ÉL siempre
+        p.append(trato)
     if con:
         quienes = " y ".join(con) if len(con) < 3 else ", ".join(con[:-1]) + f" y {con[-1]}"
         p.append(f"En la foto estás con {quienes}. Nombralo si viene al caso.")

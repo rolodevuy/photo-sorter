@@ -70,6 +70,8 @@ La **Visión** (paso 1) se guarda en dos partes: la **narración** (el texto red
 
 El botón **"Escribir los posts de todas sus fotos"** corre un lote de fondo (podés cerrar la página) que saltea lo ya hecho y retoma. Podés elegir qué generar: pie, comentarios, **visión** (lenta: ~2,5 min por foto), **copete**, o cualquier combinación.
 
+El **pie** es una publicación de red social erótica: no resume la foto (el que mira ya la ve), sino que suma lo que la foto no dice —ánimo, situación, clima, motivo— y **siempre le habla a él** (el que mira), arrancando por el vínculo ("hermano, mirá lo que me puse para la cena"). El vínculo sale del perfil y se da vuelta con la tabla recíproca. El **copete** es un título de tapa de revista, con el nombre y el vínculo adentro, y en clave erótica cuando la foto da ("10 formas de mantenerse con Paula", "Cómo tomar birra con Acro"). Los dos respetan la compuerta de edad: si la persona es `sano`, nada sexual.
+
 ## Portada premium (Inicio)
 
 La pestaña **"Inicio"** (ruta `/inicio`) es una tapa editorial armada **solo con datos reales** de la app: nada de fechas, lugares ni colecciones inventados.
