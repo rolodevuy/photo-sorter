@@ -292,9 +292,9 @@ def nombre_para_narrar(nombres, duenio):
     (es su foto): se la nombra a ella y se dice que hay más gente, sin arriesgar
     quién es quién.
 
-    El nombre que devuelve es el de MOSTRAR (person_meta: el nombre "lindo" si lo
-    cargaste, si no la carpeta), no el de la carpeta: así la narración dice
-    "Nombre Apellido camina" y no "acro camina"."""
+    Se narra con los ALIAS si los hay (el usuario los carga para que la IA use
+    esos, no el nombre "lindo" ni la carpeta). Si no hay ninguno, cae al nombre
+    de mostrar y, en última instancia, a la carpeta."""
     if not nombres:
         return ""
     elegido = nombres[0] if len(nombres) == 1 else (duenio if duenio in nombres else "")
@@ -302,6 +302,9 @@ def nombre_para_narrar(nombres, duenio):
         return ""
     try:
         from app import person_meta
+        alias = person_meta.get_alias(elegido)
+        if alias:
+            return alias[0]
         return person_meta.nombre_para_texto(elegido)
     except Exception:
         return elegido
