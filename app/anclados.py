@@ -143,26 +143,41 @@ def _partes(image_path):
     return vistas
 
 
-def _quienes(image_path, duenio):
+def _quienes(image_path, duenio, rel=""):
     """Los nombres reconocidos por cara, con la dueña de la carpeta primero.
 
     El reconocimiento es cara por cara y exige margen contra el segundo
     candidato (ver finder.who_is_in): si duda entre dos personas no nombra
     ninguna, que es lo correcto para algo que se guarda como dato de la foto.
 
-    Devuelve (otros, ok, duenio_en_foto). `duenio_en_foto` es True solo si la
-    CARA de la dueña se reconoció de verdad (ver faces_in) — no si se asumió por
-    estar la foto en su carpeta. Sirve para el sujeto del acto: "chupando" es una
-    categoría sin sujeto, y con la cara reconocida se puede afirmar de quién es.
-    """
+    Devuelve (otros, ok, duenio_en_foto). `duenio_en_foto` es True si la dueña
+    está en la foto por CUALQUIERA de estas señales:
+      - su CARA se reconoció de verdad (finder.faces_in), o
+      - el usuario MARCÓ su cara a mano en el visor (posts.nombres_marcados), que
+        es una confirmación explícita y no depende de que esté entrenada, o
+      - no hay ninguna OTRA persona identificada en la foto (ni reconocida ni
+        marcada): si el acto es de a dos y la única persona conocida es ella, es
+        ella. Si marcaste/etiquetaste a otra, no se le atribuye el acto a ella.
+
+    Sirve para el sujeto del acto: "chupando" es una categoría sin sujeto, y con
+    esto se puede afirmar de quién es."""
     try:
         from app import finder
         caras = finder.faces_in(str(image_path))
     except Exception:
-        return [], False, False
+        caras = []
     nombres = [c["name"] for c in caras]
-    otros = [n for n in nombres if n != duenio]
-    return otros, True, duenio in nombres
+    # Las caras a mano (etiquetado del usuario): señal fuerte y barata.
+    try:
+        from app import posts as _posts
+        marcadas = _posts.nombres_marcados(duenio, rel) if rel else []
+    except Exception:
+        marcadas = []
+    todas = list(nombres) + [m for m in marcadas if m not in nombres]
+    otros = [n for n in todas if n != duenio]
+    # Reconocida O marcada a mano O sin nadie más identificado en la foto.
+    duenio_en_foto = (duenio in todas) or (not otros)
+    return otros, bool(caras) or bool(marcadas) or not otros, duenio_en_foto
 
 
 def _vinculo_linea(tags, duenio):
@@ -218,7 +233,7 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True, tags=None):
     image_path = Path(image_path)
     acto = _acto(image_path, es_nsfw, sano)
     partes = _partes(image_path)
-    otros, ok, duenio_en_foto = _quienes(image_path, duenio)
+    otros, ok, duenio_en_foto = _quienes(image_path, duenio, rel=rel)
 
     lineas = []
     # El acto NO va como un dato neutro ("Acto detectado: chupando"): el
@@ -228,9 +243,9 @@ def anclados(image_path, duenio, rel="", es_nsfw=False, sano=True, tags=None):
     # deseo del narrador. "sola" no arma escena: no hay acto con otro.
     #
     # EL SUJETO: la categoría viene sin sujeto ("chupando" no dice de quién). Si
-    # la cara reconocida ES la dueña (duenio_en_foto, de faces_in: reconocida de
-    # verdad, no asumida por carpeta), se puede afirmar de quién es el acto. Antes
-    # el modelo no lo sabía y escribía "chupando" a secas; ahora dice de quién.
+    # duenio_en_foto (cara reconocida, o marcada a mano, o sin nadie más en la
+    # foto: ver _quienes), se puede afirmar de quién es el acto. Antes el modelo
+    # no lo sabía y escribía "chupando" a secas; ahora dice de quién.
     escena = _ACTO_ESCENA.get(acto or "", "")
     if acto and escena and duenio_en_foto:
         escena = "%s es quien lo hace: %s" % (duenio, escena)

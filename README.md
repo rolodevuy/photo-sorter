@@ -62,9 +62,13 @@ Todos los generadores (pie, comentarios, etiquetas, **visión** y **copete/títu
 | Pie y comentarios (texto) | `leeplenty/lumimaid-v0.2:12b` (`pie_model`/`comentarios_model`) | Ajustes |
 | Texto por defecto | `huihui_ai/qwen3.5-abliterated:9b` (`post_model`, default `:4b` en vlm.py) | Ajustes |
 
-Detalles en [SETUP.md](SETUP.md#3-ia-local-ollama-modelos-de-visión-y-texto): `KEEP_ALIVE=-1` (modelo residente en VRAM), `OLLAMA_MAX_LOADED_MODELS=1`, **cola de trabajos en disco** (`app/cola.py` → `data/cola.json`) que procesa de a una tarea por vez sobre todas las fotos para cargar cada modelo una sola vez; aguanta un corte de luz y retoma.
+Detalles en [SETUP.md](SETUP.md#3-ia-local-ollama-modelos-de-visión-y-texto): `KEEP_ALIVE=-1` (modelo residente en VRAM), `OLLAMA_MAX_LOADED_MODELS=1`. (Existe una **cola de trabajos en disco** pensada para procesar una tarea por vez sobre todas las fotos —`app/cola.py`, `data/cola.json`— que aguanta un corte de luz y retoma; está escrita pero todavía **sin enganchar** a la web: ver "features a medio hacer" más abajo.)
 
 El **visor de persona** (`/person/<nombre>`) es la pieza central de contenido: cada foto tiene su pie, comentarios, etiquetas y favoritos, con un **Centro de IA** (🔮) que escribe la visión de la foto, las etiquetas sugeridas, el pie y los comentarios con el modelo elegido. En la pestaña **Pies** armás **moldes** (sin IA, instantáneos, en rioplatense y primera persona) que se disparan cuando la foto tiene todas sus etiquetas; las que no tienen molde caen al modelo lento.
+
+La **Visión** (paso 1) se guarda en dos partes: la **narración** (el texto redactado) y los **hechos** (lo que el VLM vio, técnico, antes de redactar), que se ven en un desplegable "👁 Lo que ve la IA" dentro del propio paso. El **sujeto del acto** —decir que ELLA es quien hace el acto— se afirma cuando su cara se reconoció por reconocimiento facial, o cuando **marcaste su cara a mano** en el visor, o cuando no hay ninguna otra persona identificada en la foto; si marcaste a otra, no se le atribuye.
+
+El botón **"Escribir los posts de todas sus fotos"** corre un lote de fondo (podés cerrar la página) que saltea lo ya hecho y retoma. Podés elegir qué generar: pie, comentarios, **visión** (lenta: ~2,5 min por foto), **copete**, o cualquier combinación.
 
 ## Portada premium (Inicio)
 

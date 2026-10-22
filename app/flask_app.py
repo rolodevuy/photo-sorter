@@ -3642,6 +3642,10 @@ PERSON_TEMPLATE = """
                   <option value="pie">Solo el pie</option>
                   <option value="comentarios">Solo los comentarios</option>
                   <option value="ambos">Pie y comentarios</option>
+                  <option value="vision">Solo la visión (🔎, lenta)</option>
+                  <option value="copete">Solo el copete (📰)</option>
+                  <option value="vision+copete">Visión y copete</option>
+                  <option value="pie+comentarios+vision+copete">Todo (lento: visión incluida)</option>
                 </select>
                 <button class="primary" onclick="return confirm('Van ' + document.getElementById('lote-falta').textContent + ' de laburo. ¿Arranco?')">▶ Arrancar</button>
               </div>
@@ -3933,7 +3937,9 @@ refreshAllPhotoTags();
 // El estimado ANTES de arrancar sale de medidas reales: ~90s el pie, ~60s los
 // comentarios. Con 1500 fotos eso da más de 37 horas, y es justo lo que hay que
 // saber antes de darle a Arrancar y no después.
-const SEGS_POR = {pie: 90, comentarios: 60, ambos: 150};
+const SEGS_POR = {"pie": 90, "comentarios": 60, "ambos": 150,
+  "vision": 150, "copete": 20, "vision+copete": 170,
+  "pie+comentarios+vision+copete": 300};
 const SIN_POST = {{ n_sin_post|tojson }};
 function humano(s) {
   if (s < 90) return Math.round(s) + ' s';
@@ -3944,7 +3950,9 @@ function humano(s) {
 function loteEta() {
   const sel = document.getElementById('lote-que');
   const el = document.getElementById('lote-falta');
-  if (sel && el) el.textContent = '~' + humano(SIN_POST * SEGS_POR[sel.value]);
+  if (!sel || !el) return;
+  const segs = SEGS_POR[sel.value];
+  el.textContent = segs ? '~' + humano(SIN_POST * segs) : '…';
 }
 function loteStop() {
   document.getElementById('lote-stop').disabled = true;
@@ -6377,8 +6385,49 @@ def _photo_path(name, rel):
     return p if p and p.is_file() else None
 
 
+def _generar_vision(name, rel, path, cfg, model=None, perfil_tags=None):
+    """Genera y guarda la visión + los hechos de UNA foto. Devuelve el texto.
+
+    Lo comparten la ruta del Centro de IA y el lote: la lógica tiene que ser la
+    MISMA en los dos (si no, el lote escribiría algo distinto al botón ✨)."""
+    ident = posts_mod.identidad_foto(name, rel)
+    es_nsfw = NSFW_DIR_NAME in Path(rel).parts
+    if perfil_tags is None:
+        try:
+            perfil_tags = tags_mod.get_person(name)
+        except Exception:
+            perfil_tags = []
+    partes = vision2.narrar_con_hechos(
+        path, name, rel=rel, es_nsfw=es_nsfw, sano=ident["sano"],
+        tags=perfil_tags,
+        model_mira=model or cfg.get("post_model") or None,
+        model_redactor=cfg.get("vision_redactor") or None)
+    texto = (partes or {}).get("narracion") or ""
+    if not texto:
+        return ""
+    posts_mod.set_vision(name, rel, texto)
+    posts_mod.set_hechos(name, rel, (partes or {}).get("hechos") or "")
+    return texto
+
+
+def _generar_copete(name, rel, path, cfg, model=None):
+    """Genera y guarda el copete de UNA foto. Devuelve el texto.
+
+    Igual que _generar_vision: la ruta y el lote comparten esta lógica."""
+    texto = vlm.describe(
+        str(path), model=model or cfg.get("copete_model") or COPETE_MODEL,
+        prompt=COPETE_PROMPT, system=COPETE_SYSTEM,
+        num_predict=60, temperature=0.9)
+    texto = _copete_titular(texto)
+    return copetes_mod.set_copete(name, rel, texto)
+
+
 def _posts_worker(name, rels, que, cfg):
-    """Escribe el pie y/o los comentarios de muchas fotos, de a una.
+    """Escribe lo que pida `que` en muchas fotos, de a una.
+
+    `que` es una de: "pie", "comentarios", "ambos", "vision", "copete" (los dos
+    últimos también se pueden combinar, p.ej. "vision+copete" o
+    "pie+comentarios+vision+copete": se parte por "+").
 
     De a UNA a propósito: Ollama corre en el mismo CPU, así que mandarle dos
     juntas no acelera nada, solo hace que tarden las dos.
@@ -6389,6 +6438,22 @@ def _posts_worker(name, rels, que, cfg):
     modelo = cfg.get("post_model") or None
     crudeza = cfg.get("crudeness", posts_mod.CRUDENESS_DEFAULT)
     dim = bool(cfg.get("diminutivos"))
+    tareas = {t.strip() for t in (que or "").split("+") if t.strip()}
+
+    def pide(*nombres):
+        return any(n in tareas for n in nombres)
+
+    # el vínculo del perfil se lee UNA vez (no por foto): de ahí sale el tono
+    try:
+        perfil_tags = tags_mod.get_person(name)
+    except Exception:
+        perfil_tags = []
+    # los copetes ya guardados, para saber cuáles faltan sin releer por foto
+    try:
+        copetes_ya = copetes_mod.por_persona(name)
+    except Exception:
+        copetes_ya = {}
+
     for i, rel in enumerate(rels, 1):
         if POSTS_STATE["stop"]:
             break
@@ -6398,14 +6463,23 @@ def _posts_worker(name, rels, que, cfg):
             POSTS_STATE["salteadas"] += 1
             continue
         ya = posts_mod.get(name, rel)
-        falta_pie = que in ("pie", "ambos") and not ya["caption"]
-        falta_com = que in ("comentarios", "ambos") and not ya["comments"]
-        if not falta_pie and not falta_com:
+        falta_pie = pide("pie", "ambos") and not ya["caption"]
+        falta_com = pide("comentarios", "ambos") and not ya["comments"]
+        falta_vision = pide("vision") and not ya["vision"]
+        falta_copete = pide("copete") and not copetes_ya.get(rel)
+        if not (falta_pie or falta_com or falta_vision or falta_copete):
             POSTS_STATE["salteadas"] += 1
             continue
         t0 = time.time()
         try:
-            # el pie primero: si van los dos, los comentarios lo leen y le contestan
+            # La VISIÓN va primero: es el insumo de todo lo demás (el pie la lee
+            # cuando existe). Después el pie, y los comentarios al final, que leen
+            # el pie y le contestan. El copete es independiente: mira la foto.
+            if falta_vision:
+                vis = _generar_vision(name, rel, str(path), cfg, model=modelo,
+                                      perfil_tags=perfil_tags)
+                POSTS_STATE["ultimos"] = ([f"{rel}: 🔎 {vis}"]
+                                          + POSTS_STATE["ultimos"])[:5]
             if falta_pie:
                 pie = posts_mod.generate_caption(name, rel, str(path), model=modelo,
                                                  crudeness=crudeza, diminutivos=dim)
@@ -6421,6 +6495,11 @@ def _posts_worker(name, rels, que, cfg):
                 if not falta_pie and coms:      # solo comentarios: mostrar uno
                     POSTS_STATE["ultimos"] = ([f"{rel}: 💬 {coms[0]['text']}"]
                                               + POSTS_STATE["ultimos"])[:5]
+            if falta_copete:
+                cop = _generar_copete(name, rel, str(path), cfg, model=modelo)
+                copetes_ya[rel] = cop       # para que el próximo chequeo lo vea
+                POSTS_STATE["ultimos"] = ([f"{rel}: 📰 {cop}"]
+                                          + POSTS_STATE["ultimos"])[:5]
             POSTS_STATE["hechas"] += 1
             # los tiempos reales de las últimas 20: con eso se estima lo que falta
             POSTS_STATE["segundos"] = (POSTS_STATE["segundos"] + [time.time() - t0])[-20:]
@@ -6648,15 +6727,10 @@ def post_copete(name):
         return {"ok": False, "error": "Esa foto ya no está."}
     cfg = load_config()
     try:
-        texto = vlm.describe(
-            str(path),
-            model=request.form.get("model") or cfg.get("copete_model") or COPETE_MODEL,
-            prompt=COPETE_PROMPT, system=COPETE_SYSTEM,
-            num_predict=60, temperature=0.9)
+        texto = _generar_copete(name, rel, str(path), cfg,
+                                model=request.form.get("model") or None)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    texto = _copete_titular(texto)
-    texto = copetes_mod.set_copete(name, rel, texto)
     return {"ok": True, "copete": texto}
 
 
@@ -6686,31 +6760,17 @@ def post_vision(name):
     if not path:
         return {"ok": False, "error": "Esa foto ya no está."}
     cfg = load_config()
-    ident = posts_mod.identidad_foto(name, rel)
-    es_nsfw = NSFW_DIR_NAME in Path(rel).parts
-    # Las etiquetas del PERFIL (no las de la foto): de ahí sale el vínculo
-    # (prima, ex, amiga). `ident` solo dice si es adulto; el vínculo es otra cosa,
-    # y sin él el narrador trataba a una ex como a una desconocida.
     try:
-        perfil_tags = tags_mod.get_person(name)
-    except Exception:
-        perfil_tags = []
-    try:
-        partes = vision2.narrar_con_hechos(
-            path, name, rel=rel, es_nsfw=es_nsfw, sano=ident["sano"],
-            tags=perfil_tags,
-            model_mira=request.form.get("model") or cfg.get("post_model") or None,
-            model_redactor=cfg.get("vision_redactor") or None)
+        texto = _generar_vision(name, rel, str(path), cfg,
+                                model=request.form.get("model") or None)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    texto = partes["narracion"]
     if not texto:
         return {"ok": False, "error": "El modelo no devolvió texto."}
-    texto = posts_mod.set_vision(name, rel, texto)
-    # Los hechos del paso 1 van aparte (campo "hechos"): es el texto técnico que
-    # el usuario quiere poder leer sin que se mezcle con la narración.
-    hechos = posts_mod.set_hechos(name, rel, partes["hechos"])
-    return {"ok": True, "vision": texto, "hechos": hechos}
+    # Los hechos del paso 1 se guardan aparte (dentro de _generar_vision): es el
+    # texto técnico que el usuario quiere leer sin que se mezcle con la narración.
+    return {"ok": True, "vision": texto,
+            "hechos": posts_mod.get(name, rel).get("hechos")}
 
 
 @app.route("/post/<name>/fav", methods=["POST"])

@@ -1452,6 +1452,29 @@ def quien_es_pie(ident):
     return quien.strip()
 
 
+def nombres_marcados(name, rel):
+    """Los nombres de las caras que el usuario marcó A MANO en la foto, sin repetir.
+
+    Es la señal más fuerte que hay de "quién está en la foto": el reconocimiento
+    biométrico (finder.faces_in) exige que la persona esté entrenada en la base y
+    casi nunca matchea (medido: acro_0015 tiene cara y no se reconoce), mientras
+    que marcar la cara en el visor es una confirmación EXPLÍCITA del usuario. Lo
+    usa el sujeto del acto (ver anclados._quienes) para saber si la dueña es la
+    que hace el acto, sin depender del biométrico.
+
+    Devuelve [] si la foto no tiene caras marcadas."""
+    try:
+        caras = get(name, rel).get("faces") or []
+    except Exception:
+        return []
+    quien = []
+    for f in caras:
+        n = str(f.get("name") or "").strip()
+        if n and n not in quien:
+            quien.append(n)
+    return quien
+
+
 def caras_para_prompt(name, rel):
     """Las caras etiquetadas a mano, en texto, para meter en el prompt.
 
@@ -1466,17 +1489,7 @@ def caras_para_prompt(name, rel):
     el modelo convertiría en "en el centro de la imagen, a la izquierda".
 
     Devuelve "" si la foto no tiene caras marcadas (el caso de siempre)."""
-    try:
-        caras = get(name, rel).get("faces") or []
-    except Exception:
-        return ""
-    if not caras:
-        return ""
-    quien = []
-    for f in caras:
-        n = str(f.get("name") or "").strip()
-        if n and n not in quien:
-            quien.append(n)
+    quien = nombres_marcados(name, rel)
     if not quien:
         return ""
     due = name in quien
