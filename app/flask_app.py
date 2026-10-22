@@ -595,34 +595,48 @@ BASE_CSS = """
   .stage-fab-l { left:14px; }
   .stage-fab-r { right:14px; }
   .stage-fab-bl { left:14px; top:auto; bottom:14px; }   /* "No es X" abajo-izquierda */
-  .stage-fab-2 { right:14px; top:54px; }                /* "🏷️ Caras", debajo de Personas */
   /* --- caras etiquetadas a mano (cuadro + nombre, estilo FB) --- */
-  /* La capa va encima de la foto y NO intercepta el mouse: así el zoom y el
-     arrastre siguen andando igual. Cada cuadro se prende solo (pointer-events)
-     cuando ya estás en modo "etiquetar", para poder tocarlo y renombrarlo. */
-  #lb .fbox-layer { position:absolute; inset:0; z-index:3; pointer-events:none;
+  /* La capa NO intercepta el mouse: el zoom y el arrastre siguen igual, y el
+     lienzo de dibujo (que va arriba) recibe TODOS los gestos. Por eso nunca se
+     "traba" el marcar: si un cuadro se comiera el clic, dibujar encima de una
+     cara ya marcada sería imposible (ese era el bug).
+     Para editar o sacar un cuadro está el × del nombre, que sí es clickeable. */
+  #lb .fbox-layer { position:absolute; inset:0; z-index:5; pointer-events:none;
     overflow:hidden; }
-  /* en modo edición la capa va ARRIBA del lienzo de dibujo: así los cuadros que
-     ya existen se pueden tocar para renombrar/sacar. Se sube solo la capa; los
-     botones (.stage-fab) están aún más arriba y no quedan tapados. */
-  #lb .fbox-layer.edit { z-index:5; }
   #lb .fbox { position:absolute; box-sizing:border-box; border:2px solid #4da3ff;
-    border-radius:4px; pointer-events:none; transition:border-color .12s; }
+    border-radius:4px; pointer-events:none; }
   #lb .fbox .fname { position:absolute; left:-2px; bottom:100%; margin-bottom:2px;
     background:#4da3ff; color:#04101f; font-size:.72rem; font-weight:700;
     padding:1px 6px; border-radius:4px; white-space:nowrap; max-width:160px;
     overflow:hidden; text-overflow:ellipsis; }
-  #lb .fbox-layer.edit .fbox { pointer-events:auto; cursor:pointer; }
-  #lb .fbox-layer.edit .fbox:hover { border-color:#ffd35c; }
-  #lb .fbox.sel { border-color:#ffd35c; }
-  /* el lienzo donde se dibuja el cuadro nuevo. z-index MENOR que los botones
-     (.stage-fab es 4): si no, el lienzo tapa el botón "Caras" y no podés apagar
-     el modo. El cuadro se dibuja igual porque la capa llega hasta abajo. */
-  #lb .fdraw { position:absolute; inset:0; z-index:4; cursor:crosshair;
+  /* × para sacar el cuadro: lo ÚNICO de la capa que recibe el mouse, y solo en
+     modo marcar (fuera del modo, la foto se mira limpia) */
+  #lb .fbox .fx { position:absolute; right:-8px; top:-8px; width:16px; height:16px;
+    border-radius:50%; background:#d6564e; color:#fff; font-size:.68rem;
+    line-height:16px; text-align:center; cursor:pointer; display:none; }
+  #lb .fdraw.on ~ .fbox-layer .fbox .fx { display:block; }
+  #lb .fbox-layer.on .fbox .fx, #lb .fdraw.on ~ .fbox-layer.on .fbox .fx {
+    pointer-events:auto; display:block; }
+  /* el lienzo de dibujo va ARRIBA de los cuadros: así dibujar siempre entra,
+     aunque caigas sobre un cuadro ya puesto. Los botones (.stage-fab z-index 6)
+     quedan por encima para poder apagar el modo. */
+  #lb .fdraw { position:absolute; inset:0; z-index:5; cursor:crosshair;
     display:none; }
   #lb .fdraw.on { display:block; }
   #lb .fdraw .fghost { position:absolute; box-sizing:border-box; border:2px dashed #ffd35c;
     background:rgba(255,211,92,.12); display:none; }
+  /* el menú de nombres que sale al soltar el cuadro, pegado a la cara */
+  #lb .fpop { position:absolute; z-index:7; background:var(--panel2);
+    border:1px solid var(--bd); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.55);
+    padding:6px; min-width:190px; max-height:240px; overflow-y:auto; }
+  #lb .fpop .fp-item { display:flex; align-items:center; gap:.5rem; padding:.32rem .45rem;
+    border-radius:7px; cursor:pointer; white-space:nowrap; }
+  #lb .fpop .fp-item:hover { background:#2b3444; }
+  #lb .fpop .fp-item img { width:26px; height:26px; border-radius:50%; object-fit:cover;
+    background:var(--bg); flex:none; }
+  #lb .fpop .fp-item.noimg { color:var(--mut); }
+  #lb .fpop .fp-sep { height:1px; background:var(--line); margin:4px 2px; }
+  #lb .fpop .fp-tit { font-size:.7rem; color:var(--mut); padding:.2rem .45rem; }
   .lb-tagprev { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; margin-bottom:.35rem; }
   .chip.mini { font-size:.72rem; padding:.12rem .45rem; }
   /* modal de "etiquetar persona" */
@@ -4158,10 +4172,10 @@ POST_LIGHTBOX = """
              style="display:none; max-width:100%; max-height:100%; outline:none"></video>
       <button class="secondary sm stage-fab stage-fab-l" onclick="lbCover(this)"
               title="Usar esta foto como portada de la galería">🖼 Portada</button>
-      <button class="secondary sm stage-fab stage-fab-r" onclick="openPeopleModal()"
-              title="Etiquetar quién más está en la foto">👥 Personas ▾</button>
-      <!-- marcar caras con cuadro: dibuja encima de la foto y le pone el nombre -->
-      <button class="secondary sm stage-fab stage-fab-2" id="lb-face-btn"
+      <!-- marcar caras con cuadro: dibuja encima de la foto y le pone el nombre.
+           Reemplaza al viejo "👥 Personas": ahora la lista de quién más está en la
+           foto se arma SOLA con los cuadros que no son la dueña. -->
+      <button class="secondary sm stage-fab stage-fab-r" id="lb-face-btn"
               onclick="toggleFaceMode()"
               title="Marcar las caras con un cuadro y un nombre (así la IA sabe a quién describir)">🏷️ Caras</button>
       <!-- caras etiquetadas a mano: el cuadro con el nombre, encima de la foto -->
@@ -4211,13 +4225,10 @@ POST_LIGHTBOX = """
                     placeholder="escribilo a tu manera… (Ctrl+Enter para guardar)"></textarea>
         </div>
 
-        <!-- personas etiquetadas: solo aparece si hay alguien (se agrega con el
-             botón "👥 Personas" de arriba de la foto) -->
+        <!-- quién más está en la foto: sale SOLO de los cuadros marcados con
+             🏷️ Caras (los que no son la dueña). Ya no se agrega a mano con @. -->
         <div class="ppeople" id="lb-people-box" style="display:none">
-          <div class="chips" id="lb-people">
-            <input class="taginput" id="lb-people-in" list="knownlist" autocomplete="off"
-                   placeholder="@ agregar a otra persona…">
-          </div>
+          <div class="chips" id="lb-people"></div>
         </div>
 
         <div class="pcoms pcard-sub">
@@ -4266,35 +4277,25 @@ POST_LIGHTBOX = """
       </div>
     </aside>
   </div>
-  <div id="lb-people-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) closePeopleModal()">
+  <!-- modal: ¿de quién es la cara que acabás de marcar? -->
+  <!-- La lista de personas con avatar ya la trae window.KNOWN: se elige de un
+       clic, no hace falta tipear. Arriba va el atajo de la DUEÑA (que no está en
+       la base de conocidos) y abajo "Otra persona" para alguien que no esté. -->
+  <div id="lb-face-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cerrarFaceModal()">
     <div class="modal-box">
       <div class="row" style="justify-content:space-between;margin:0">
-        <b>🏷️ Etiquetar persona</b>
-        <button class="secondary sm" onclick="closePeopleModal()" title="Cerrar">✕</button>
-      </div>
-      <input class="path" id="pmodal-search" placeholder="🔍 Buscar por nombre…" autocomplete="off"
-             oninput="pmodalFilter()" style="width:100%;margin:.5rem 0">
-      <div id="pmodal-list" class="pmodal-list"></div>
-    </div>
-  </div>
-
-  <!-- modal: ¿de quién es la cara que acabás de marcar? -->
-  <div id="lb-face-modal" class="modal-ov" style="display:none" onclick="if(event.target===this) cerrarFaceModal()">
-    <div class="modal-box" style="width:340px">
-      <div class="row" style="justify-content:space-between;margin:0 0 .4rem">
         <b>🏷️ ¿Quién es esta cara?</b>
         <button class="secondary sm" onclick="cerrarFaceModal()" title="Cerrar">✕</button>
       </div>
-      <p class="meta" style="margin:.1rem 0 .5rem">Poné el nombre tal cual ({{ name }} si es ella).
-         Así la IA sabe a quién describir y no le atribuye la ropa de otra persona.</p>
-      <input class="path" id="fmodal-name" list="knownlist" autocomplete="off"
-             placeholder="nombre…" style="width:100%"
-             onkeydown="if(event.key==='Enter'){event.preventDefault();guardarFaceModal();}">
-      <div class="row" style="margin-top:.5rem;justify-content:flex-end">
-        <button class="secondary" onclick="borrarFaceModal()">🗑 Quitar el cuadro</button>
-        <button class="primary" onclick="guardarFaceModal()">Guardar</button>
+      <p class="meta" style="margin:.3rem 0 .4rem">Elegí de la lista. Así la IA sabe a
+         quién describir y no le atribuye la ropa de otra persona.</p>
+      <input class="path" id="fmodal-search" placeholder="🔍 Buscar por nombre…"
+             autocomplete="off" oninput="fmodalFilter()" style="width:100%;margin:0 0 .4rem">
+      <div id="fmodal-list" class="pmodal-list"></div>
+      <div class="row" style="margin-top:.5rem;justify-content:space-between;align-items:center">
+        <button class="secondary sm" onclick="borrarFaceModal()" title="Sacar este cuadro">🗑 Quitar cuadro</button>
+        <span class="meta" id="fmodal-st"></span>
       </div>
-      <span class="meta" id="fmodal-st"></span>
     </div>
   </div>
 
@@ -4494,7 +4495,6 @@ POST_LIGHTBOX = """
   const COMX_URL = "{{ url_for('post_comments_clear', name=name) }}";
   const SUG_URL = "{{ url_for('tags_suggest', name=name) }}";
   const SUG_STREAM_URL = "{{ url_for('tags_suggest_stream', name=name) }}";
-  const PEOPLE_URL = "{{ url_for('post_people', name=name) }}";
   const FACES_URL = "{{ url_for('post_faces', name=name) }}";
   const COMBO_URL = "{{ url_for('moldes_combo') }}";
   const IMPORT_URL = "{{ url_for('moldes_import') }}";
@@ -4662,20 +4662,18 @@ POST_LIGHTBOX = """
   }
   window.toggleFav = toggleFav;
 
-  // --- personas en la foto (@) ---
-  function people() { return (slot(rel()).people || []).slice(); }
-  function savePeople(lista) {
-    const r = rel();
-    slot(r).people = lista;
-    post_(PEOPLE_URL, {rel: r, people: lista.join(',')}).then(d => {
-      if (d.ok) { slot(r).people = d.people; renderPeople(); }
-    });
+  // --- quién más está en la foto: se DERIVA de las caras marcadas ---
+  // Antes se agregaba a mano con @ (botón "Personas"). Ahora hay una sola
+  // fuente de verdad: los cuadros de 🏷️ Caras. `people` = los nombres marcados
+  // que NO son la dueña. Así el pie y la Visión no se contradicen.
+  function people() {
+    return (slot(rel()).faces || [])
+      .map(f => f.name).filter(n => n && n !== PERSON)
+      .filter((n, i, a) => a.indexOf(n) === i);   // sin repetidos
   }
   function renderPeople() {
-    const box = $('lb-people'), input = $('lb-people-in');
+    const box = $('lb-people');
     const gente = people();
-    // la sección solo aparece si hay alguien etiquetado (se agrega con el botón
-    // "👥 Personas" de arriba de la foto)
     $('lb-people-box').style.display = gente.length ? '' : 'none';
     box.querySelectorAll('.chip').forEach(c => c.remove());
     gente.forEach(p => {
@@ -4684,65 +4682,10 @@ POST_LIGHTBOX = """
       // el nombre es un link: filtra la galería a las fotos donde también está
       const url = '{{ url_for("person_page", name=name) }}?con=' + encodeURIComponent(p);
       c.innerHTML = '<a href="' + url + '" title="Ver las fotos donde también está ' +
-        esc(p) + '" style="color:inherit">@' + esc(p) + '</a> <span class="x">×</span>';
-      c.querySelector('.x').onclick = () => savePeople(people().filter(x => x !== p));
-      box.insertBefore(c, input);
+        esc(p) + '" style="color:inherit">@' + esc(p) + '</a>';
+      box.appendChild(c);
     });
   }
-  $('lb-people-in').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const v = e.target.value.trim().replace(/^@/, '');
-      // solo si existe en la base y no está ya puesto
-      if (v && window.KNOWN.includes(v) && v !== PERSON && !people().includes(v))
-        savePeople(people().concat([v]));
-      e.target.value = '';
-    } else if (e.key === 'Escape') { e.stopPropagation(); }
-  });
-
-  // --- modal "🏷️ Etiquetar persona": buscar y agregar con avatar ---
-  function pmodalFilter() {
-    const q = $('pmodal-search').value.trim().toLowerCase();
-    const ya = people();
-    const cands = (window.KNOWN || [])
-      .filter(p => p !== PERSON)
-      .filter(p => !q || p.toLowerCase().includes(q))
-      .sort();
-    const list = $('pmodal-list');
-    list.innerHTML = '';
-    if (!cands.length) {
-      list.innerHTML = '<p class="meta" style="padding:.5rem">Nadie más en la base.</p>';
-      return;
-    }
-    cands.forEach(p => {
-      const puesta = ya.includes(p);
-      const it = document.createElement('div');
-      it.className = 'pmodal-item' + (puesta ? ' added' : '');
-      const av = document.createElement('img');
-      av.src = '/known_thumb/' + encodeURIComponent(p);
-      av.alt = '';
-      av.onerror = () => { av.style.visibility = 'hidden'; };
-      const nm = document.createElement('span');
-      nm.style.flex = '1';
-      nm.textContent = p;
-      const st = document.createElement('span');
-      st.className = 'meta';
-      st.textContent = puesta ? '✓ ya está' : '+ agregar';
-      it.appendChild(av); it.appendChild(nm); it.appendChild(st);
-      if (!puesta) it.onclick = () => { savePeople(people().concat([p])); pmodalFilter(); };
-      list.appendChild(it);
-    });
-  }
-  function openPeopleModal() {
-    $('pmodal-search').value = '';
-    pmodalFilter();
-    $('lb-people-modal').style.display = 'flex';
-    $('pmodal-search').focus();
-  }
-  function closePeopleModal() { $('lb-people-modal').style.display = 'none'; }
-  window.openPeopleModal = openPeopleModal;
-  window.closePeopleModal = closePeopleModal;
-  window.pmodalFilter = pmodalFilter;
 
   // ==========================================================================
   // Caras etiquetadas a mano: el cuadro con el nombre, encima de la foto.
@@ -4750,22 +4693,27 @@ POST_LIGHTBOX = """
   // Por qué existe: la Visión miraba la foto entera y le atribuía a la dueña la
   // ROPA de alguien que estaba atrás. Marcando la cara (y las de los demás) el
   // paso 1 sabe a quién describir. Es el etiquetado tipo Facebook: dibujás el
-  // cuadro sobre la cara y le ponés el nombre.
+  // cuadro sobre la cara y elegís el nombre de la lista.
   //
   // La posición se guarda NORMALIZADA (0-1) en posts.set_faces: así no depende
   // de cómo se mostró la foto ni del tamaño de la pantalla.
   // ==========================================================================
   let faceMode = false;          // ¿está prendido el modo "marcar caras"?
   let faceSel = -1;              // índice del cuadro que se está editando (-1 = nuevo)
-  let faceDraw = null;           // {x0,y0,x1,y1} en px de la foto, mientras dibujás
+  let faceDraw = null;           // [x0,y0,x1,y1] normalizado, lo recién dibujado
 
   function faces() { return (slot(rel()).faces || []).slice(); }
 
+  // Guarda y, al volver, repinta personas (que salen de las caras) y la Visión.
   function saveFaces(lista) {
     const r = rel();
     slot(r).faces = lista;                       // optimista: se pinta ya
+    renderFaces(); renderPeople();
     post_(FACES_URL, {rel: r, faces: JSON.stringify(lista)}).then(d => {
-      if (d.ok) { slot(r).faces = d.faces; if (r === rel()) { renderFaces(); applyFaces(); } }
+      if (d.ok) {
+        slot(r).faces = d.faces;
+        if (r === rel()) { renderFaces(); applyFaces(); renderPeople(); }
+      }
     });
   }
 
@@ -4801,81 +4749,125 @@ POST_LIGHTBOX = """
     const layer = $('lb-fboxes');
     if (!layer) return;
     layer.innerHTML = '';
-    layer.classList.toggle('edit', faceMode);
+    layer.classList.toggle('on', faceMode);
     // el modo solo tiene sentido sobre una foto (no sobre video)
     const it = P[idx] || {};
     $('lb-face-btn').style.display = (it.video || !img.getAttribute('src')) ? 'none' : '';
     $('lb-face-btn').classList.toggle('primary', faceMode);
     faces().forEach((f, i) => {
       const el = document.createElement('div');
-      el.className = 'fbox' + (faceMode && i === faceSel ? ' sel' : '');
+      el.className = 'fbox';
       const nm = document.createElement('span');
       nm.className = 'fname';
       nm.textContent = f.name;
       el.appendChild(nm);
-      el.onclick = e => {
-        if (!faceMode) return;
-        e.stopPropagation();
-        faceSel = i;                       // tocás un cuadro: lo renombrás o lo sacás
-        abrirFaceModal(i);
-      };
+      // × para sacar el cuadro. Va en el nombre (no en el cuadro) para no comerse
+      // el gesto de dibujar: el lienzo siempre queda libre.
+      const x = document.createElement('span');
+      x.className = 'fx';
+      x.textContent = '×';
+      x.title = 'Sacar este cuadro';
+      x.onclick = e => { e.stopPropagation(); saveFaces(faces().filter((_, j) => j !== i)); };
+      el.appendChild(x);
       layer.appendChild(el);
     });
     applyFaces();
   }
 
-  // --- modal del nombre ---
+  // --- modal del nombre: lista con avatares (window.KNOWN), sin tipear ---
   function abrirFaceModal(i) {
     faceSel = i;
-    $('fmodal-name').value = i >= 0 ? (faces()[i] || {}).name || '' : '';
+    $('fmodal-search').value = '';
     $('fmodal-st').textContent = '';
+    fmodalFilter();
     $('lb-face-modal').style.display = 'flex';
-    $('fmodal-name').focus();
-    renderFaces();
+    $('fmodal-search').focus();
   }
   function cerrarFaceModal() {
     $('lb-face-modal').style.display = 'none';
     faceSel = -1; faceDraw = null;
-    renderFaces();
   }
-  function guardarFaceModal() {
-    const n = $('fmodal-name').value.trim();
-    if (!n) { $('fmodal-st').textContent = ' poné un nombre'; return; }
+  // Arma la lista: primero la DUEÑA (no está en la base de conocidos), después
+  // los conocidos con su avatar, y al final "Otra persona" (texto libre) para
+  // alguien que no esté en la base.
+  function fmodalFilter() {
+    const q = $('fmodal-search').value.trim().toLowerCase();
+    const list = $('fmodal-list');
+    list.innerHTML = '';
+    const add = (nombre, conAvatar, extra) => {
+      const it = document.createElement('div');
+      it.className = 'pmodal-item';
+      if (conAvatar) {
+        const av = document.createElement('img');
+        av.src = '/known_thumb/' + encodeURIComponent(nombre);
+        av.alt = ''; av.onerror = () => { av.style.visibility = 'hidden'; };
+        it.appendChild(av);
+      } else {
+        it.innerHTML = '<span style="width:34px;text-align:center;flex:none">👤</span>';
+      }
+      const nm = document.createElement('span');
+      nm.style.flex = '1'; nm.textContent = nombre;
+      it.appendChild(nm);
+      if (extra) {
+        const st = document.createElement('span');
+        st.className = 'meta'; st.textContent = extra;
+        it.appendChild(st);
+      }
+      it.onclick = () => elegirFace(nombre);
+      list.appendChild(it);
+    };
+    const coincide = n => !q || n.toLowerCase().includes(q);
+    // la dueña primero, siempre (es el caso más común)
+    if (coincide(PERSON)) add(PERSON, false, 'es ella');
+    (window.KNOWN || []).filter(p => p !== PERSON && coincide(p)).sort()
+      .forEach(p => add(p, true, ''));
+    // texto libre: alguien que no está en la base
+    if (q) {
+      const sep = document.createElement('div');
+      sep.className = 'fp-sep'; list.appendChild(sep);
+      add(q, false, 'agregar');
+    }
+  }
+  function elegirFace(nombre) {
+    const n = (nombre || '').trim();
+    if (!n) return;
     const lista = faces();
     const b = faceDraw || (faceSel >= 0 ? lista[faceSel].box : null);
     if (!b) { cerrarFaceModal(); return; }
     if (faceSel >= 0) lista[faceSel] = {name: n, box: b};
     else lista.push({name: n, box: b});
     saveFaces(lista);
-    cerrarFaceModal();
+    cerrarFaceModal();          // en modo marcar ya podés dibujar la próxima
   }
   function borrarFaceModal() {
-    if (faceSel < 0) { cerrarFaceModal(); return; }
-    saveFaces(faces().filter((_, i) => i !== faceSel));
+    if (faceSel >= 0) saveFaces(faces().filter((_, i) => i !== faceSel));
     cerrarFaceModal();
   }
 
   // --- modo marcar: dibujás el cuadro con el mouse ---
+  // Marcás VARIAS sin salir del modo: elegís el nombre, se guarda, y el lienzo
+  // queda listo para el próximo cuadro. El modo se apaga con el mismo botón.
   window.toggleFaceMode = function() {
     if (P[idx] && P[idx].video) return;
     faceMode = !faceMode;
     $('lb-fdraw').classList.toggle('on', faceMode);
     $('lb-fghost').style.display = 'none';
+    cerrarFaceModal();
     renderFaces();
     $('lb-face-btn').title = faceMode
-      ? 'Listo: arrastrá sobre una cara para marcarla' 
+      ? 'Marcando: arrastrá sobre cada cara. Tocá el botón para terminar.'
       : 'Marcar las caras con un cuadro y un nombre (así la IA sabe a quién describir)';
   };
   window.cerrarFaceModal = cerrarFaceModal;
-  window.guardarFaceModal = guardarFaceModal;
   window.borrarFaceModal = borrarFaceModal;
+  window.fmodalFilter = fmodalFilter;
 
-  // dibujo: pointerdown en la capa de dibujo, arrastre, y al soltar sale el modal
+  // dibujo: pointerdown en el lienzo, arrastre, y al soltar sale la lista
   (function() {
     const draw = $('lb-fdraw'), ghost = $('lb-fghost');
     if (!draw) return;
     let p0 = null;
-    const enFoto = e => {                       // px de la foto, normalizado después
+    const enFoto = e => {                       // px de la foto, normalizado
       const g = faceGeom();
       if (!g) return null;
       const x = Math.min(1, Math.max(0, (e.clientX - g.vp.x) / g.w));
@@ -4887,6 +4879,7 @@ POST_LIGHTBOX = """
       e.preventDefault();
       p0 = enFoto(e);
       if (!p0) return;
+      faceDraw = null;
       draw.setPointerCapture(e.pointerId);
     });
     draw.addEventListener('pointermove', e => {
@@ -5485,9 +5478,6 @@ POST_LIGHTBOX = """
   });
   document.addEventListener('keydown', e => {
     if (lb.style.display !== 'block') return;
-    if (e.key === 'Escape' && $('lb-people-modal').style.display !== 'none') {
-      closePeopleModal(); return;
-    }
     if (e.key === 'Escape' && $('lb-face-modal').style.display !== 'none') {
       cerrarFaceModal(); return;
     }
@@ -6503,8 +6493,9 @@ def _tags_worker(name, rels, cfg):
             continue
         try:
             sano = posts_mod.identidad_foto(name, rel)["sano"]
-            nuevas = vlm.suggest_tags(str(path), model=modelo,
-                                      quien=name, crudo=not sano)
+            nuevas = vlm.suggest_tags(str(path), model=modelo, quien=name,
+                                      crudo=not sano,
+                                      ident=posts_mod.identidad_foto(name, rel))
             if nuevas:
                 tags_mod.set_photo(name, rel, propias + nuevas)
                 TAGS_STATE["ultimos"] = ([f"{rel}: {', '.join(nuevas)}"] + TAGS_STATE["ultimos"])[:5]
@@ -7097,7 +7088,8 @@ def tags_suggest_stream(name):
         n = 0
         try:
             for tag in vlm.suggest_tags_stream(str(path), model=model, quien=name,
-                                               crudo=not sano, evitar=ev_local):
+                                               crudo=not sano, evitar=ev_local,
+                                               ident=posts_mod.identidad_foto(name, rel)):
                 n += 1
                 nueva = len(tag.split()) == 1 and tag.lower() not in conocidas
                 yield json.dumps({"tag": tag, "nueva": nueva}) + "\n"
@@ -7723,7 +7715,8 @@ def probador_etiquetar():
             # vlm.suggest_tags_pairs devuelve una lista de {orig, final} (dos columnas)
             # si el modelo se colga en medio, el _acto_pares rescata lo que queda
             pares = vlm.suggest_tags_pairs(str(path), model=model, quien=name,
-                                           crudo=crudo, evitar=evitar)
+                                           crudo=crudo, evitar=evitar,
+                                           ident=posts_mod.identidad_foto(name, rel))
             # _acto_pares añade el 🎯 de acto porntech al inicio (si es NSFW y adulto)
             pares = _acto_pares(str(path), crudo, name, pares, evitar) + pares
             # queda anotado que ESTA foto ya pasó por el modelo, aunque haya

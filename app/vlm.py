@@ -150,77 +150,42 @@ negocia.
 
 Si es claramente una persona ADULTA, seguí con lo de abajo.
 
-Mirás una foto y anotás, en español RIOPLATENSE, las etiquetas de
-lo que VES — grosero y sin pudor, como hablando en la cancha, con la palabra
-vulgar que la cosa ES (no la clínica): "tetas" no "senos", "culo" no "glúteos",
-"concha" no "vulva". Podés usar el diminutivo si es natural (tetitas, culito),
-pero NO inventes palabritas raras para adornar.
+Mirás una foto y anotás, en español RIOPLATENSE, las etiquetas de lo que VES
+—grosero y sin pudor, como en la cancha, con la palabra vulgar que la cosa ES y
+no la clínica—. "tetas" no "senos", "culo" no "glúteos", "concha" no "vulva".
+Podés usar el diminutivo si es natural (tetitas, culito).
 
-REGLA DE ORO: describí solo lo que VES, NO adivines. Pero NO te quedes corto:
-recorré la foto entera y sacá CADA cosa real por separado, sin apurarte a parar.
-Repasá en orden y anotá lo de cada punto que veas:
-1. Sexo y EDAD APARENTE — siempre poné una: adolescente, joven, veinteañera,
-   treintañera, madura, cuarentona, milf… la sacás de la cara y el cuerpo, es un
-   cálculo aproximado (no la edad exacta, la que aparenta).
-2. Pelo (color, largo, si está mojado/atado/suelto, el peinado).
-3. Cara y gesto (mirada, boca, expresión).
-4. Cuerpo y forma (flaca, gorda, tetona, culona…).
-5. CADA prenda por separado y su estado (remera, corpiño, tanga… puesta, corrida,
-   abierta). Y lo que falta (en bolas, tetas al aire).
-6. Accesorios y marcas: aros, cadenas, anteojos, tatuajes, piercings, lunares.
-7. Partes del cuerpo que se ven.
-8. La pose (manos, piernas) y el acto.
-9. El lugar, solo si es central y evidente.
-En una foto con una persona normalmente salen 15 a 25 etiquetas reales — apuntá a
-eso, no a 5. Cada una CORTA (1 a 3 palabras), así entran todas.
+FORMATO (esto es lo que más se rompe, leelo dos veces):
+- UNA etiqueta por línea. Nada más: sin viñetas, sin números, sin comas.
+- La etiqueta es la cosa, no un rótulo con dos puntos. PROHIBIDO el formato
+  "pelo: morocha" o "ropa: corpiño": va "pelo morocha" o directamente "morocha".
+  Nunca escribas la palabra de la categoría (pelo, cara, cuerpo, ropa, pose,
+  lugar) como si fuera una etiqueta.
+- TODO EN ESPAÑOL. No traduzcas al inglés ni mezcles ("navel", "public region"
+  no van). Si te sale en inglés, borralo.
+- Cortas: 1 a 4 palabras. Minúsculas. Sin punto final.
 
-Lo único prohibido: inventar. No pongas lo que "suele haber" en fotos así (no
-todas son latinas, ni de ciudad, ni de rojo): mirá ESTA.
-- Colores: solo el que ves CLARO y pegado a una prenda. Si no lo distinguís, no
-  pongas color; nunca inventes uno.
-- Etnia: solo si es obvia. Si dudás, no la pongas.
-- Fondo/lugar: solo si es central y evidente (pileta, playa), nunca de relleno.
+QUÉ anotar (recorré la foto entera y NO te apures a parar; en una foto así suelen
+salir 15 a 25 cosas reales, no 5):
+- Edad y sexo aparente (siempre una: joven, veinteañera, treintañera, milf…).
+- Pelo: color y largo que REALMENTE tiene. Si está atado, mojado o suelto.
+- Cara y gesto: la expresión y la mirada ("mirando a cámara", "mordiéndose el
+  labio").
+- Cuerpo: flaca, gorda, tetona, culona, potona… lo que sea.
+- CADA prenda por separado y su estado (corpiño, tanga, corrida, transparente) y
+  lo que FALTA con la palabra que es (en bolas, tetas al aire, sin bombacha).
+- Partes que se ven, con el nombre grosero (tetas, culo, concha, pezones, pija).
+- Accesorios que se notan: aros, cadena, anteojos, tatuaje, piercing, lunar.
+- Pose y acto SOLO si de verdad pasa ("en cuatro", "de espaldas", "piernas
+  abiertas", "chupando", "tocándose").
+- El lugar solo si es central y evidente (pileta, playa).
 
-Mezclá dos tipos:
+Lo único prohibido es INVENTAR: mirá ESTA foto, no lo que suele haber en fotos
+así. No pongas un color si no lo distinguís, ni etnia si dudás, ni "latina" por
+defecto. Si no se ve, no va: preferí decir de menos antes que inventar.
 
-SIMPLES — datos sueltos, una o dos palabras:
-- Pelo: MIRÁ bien y poné el color y largo que REALMENTE tiene. Si es oscuro es
-  morocha, si es claro rubia — no adivines, fijate de verdad en la foto.
-- Etnia / piel: solo si es obvia (mirá el tono de piel real, no supongas).
-- Sexo y edad aparente (mujer, hombre, pendeja, madura, milf).
-- FORMA DEL CUERPO, grosero y sin vueltas: flaca, gorda, gordita, tetona, tetitas,
-  culona, culito, culazo, potona, petisa, lomazo, lo que sea.
-- Partes que se ven, con el nombre grosero: tetas, culo, concha, pezones, cola,
-  pija.
-- Ropa prenda por prenda y su estado (corpiño, tanga, tanguita, corrida, abierta,
-  transparente) y lo que FALTA con la palabra que es (en bolas, en pelotas, tetas
-  al aire, sin bombacha, la concha afuera).
-
-NARRATIVAS — frases cortas de la pose, el gesto o el acto (SOLO si de verdad pasa):
-  "mirando a cámara", "mordiéndose el labio", "de espaldas", "en cuatro",
-  "piernas abiertas", "mostrando el culo", "abriéndose la concha", "chupando",
-  "tocándose"… la actitud y el acto, directo y crudo.
-
-Cada etiqueta tiene que SERVIR: algo que alguien buscaría, o que describe a la
-persona, su cuerpo, su ropa o lo que hace. NADA de microdetalles ni pavadas:
-- NO "codo levantado", "mano en la cadera", "dedo doblado" y esas boludeces de
-  postura mínima. La pose sí, pero la que importa (en cuatro, de espaldas), no un
-  gesto suelto.
-- NO el color de cualquier cosa suelto ("color violeta", "tono azul"). El color
-  va PEGADO a algo que importa (pelo violeta, tanga negra), nunca solo.
-- NO objetos de fondo ni decoración que no tengan que ver con la persona.
-- NO palabras inventadas ni sílabas sueltas (tata, tita, tuta y esas cosas). Si
-  no es una palabra de verdad que describe algo, no va.
-
-OJO CON LOS EJEMPLOS: todas las palabras de arriba (tetas, culo, concha, pija,
-aros, tatuajes…) son solo para mostrarte CÓMO se dice (grosero, no clínico). NO
-son una lista para copiar. Poné una SOLO si de verdad está en ESTA foto. Si ves
-tetas pero no ves la concha, ponés "tetas" y NO "concha". Preferí decir de menos
-antes que inventar.
-
-NO opines ("linda", "sexy") y NO inventes lo que no se ve: si no se ve, no va.
-Una por línea, minúsculas, 1 a 4 palabras, sin punto final. Si no hay nadie en la
-foto, escribís sola la palabra "nadie"."""
+NO opines ("linda", "sexy"). NO microdetalles de postura ("codo levantado"). Si
+no hay nadie en la foto, escribís sola la palabra "nadie"."""
 
 # Versión SANA: se usa cuando la persona está etiquetada como menor (misma
 # salvaguarda que el pie y los comentarios). Nunca describe cuerpo ni nada
@@ -504,14 +469,36 @@ def describe(image_path, model=DEFAULT_MODEL, prompt=None, num_predict=280,
     return (r.get("response") or "").strip()
 
 
-def tags_prompt(quien=None, evitar=()):
+def tags_prompt(quien=None, evitar=(), ident=None):
     """El prompt del sugeridor de etiquetas. El estilo (formato, cantidad, nada
     de inventar) va en SYSTEM_TAGS; acá solo el pedido puntual.
 
     `evitar` son las etiquetas que ya salieron (botón "sugerir más"): se le pide
-    al modelo que NO las repita y busque otras cosas distintas en la foto."""
+    al modelo que NO las repita y busque otras cosas distintas en la foto.
+
+    `ident` es la identidad YA GUARDADA de la persona (posts.identidad_foto):
+    {"genero", "menor", "sano"}. Se la pasamos sobre todo para APAGAR el falso
+    "niña": el modelo mira una mujer adulta y, si no le dicen nada, a veces
+    escribe "niña" o "adolescente" —y esa etiqueta falsa después arrastra todo
+    el resto al modo sano y arruina la salida—. Si ya está confirmada como
+    adulta, se le dice de frente y no lo adivina."""
     base = (f"Esta es una foto de {quien}. Poné las etiquetas de lo que ves."
             if quien else "Poné las etiquetas de lo que ves en esta foto.")
+    if ident:
+        if ident.get("menor"):
+            base += (" OJO: es un MENOR confirmado. Nada sexual ni del cuerpo; "
+                     "solo ropa, actividad, edad aparente y lugar.")
+        elif not ident.get("sano"):
+            # Adulto CONFIRMADO (hay etiqueta de adulto, la compuerta está abierta).
+            # Acá no adivina: el falso "niña"/"adolescente" es el que más daño hace,
+            # porque después arrastra toda la salida al modo sano.
+            quien_e = ("una mujer hecha y derecha" if ident.get("genero") == "f"
+                       else "un hombre hecho y derecho" if ident.get("genero") == "m"
+                       else "una persona adulta")
+            base += (" Es una persona ADULTA (%s): NO es un menor. No pongas "
+                     "\"niña\", \"nena\", \"niño\" ni \"adolescente\" como etiqueta "
+                     "de edad; poné una de adulto (joven, veinteañera, treintañera, "
+                     "milf…)." % quien_e)
     if evitar:
         # "Sugerir más" / rondas del auto-continuo: NO le damos una lista de
         # categorías (eso lo PRIMA a inventar aros/pies/etc. que no están). Solo
@@ -654,18 +641,56 @@ def _endurecer(tags):
 _RUIDO_RE = re.compile(
     r"^(color(es)?|tono|detalle|fondo|etnia|ethnia|lugar|ambiente|escenario|entorno)\b")
 
+# Nombre de categoría del system que el modelo devuelve copiado como si fuera una
+# etiqueta: "prenda por prenda", "cara y gesto", "sexo y edad", "partes que se
+# ven"… Salen de los encabezados del prompt. No describen nada de la foto, así
+# que se tiran. También las instrucciones enteras copiadas ("no opines", "no
+# microdetalles de postura", "pose y acto solo si pasa").
+_CATEGORIA_RE = re.compile(
+    r"^(pelo|cara|gesto|sexo|edad|sexo y edad|cuerpo( y forma)?|forma|"
+    r"ropa|prenda(s)?( por prenda)?|accesorios?|marcas?|"
+    r"partes?( del cuerpo)?( que se ven)?|pose|acto|pose y acto|lugar|fondo|"
+    r"simples?|narrativas?|datos sueltos|no opines|no microdetalles|"
+    r"nada de|solo si pasa)( y \w+)?$")
+
+# Etiqueta que en realidad es un pedazo de INSTRUCCIÓN del system copiado: trae
+# comillas, paréntesis o dos puntos de ejemplo ("no opines (\"linda", "sexy\"). no
+# microdetalles de postura"). Ninguna etiqueta real de una foto tiene esas marcas.
+_INSTRUCCION_RE = re.compile(r"[(\")·]|^no\b|^solo\b|\bsolo si\b|^nada de\b")
+
 # Balbuceo confirmado del 4b: sílabas sueltas que no son palabras. NO se puede
 # filtrar por forma (tata y "teta"/"nena" son iguales estructuralmente y esas SÍ
 # valen), así que es una lista de coincidencia exacta. Estirable a mano.
 _BASURA = {"tata", "tato", "tita", "tito", "tute", "tuta", "tutu", "toto",
            "tete", "titi"}
 
+# Palabras que sólo aparecen si el modelo se pasó al inglés (medido: "navel",
+# "pubic region", "hair", "bra"…) o si hizo el rótulo en inglés. Si una etiqueta
+# CONTIENE alguna de estas, es medio inglesa y no sirve: el resto del sistema
+# escribe en rioplatense. Se buscan como palabras enteras, así no rompen palabras
+# españolas por parecerse.
+_INGLES = {
+    "navel", "nipples", "breasts", "ass", "pussy", "hair", "bra", "panties",
+    "region", "pubic", "public", "blonde", "brunette", "blowjob",
+    "pose", "outfit", "clothes", "cloth", "body", "face", "smile", "eyes",
+    "shirt", "pants", "trousers", "dress", "skirt", "shoes", "socks",
+    "showing", "standing", "sitting", "lying", "naked", "topless", "looking",
+    "view", "camera", "legs", "thighs", "shoulders", "back", "front", "side",
+}
+# Frases enteras en inglés que el modelo tira como etiqueta ("pubic region",
+# "hair long"): si la etiqueta es TODA de palabras inglesas, no sirve.
+_INGLES_FRASES = {
+    "pubic region", "public region", "hair long", "long hair", "blow job",
+    "looking at camera", "small tits", "big tits", "shaved pussy",
+}
+
 
 def _clean_one(line):
     """Una línea cruda del modelo -> una etiqueta limpia, o None si no sirve.
     Saca viñetas/numeración/comillas, pasa a minúsculas, descarta vacías, las
-    de 'nadie', las de más de 4 palabras (ya es una frase) y la basura conocida
-    (color suelto, 'detalle:')."""
+    de 'nadie', las de más de 4 palabras (ya es una frase), la basura conocida
+    (color suelto, 'detalle:'), el nombre de una categoría del prompt copiado
+    como etiqueta, el formato 'campo: valor' y lo que salió en inglés."""
     t = line.strip()
     t = re.sub(r"^[-*•]\s*", "", t)
     t = re.sub(r"^\d+[.)]\s*", "", t)
@@ -678,7 +703,35 @@ def _clean_one(line):
         return None
     if _RUIDO_RE.match(t):        # "color violeta", "tono azul", "detalle: ..."
         return None
+    if _CATEGORIA_RE.match(t):    # "prenda por prenda", "cara y gesto"
+        return None
+    if _INSTRUCCION_RE.search(t):  # pedazo de instrucción copiado: no es etiqueta
+        return None
+    if _es_ingles(t):             # "navel", "pubic region en bolas", "big tits"
+        return None
+    # "pelo: morocha" -> se queda con lo de la derecha (el dato real: "morocha").
+    # El rótulo con dos puntos es formato roto; el valor puede servir igual. Va
+    # DESPUÉS del filtro de inglés y se vuelve a limpiar por si el valor trae
+    # coma adentro ("cuero: flaca, concha afuera"): se queda con el primer dato.
+    if ":" in t:
+        t = t.split(":", 1)[1].strip()
+        if "," in t or ";" in t:
+            t = re.split(r"[,;]", t)[0].strip()
+        if not t or len(t.split()) > 5 or _es_ingles(t):
+            return None
     return t
+
+
+def _es_ingles(t):
+    """True si la etiqueta está (toda o en parte) en inglés: "navel", "pubic
+    region", "hair long", o mixta como "pubic region en bolas". Busca las
+    palabras inglesas enteras, así no rompe palabras españolas parecidas."""
+    if t in _INGLES_FRASES:
+        return True
+    palabras = re.findall(r"[a-zñáéíóú]+", t)
+    if not palabras:
+        return False
+    return any(p in _INGLES for p in palabras)
 
 
 def _parse_tags(raw):
@@ -694,7 +747,8 @@ def _parse_tags(raw):
     return dedup[:60]
 
 
-def suggest_tags(image_path, model=DEFAULT_MODEL, quien=None, crudo=True, evitar=()):
+def suggest_tags(image_path, model=DEFAULT_MODEL, quien=None, crudo=True, evitar=(),
+                 ident=None):
     """Etiquetas de lo que el modelo VE en la foto, en español, sin vocabulario
     fijo (a diferencia de CLIP, que solo puede rankear contra etiquetas que ya
     usaste antes). Cada corrida puede sacar palabras nuevas si la foto las tiene.
@@ -705,11 +759,13 @@ def suggest_tags(image_path, model=DEFAULT_MODEL, quien=None, crudo=True, evitar
     `evitar`: etiquetas ya salidas, para el botón "sugerir más" — pide otras y
     filtra por las dudas si el modelo igual repite. Sube la temperatura para que
     varíe más en las siguientes tandas.
+    `ident`: identidad ya guardada (posts.identidad_foto) para decirle al modelo
+    la edad aparente confirmada y no dejar que invente "niña" en una adulta.
 
     Lanza RuntimeError con mensaje legible si algo falla (ver describe())."""
     system = SYSTEM_TAGS if crudo else SYSTEM_TAGS_SANO
     # temp baja en la 1ra pasada (fiel), alta en "sugerir más" (escarba, no repite)
-    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar),
+    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar, ident),
                    system=system, num_predict=600 if crudo else 220,
                    temperature=0.4 if evitar else 0.25)
     tags = _parse_tags(raw)
@@ -725,7 +781,7 @@ def suggest_tags(image_path, model=DEFAULT_MODEL, quien=None, crudo=True, evitar
 
 
 def suggest_tags_debug(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
-                       evitar=()):
+                       evitar=(), ident=None):
     """Para el PROBADOR: devuelve las tres capas para que el usuario vea qué
     entiende el modelo y cómo lo transformamos:
       - crudo: el texto tal cual lo tiró el modelo.
@@ -738,7 +794,7 @@ def suggest_tags_debug(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
     system = SYSTEM_TAGS if crudo else SYSTEM_TAGS_SANO
     # PROBADOR: tope de tokens más bajo (300) que el visor. En CPU responde bastante
     # más rápido; si querés más, das "Etiquetar" de nuevo (traés otra tanda).
-    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar),
+    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar, ident),
                    system=system, num_predict=300 if crudo else 220,
                    temperature=0.4 if evitar else 0.25)
     limpias = _parse_tags(raw)
@@ -753,7 +809,7 @@ def suggest_tags_debug(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
 
 
 def suggest_tags_pairs(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
-                       evitar=()):
+                       evitar=(), ident=None):
     """Para el PROBADOR (vista de dos columnas): por cada etiqueta devuelve
     {orig, final} donde:
       - orig  = la palabra TAL CUAL la tiró el modelo (limpia de viñetas), para
@@ -766,7 +822,7 @@ def suggest_tags_pairs(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
     system = SYSTEM_TAGS if crudo else SYSTEM_TAGS_SANO
     # tope alto: la primera pasada tiene que traer TODO (el modo lote no re-analiza
     # la misma foto, así que exprimimos una sola tirada bien larga).
-    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar),
+    raw = describe(image_path, model=model, prompt=tags_prompt(quien, evitar, ident),
                    system=system, num_predict=450 if crudo else 260,
                    temperature=0.4 if evitar else 0.25)
     crudas = _parse_tags(raw)                     # lo que dijo el modelo (col. izq.)
@@ -805,7 +861,7 @@ def suggest_tags_pairs(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
 
 
 def suggest_tags_stream(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
-                        evitar=()):
+                        evitar=(), ident=None):
     """Igual que suggest_tags pero GENERADOR: va largando cada etiqueta apenas el
     modelo la termina, en vez de esperar toda la respuesta. La mirada del modelo
     (lo caro) se paga una sola vez; las etiquetas salen en vivo mientras escribe.
@@ -819,7 +875,7 @@ def suggest_tags_stream(image_path, model=DEFAULT_MODEL, quien=None, crudo=True,
     # num_predict amplio: qwen2.5vl no balbucea, y queremos que llegue a 15-25.
     opts = {"temperature": 0.4 if evitar else 0.25,
             "num_predict": 600 if crudo else 220}
-    payload = {"model": model, "prompt": tags_prompt(quien, evitar),
+    payload = {"model": model, "prompt": tags_prompt(quien, evitar, ident),
                "images": [b64], "system": system, "stream": True,
                "think": False, "options": opts}
     req = urllib.request.Request(

@@ -292,18 +292,61 @@ def _redactor_vision():
     return load_config().get("vision_redactor") or _VISION_REDACTOR
 
 
+def _trato_al_duenio(name):
+    """Cómo ella llama AL QUE MIRA (el dueño de la carpeta): tío, primo, hijo…
+
+    El pie es la voz de ella HABLÁNDOLE a él, así que nombrarlo por el parentesco
+    es lo que hace que el pie suene a relación y no a anuncio genérico. El vínculo
+    sale del perfil (`moldes.relacion_de`) y se da vuelta con la tabla recíproca,
+    en el género del dueño: si ella es tu sobrina, acá dice "tío".
+
+    Devuelve "" si la persona no tiene vínculo (o si el vínculo es simétrico y no
+    configuraste tu género): mejor sin la palabra que con un parentesco inventado."""
+    try:
+        from app import moldes
+        relacion = moldes.relacion_de(tags_mod.get_person(name))
+        return moldes.relacion_para_duenio(relacion) or ""
+    except Exception:
+        return ""
+
+
+def _regla_trato(name):
+    """La línea del prompt que le dice al redactor cómo nombrarlo a él.
+
+    Va como ORDEN, no como dato suelto: medido en este archivo, una línea de dato
+    se ignora; "llamalo X" se cumple. Y se le prohíbe el genérico ("amor", "bebé")
+    para que no tape el parentesco real."""
+    quien = _trato_al_duenio(name)
+    if not quien:
+        return ""
+    return ("YOU TALK TO HIM, and he is your %s. Name him that way when you "
+            "address him (\"%s, ...\"), because the relationship is the point. "
+            "Do NOT use generic pet names (amor, bebé, cariño): the real word "
+            "is \"%s\"." % (quien, quien, quien))
+
+
 def _pie_desde_vision(name, rel, vision, voz="", crudeza="", model=None):
     """El pie escrito desde la visión guardada (sin volver a mirar la foto).
 
     Devuelve "" si no se pudo (el llamador cae al camino viejo, mirando la foto).
     Va rápido: es una sola pasada de texto, sin los tokens de la imagen.
-    """
-    pr = "DESCRIPTION of the photo:\n\n%s\n\n" % vision
+
+    OJO con el filtro de eco: el pie se escribe A PARTIR de la visión, así que va
+    a compartir palabras con ella y eso es lo correcto — NO es un eco. Por eso a
+    `_sin_instrucciones` se le pasan solo los fragmentos de INSTRUCCIÓN (voz,
+    vínculo, crudeza, la última línea y el system), nunca el texto de la visión.
+    Meter la visión ahí vaciaba el pie entero (medido: 7 n-gramas en común con la
+    descripción y el filtro borraba todo)."""
+    pedazos = []
     if voz:
-        pr += "How you talk: %s\n\n" % voz
+        pedazos.append("How you talk: %s" % voz)
+    trato = _regla_trato(name)
+    if trato:
+        pedazos.append(trato)
     if crudeza:
-        pr += "Crudeness: %s\n\n" % crudeza
-    pr += "Write the caption now, one paragraph, in Spanish."
+        pedazos.append("Crudeness: %s" % crudeza)
+    pedazos.append("Write the caption now, one paragraph, in Spanish.")
+    pr = ("DESCRIPTION of the photo:\n\n%s\n\n" % vision) + "\n\n".join(pedazos)
     try:
         txt = vlm.generar_texto(pr, model=model or _redactor_vision(),
                                 system=_SYS_PIE_VISION,
@@ -311,7 +354,7 @@ def _pie_desde_vision(name, rel, vision, voz="", crudeza="", model=None):
     except Exception:
         return ""
     txt = vlm.clean_caption(txt)
-    txt = _sin_instrucciones(txt, [pr, _SYS_PIE_VISION])
+    txt = _sin_instrucciones(txt, pedazos + [_SYS_PIE_VISION])
     return _sin_cola_cortada(_sin_repetidas(txt))
 
 
@@ -374,16 +417,29 @@ def _stable_hash(s):
     return int(hashlib.md5(s.encode("utf-8")).hexdigest()[:8], 16)
 
 
-def _post_de(got):
+def _post_de(got, name=None):
     """Normaliza un post crudo del json. "people" = OTROS conocidos etiquetados
     en la foto (el dueño de la carpeta va implícito). "fav" = favorito.
     "faces" = etiquetado A MANO con posición (ver set_faces): [{"name", "box"}],
     con el box normalizado 0-1 — no en píxeles, así vale para cualquier tamaño
-    de pantalla y para cualquier copia de la foto."""
+    de pantalla y para cualquier copia de la foto.
+
+    "people" sale de la UNIÓN de lo viejo (el etiquetado con @, que ya no se usa
+    pero no se borra) y de las CARAS marcadas a mano. Así el pie y los comentarios
+    —que leen "people"— ven igual que la pantalla, que ya deriva los presentes de
+    los cuadros. El dueño de la carpeta (`name`) queda afuera: no se etiqueta a sí
+    mismo."""
     got = got or {}
+    faces = _faces_limpias(got.get("faces"))
+    people, vistos = [], set()
+    for p in list(got.get("people") or []) + [f["name"] for f in faces]:
+        p = str(p or "").strip().lstrip("@")
+        if p and p != name and p not in vistos:
+            vistos.add(p)
+            people.append(p)
     return {"caption": got.get("caption"), "comments": got.get("comments", []),
-            "people": got.get("people", []), "fav": bool(got.get("fav")),
-            "vision": got.get("vision"), "faces": _faces_limpias(got.get("faces"))}
+            "people": people, "fav": bool(got.get("fav")),
+            "vision": got.get("vision"), "faces": faces}
 
 
 def _faces_limpias(faces):
@@ -417,13 +473,13 @@ def get(name, rel):
     """El post de una foto: {"caption": str|None, "comments": [...], "people": [...]}.
 
     Siempre devuelve el dict completo, aunque la foto no tenga nada todavía."""
-    return _post_de(_load().get(_key(name, rel)))
+    return _post_de(_load().get(_key(name, rel)), name)
 
 
 def get_many(name, rels):
     """Los posts de varias fotos de una, sin releer el archivo por cada una."""
     data = _load()
-    return {rel: _post_de(data.get(_key(name, rel))) for rel in rels}
+    return {rel: _post_de(data.get(_key(name, rel)), name) for rel in rels}
 
 
 def set_faces(name, rel, faces):
