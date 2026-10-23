@@ -19,3 +19,12 @@ timm>=1.0
 # Eliminar foto (visor): manda a la Papelera de reciclaje de Windows en vez de
 # borrar directo, así un clic accidental se recupera desde la Papelera.
 send2trash>=1.8
+# Motor de caras alternativo (app/facemotor.py): SCRFD + ArcFace R50, mucho más
+# discriminante que SFace cuando se confunden personas parecidas. Corre en GPU.
+# onnxruntime-gpu reemplaza al onnxruntime de arriba (misma API, +CUDA):
+#   pip install onnxruntime-gpu          (luego desinstalar el onnxruntime CPU)
+# Las DLLs de CUDA/cuDNN van DENTRO del venv (app/cuda_dlls.py las hace
+# visibles); sin ellas onnxruntime-gpu cae a CPU en silencio:
+#   pip install nvidia-cudnn-cu13 nvidia-cublas nvidia-cuda-runtime
+insightface>=0.7
+onnxruntime-gpu>=1.20

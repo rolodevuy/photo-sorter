@@ -90,6 +90,57 @@ La pestaña **"Inicio"** (ruta `/inicio`) es una tapa editorial armada **solo co
 
 Código: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`); ruta: `app/flask_app.py` (`inicio()`).
 
+## Motor de caras: SFace (actual) y ArcFace (listo, sin enchufar)
+
+Hoy la detección y el reconocimiento usan **OpenCV: YuNet + SFace** (`app/facedet.py`),
+128 dimensiones por cara, rápido en CPU. Es el motor **activo**.
+
+Al lado quedó preparado un motor mejor para cuando las caras parecidas se
+confundan entre sí (**discriminación**, no detección):
+
+- **`app/facemotor.py`**: SCRFD + **ArcFace R50** vía `insightface` sobre
+  `onnxruntime-gpu` (512 dimensiones). Corre en la GPU (probado en una RTX
+  5060 Ti: ~0,03 s por foto con la GPU ya caliente). Tiene fallback a CPU solo.
+- **`app/cuda_dlls.py`**: deja visibles las DLLs de CUDA/cuDNN que instala
+  `nvidia-*` dentro del venv. **Sin esto la GPU se cae a CPU en silencio**
+  (el runtime dice que no encuentra `cublasLt64_13.dll` y sigue por CPU sin
+  avisar). Llamar `cuda_dlls.preparar()` antes de crear la primera sesión.
+
+> **OJO — los motores NO son compatibles.** SFace da 128 números y ArcFace 512.
+> Una base de conocidos (`data/known_people.json`) armada con un motor **no
+> sirve** para el otro: si se cambia de motor hay que **RE-ENROLAR** (Galería →
+> ⚙ Configuración → "Aprender las caras de la Biblioteca"). Está todo escrito
+> pero **`detect_and_encode` todavía no elige ArcFace**: ver pendientes.
+
+## Pendientes (lo que falta / está a medio hacer)
+
+**Motor de caras (ArcFace)**
+- [ ] Enchufar `facemotor.detect_and_encode` en `facedet.detect_and_encode` con
+      un interruptor de config (`face_motor`: `sface` | `arcface`), para que el
+      cambio sea explícito y no mezcle embeddings de distinta dimensión.
+- [ ] Botón **"re-enrolar solo esta persona"** en la página del perfil (procesa
+      solo su carpeta, rápido; hoy el único camino es el botón global del ⚙ de
+      la Galería, que recorre las 174 personas).
+- [ ] Decidir si `_nsfw` entra o no en el aprendizaje: `enroll_from_folder`
+      recorre con `rglob` y **hoy aprende también de las fotos NSFW**.
+- [ ] `notfaces.is_not_face` compara con una lista negra de embeddings: esa
+      lista también es del motor viejo (recalcular si se pasa a ArcFace).
+
+**Contenido / IA**
+- [ ] Los **comentarios no nombran a la dueña** (la describen por género/edad).
+      Si se quiere el nombre/alias también ahí, es un cambio en `posts.py`.
+- [ ] El paso 1 de la Visión (`_hechos`) a veces varía, inventa o devuelve
+      **inglés**; el redactor de paso 2 a veces no respeta `sano=True`.
+- [ ] Apagador global de lo erótico, gobernado por la perilla de crudeza.
+
+**Features escritas y sin enganchar** (módulos completos, nadie los importa):
+- [ ] `app/cola.py` — cola de trabajos pesada: le falta el worker y las rutas.
+- [ ] `app/narracion_ingles.py` — narración en inglés: le faltan los 3 botones.
+- [ ] `app/similar.py` (búsqueda por CLIP) y `app/texto.py` (memos/capturas).
+
+**Video**
+- [ ] Soporte de video con `ffmpeg` (hoy se analiza por fotogramas sueltos).
+
 ## Mapa del proyecto
 
 - **`app/flask_app.py`** (~450 KB): toda la web sobre Flask — rutas, plantillas, CSS y JS en un solo archivo. Nada se sirve con caché vieja: CSS/JS llevan hash `?v=` (para ver cambios: cerrá lanzador y **Ctrl+F5**).
@@ -99,7 +150,7 @@ Código: `app/home_premium.py` (`HOME_TEMPLATE` + `build_context()`); ruta: `app
   - `app/cola.py` (210 líneas): cola de trabajos pesados persistente en disco (`data/cola.json`) que corre de a UNA tarea sobre TODAS las fotos, por fases, para cargar cada modelo de Ollama una sola vez y no mil veces. Retoma tras reinicio (`rescatar_huerfanos`), calcula ETA real. Le falta el worker (el hilo que saca de la cola) y las rutas `/cola/...` + el botón en la UI.
   - `app/similar.py`: búsqueda por parecido visual con CLIP (vectores de 512 números, distancia coseno) — distinto de Duplicados, que compara píxeles. Sin enganchar.
   - `app/texto.py`: separador de memes/capturas de texto por densidad de bordes con OpenCV puro (no hace OCR). Sin enganchar.
-- **Análisis / biblioteca**: `app/analyze.py` (clustering), `app/facedet.py` (YuNet+SFace, modelos en `app/models/`), `app/known.py` (personas conocidas), `app/organizer.py`, `app/limpieza.py`, `app/corrector.py`, `app/renamer.py`, `app/splitter.py`, `app/notfaces.py`, `app/procesadas.py`, `app/respaldo.py`.
+- **Análisis / biblioteca**: `app/analyze.py` (clustering), `app/facedet.py` (YuNet+SFace, modelos en `app/models/`), `app/facemotor.py` (SCRFD+ArcFace vía insightface; listo, sin enchufar), `app/cuda_dlls.py` (DLLs de CUDA para la GPU; ver arriba), `app/known.py` (personas conocidas), `app/organizer.py`, `app/limpieza.py`, `app/corrector.py`, `app/renamer.py`, `app/splitter.py`, `app/notfaces.py`, `app/procesadas.py`, `app/respaldo.py`.
 - **Escáneres**: `app/duplicates.py` (SHA-1/dHash), `app/nsfw.py` (NudeNet), `app/sexpos.py` (acto, resnet50), `app/finder.py` (buscador de personas).
 - **Interface extra**: `app/home_premium.py` (portada), `app/tags.py`, `app/stats.py`, `app/person_meta.py`.
 - **Datos**: `data/` (ver árbol en SETUP.md). Los `.json` se escriben foto a foto, nunca se pierde lo hecho.
